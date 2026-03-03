@@ -1,0 +1,303 @@
+"""Valuation Agent — pure Python multi-method valuation, with optional LLM interpretation.
+
+Methods implemented:
+  1. DCF (Discounted Cash Flow) — 3 scenarios: bull/base/bear
+  2. Graham Number — √(22.5 × EPS × BVPS)
+  3. Owner Earnings — Buffett's formula: Net Income + D&A − CapEx
+  4. EV/EBITDA — approximate from available data
+
+If OPENAI_API_KEY is set, calls valuation_interpret LLM to narrate the findings.
+If not set, returns data-only signal.
+"""
+
+import math
+from datetime import date
+
+from src.data.database import (
+    get_income_statements,
+    get_balance_sheets,
+    get_cash_flows,
+    get_financial_metrics,
+    get_latest_prices,
+    insert_agent_signal,
+)
+from src.data.models import AgentSignal
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+AGENT_NAME = "valuation"
+
+# Default valuation assumptions (conservative value-investor settings)
+WACC = 0.10           # 10% discount rate
+TERMINAL_GROWTH = 0.03  # 3% perpetual growth (GDP growth rate)
+FCF_GROWTH_BULL = 0.12  # 12% — optimistic scenario
+FCF_GROWTH_BASE = 0.07  # 7%  — base scenario
+FCF_GROWTH_BEAR = 0.02  # 2%  — pessimistic scenario
+PROJECTION_YEARS = 10
+INDUSTRY_EV_EBITDA = 8.0  # fallback industry multiple
+
+
+def _safe(x) -> float | None:
+    if x is None:
+        return None
+    try:
+        f = float(x)
+        return None if math.isnan(f) or math.isinf(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _dcf(base_fcf: float, growth_rate: float, wacc: float = WACC,
+          terminal_growth: float = TERMINAL_GROWTH, years: int = PROJECTION_YEARS) -> float:
+    """
+    10-year DCF with terminal value.
+    Returns total present value (NOT per share — divide by shares outstanding separately).
+    """
+    pv = 0.0
+    fcf = base_fcf
+    for yr in range(1, years + 1):
+        fcf *= (1 + growth_rate)
+        pv += fcf / ((1 + wacc) ** yr)
+    # Terminal value (Gordon Growth Model)
+    terminal_fcf = fcf * (1 + terminal_growth)
+    terminal_value = terminal_fcf / (wacc - terminal_growth)
+    pv += terminal_value / ((1 + wacc) ** years)
+    return pv
+
+
+def _get_current_price(ticker: str) -> float | None:
+    """Approximate current price from most recent daily_prices row."""
+    rows = get_latest_prices(ticker, limit=1)
+    if rows:
+        return _safe(rows[0].get("close"))
+    return None
+
+
+def _get_shares_outstanding(income_rows: list[dict], metric_rows: list[dict]) -> float | None:
+    """Try to get shares outstanding from metrics or income statement."""
+    for row in metric_rows:
+        mc = _safe(row.get("market_cap"))
+        price = _get_current_price(None)  # type: ignore — we'll compute below
+        # Skip this path if no market cap
+    # Direct from income statement
+    for row in income_rows:
+        s = _safe(row.get("shares_outstanding"))
+        if s and s > 0:
+            return s
+    return None
+
+
+def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
+    """
+    Run the Valuation Agent for a given ticker.
+    Returns an AgentSignal and persists it to the database.
+    """
+    income_rows   = get_income_statements(ticker, limit=5, period_type="annual")
+    balance_rows  = get_balance_sheets(ticker, limit=3, period_type="annual")
+    cashflow_rows = get_cash_flows(ticker, limit=3, period_type="annual")
+    metric_rows   = get_financial_metrics(ticker, limit=3)
+
+    current_price = _get_current_price(ticker)
+    results: dict = {
+        "wacc":           WACC * 100,
+        "terminal_growth": TERMINAL_GROWTH * 100,
+        "current_price":  current_price,
+    }
+    detail_lines: list[str] = []
+
+    # ── 1. Owner Earnings & DCF ───────────────────────────────────────────────
+    dcf_base = dcf_bull = dcf_bear = None
+    owner_earnings = None
+    shares = None
+
+    latest_ni = None
+    if income_rows:
+        latest_ni  = _safe(income_rows[0].get("net_income"))
+        shares_raw = _safe(income_rows[0].get("shares_outstanding"))
+        eps_raw    = _safe(income_rows[0].get("eps"))
+        shares = shares_raw
+        # Derive shares from net_income / EPS when not stored explicitly
+        if (shares is None or shares == 0) and latest_ni and eps_raw and eps_raw != 0:
+            shares = latest_ni / eps_raw
+            logger.debug("[Valuation] %s: derived shares=%.0f from NI/EPS", ticker, shares)
+
+    if cashflow_rows:
+        ocf  = _safe(cashflow_rows[0].get("operating_cash_flow"))
+        fcf  = _safe(cashflow_rows[0].get("free_cash_flow"))
+        capex = _safe(cashflow_rows[0].get("capital_expenditure"))
+        dep  = _safe(cashflow_rows[0].get("depreciation"))
+
+        # Owner Earnings = Net Income + D&A − CapEx  (Buffett's formula)
+        if latest_ni and capex is not None:
+            da  = dep or 0
+            cx  = abs(capex) if capex < 0 else capex
+            owner_earnings = latest_ni + da - cx
+            results["owner_earnings"] = owner_earnings
+            detail_lines.append(f"Owner Earnings: {owner_earnings/1e8:.2f}亿元")
+
+        # Use FCF for DCF; fall back to OCF if FCF unavailable
+        base_fcf = fcf or ocf
+        if base_fcf and base_fcf > 0:
+            dcf_bull = _dcf(base_fcf, FCF_GROWTH_BULL)
+            dcf_base = _dcf(base_fcf, FCF_GROWTH_BASE)
+            dcf_bear = _dcf(base_fcf, FCF_GROWTH_BEAR)
+            results.update({
+                "base_fcf":     base_fcf,
+                "dcf_bull":     dcf_bull,
+                "dcf_base":     dcf_base,
+                "dcf_bear":     dcf_bear,
+                "fcf_growth_bull": FCF_GROWTH_BULL * 100,
+                "fcf_growth_base": FCF_GROWTH_BASE * 100,
+                "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
+            })
+            detail_lines.append(f"DCF (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元")
+        else:
+            detail_lines.append("⚠ FCF/OCF 为负或缺失，无法进行 DCF 估值")
+
+    # ── 2. Graham Number ──────────────────────────────────────────────────────
+    graham_number = graham_number_per_share = None
+    eps  = _safe(income_rows[0].get("eps")) if income_rows else None
+    bvps = _safe(balance_rows[0].get("book_value_per_share")) if balance_rows else None
+
+    # Estimate BVPS from equity / shares if not stored directly
+    if bvps is None and balance_rows and shares and shares > 0:
+        equity = _safe(balance_rows[0].get("total_equity"))
+        if equity:
+            bvps = equity / shares
+
+    if eps and bvps and eps > 0 and bvps > 0:
+        graham_number_per_share = math.sqrt(22.5 * eps * bvps)
+        results["graham_number"] = graham_number_per_share
+        detail_lines.append(f"Graham Number: ¥{graham_number_per_share:.2f}/股 (EPS={eps:.2f}, BVPS={bvps:.2f})")
+    else:
+        results["graham_number"] = None
+        detail_lines.append("- Graham Number 无法计算（缺 EPS 或 BVPS）")
+
+    # ── 3. EV/EBITDA (approximate) ────────────────────────────────────────────
+    ev_ebitda_value = None
+    if income_rows:
+        ebitda = _safe(income_rows[0].get("ebitda"))
+        if ebitda and ebitda > 0:
+            ev_ebitda_total = ebitda * INDUSTRY_EV_EBITDA
+            results["ev_ebitda_value"] = ev_ebitda_total
+            detail_lines.append(f"EV/EBITDA ({INDUSTRY_EV_EBITDA}x): 总价值={ev_ebitda_total/1e8:.0f}亿元")
+            ev_ebitda_value = ev_ebitda_total
+        else:
+            results["ev_ebitda_value"] = None
+            detail_lines.append("- EBITDA 数据缺失，EV/EBITDA 无法计算")
+
+    # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
+    net_net_ratio = None
+    if balance_rows:
+        ca   = _safe(balance_rows[0].get("current_assets"))
+        tl   = _safe(balance_rows[0].get("total_liabilities"))
+        if ca and tl and shares and shares > 0:
+            net_net_per_share = (ca - tl) / shares
+            net_net_ratio = net_net_per_share / current_price if current_price else None
+            results["net_net_per_share"] = net_net_per_share
+            results["net_net_ratio"] = net_net_ratio
+            detail_lines.append(f"Net-Net: (CA-TL)/股={net_net_per_share:.2f}, 价格比={net_net_ratio:.2f}" if net_net_ratio else f"Net-Net: {net_net_per_share:.2f}/股")
+
+    # ── 5. Margin of Safety & Signal ─────────────────────────────────────────
+    # Use DCF base as primary intrinsic value; fall back to Graham Number
+    intrinsic_base = dcf_base
+    primary_method = "DCF"
+    if intrinsic_base is None and graham_number_per_share and shares:
+        intrinsic_base = graham_number_per_share * shares
+        primary_method = "Graham Number"
+
+    margin_of_safety = None
+    dcf_per_share = None
+
+    if intrinsic_base and shares and shares > 0:
+        if primary_method == "DCF":
+            dcf_per_share = intrinsic_base / shares
+            results["dcf_per_share"] = dcf_per_share
+        if current_price and dcf_per_share:
+            margin_of_safety = (dcf_per_share - current_price) / dcf_per_share
+            results["margin_of_safety"] = margin_of_safety
+            mos_pct = margin_of_safety * 100
+            detail_lines.append(f"安全边际 ({primary_method}): {mos_pct:.1f}% (DCF基准¥{dcf_per_share:.2f} vs 市价¥{current_price:.2f})")
+
+    # Determine signal
+    if margin_of_safety is not None:
+        if margin_of_safety >= 0.30:
+            signal, confidence = "bullish", min(0.90, 0.60 + margin_of_safety * 0.5)
+        elif margin_of_safety >= 0.10:
+            signal, confidence = "neutral", 0.55
+        elif margin_of_safety >= -0.10:
+            signal, confidence = "neutral", 0.45
+        else:
+            signal, confidence = "bearish", min(0.90, 0.55 + abs(margin_of_safety) * 0.5)
+    elif graham_number_per_share and current_price:
+        gn_mos = (graham_number_per_share - current_price) / graham_number_per_share
+        if gn_mos >= 0.30:
+            signal, confidence = "bullish", 0.65
+        elif gn_mos >= 0:
+            signal, confidence = "neutral", 0.50
+        else:
+            signal, confidence = "bearish", 0.55
+    else:
+        signal, confidence = "neutral", 0.30
+        detail_lines.append("⚠ 估值数据不足，保持中性")
+
+    reasoning = (
+        f"估值分析结果（{primary_method}为主要依据）：\n"
+        + "\n".join(detail_lines)
+    )
+
+    # ── 6. Optional LLM interpretation ──────────────────────────────────────
+    if use_llm:
+        try:
+            from src.llm.router import call_llm, LLMError
+            from src.llm.prompts import (
+                VALUATION_INTERPRET_SYSTEM_PROMPT,
+                VALUATION_INTERPRET_USER_TEMPLATE,
+            )
+            user_msg = VALUATION_INTERPRET_USER_TEMPLATE.format(
+                ticker=ticker,
+                current_price=f"¥{current_price:.2f}" if current_price else "未知",
+                dcf_bull=f"¥{dcf_bull/1e8:.1f}亿" if dcf_bull else "N/A",
+                dcf_base=f"¥{dcf_base/1e8:.1f}亿" if dcf_base else "N/A",
+                dcf_bear=f"¥{dcf_bear/1e8:.1f}亿" if dcf_bear else "N/A",
+                graham_number=f"¥{graham_number_per_share:.2f}" if graham_number_per_share else "N/A",
+                owner_earnings_value=f"¥{owner_earnings/1e8:.1f}亿" if owner_earnings else "N/A",
+                ev_ebitda_value=f"¥{ev_ebitda_value/1e8:.0f}亿" if ev_ebitda_value else "N/A",
+                wacc=WACC * 100,
+                terminal_growth=TERMINAL_GROWTH * 100,
+                fcf_growth=FCF_GROWTH_BASE * 100,
+            )
+            llm_text = call_llm("valuation_interpret", VALUATION_INTERPRET_SYSTEM_PROMPT, user_msg)
+            # Append LLM interpretation to reasoning
+            reasoning += f"\n\n**LLM解读**:\n{llm_text}"
+
+            # Parse signal override from LLM if available
+            import json as _json
+            try:
+                parsed = _json.loads(llm_text)
+                llm_sig = parsed.get("signal", "").lower()
+                if llm_sig in ("bullish", "neutral", "bearish"):
+                    signal = llm_sig
+                llm_conf = float(parsed.get("confidence", confidence))
+                confidence = (confidence + llm_conf) / 2  # blend code + LLM
+            except Exception:
+                pass  # LLM returned prose not JSON — keep code signal
+
+        except Exception as e:
+            logger.warning("[Valuation] LLM call skipped: %s", e)
+            reasoning += "\n\n(估值解读 LLM 暂不可用，仅显示代码计算结果)"
+
+    agent_signal = AgentSignal(
+        ticker=ticker,
+        agent_name=AGENT_NAME,
+        signal=signal,
+        confidence=round(confidence, 3),
+        reasoning=reasoning,
+        metrics=results,
+    )
+    insert_agent_signal(agent_signal)
+    logger.info("[Valuation] %s: signal=%s confidence=%.2f mos=%s",
+                ticker, signal, confidence,
+                f"{margin_of_safety*100:.1f}%" if margin_of_safety else "N/A")
+    return agent_signal

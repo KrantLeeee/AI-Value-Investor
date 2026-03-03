@@ -1,0 +1,48 @@
+default_provider: openai
+default_model: gpt-4o
+
+task_routing:
+  report_writing:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 4000
+    temperature: 0.3
+  buffett_analysis:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 2000
+    temperature: 0.2
+  graham_analysis:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 2000
+    temperature: 0.2
+  valuation_interpret:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 1000
+    temperature: 0.1
+  portfolio_judgment:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 500
+    temperature: 0.2
+  news_sentiment:
+    provider: deepseek
+    model: deepseek-chat
+    max_tokens: 500
+    temperature: 0.1
+  document_extraction:
+    provider: deepseek
+    model: deepseek-chat
+    max_tokens: 1000
+    temperature: 0.1
+
+retry:
+  max_attempts: 2
+  backoff_seconds: 10
+
+fallback:
+  openai: [anthropic, deepseek]
+  deepseek: [openai]
+  anthropic: [openai, deepseek]

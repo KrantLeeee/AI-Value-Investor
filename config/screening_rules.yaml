@@ -1,0 +1,34 @@
+rules:
+  - name: "估值洼地"
+    description: "PE低于历史5年25分位数，且ROE高于15%"
+    conditions:
+      - field: pe_ratio
+        operator: lt_percentile
+        params:
+          percentile: 25
+          lookback_years: 5
+      - field: roe
+        operator: gt
+        value: 0.15
+    logic: AND
+
+  - name: "安全边际"
+    description: "当前价格低于DCF内在价值的70%（30%安全边际）"
+    conditions:
+      - field: current_price
+        operator: lt_ratio
+        params:
+          reference: dcf_intrinsic_value
+          ratio: 0.70
+    logic: AND
+
+  - name: "财务恶化预警"
+    description: "D/E环比上升超过20%，或经营现金流转负"
+    conditions:
+      - field: debt_to_equity
+        operator: qoq_increase_gt
+        value: 0.20
+      - field: operating_cash_flow
+        operator: lt
+        value: 0
+    logic: OR

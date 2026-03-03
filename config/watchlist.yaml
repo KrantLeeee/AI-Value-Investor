@@ -1,0 +1,21 @@
+watchlist:
+  a_share:
+    - ticker: "601808.SH"
+      name: "中国海洋石油"
+      sector: "能源"
+    - ticker: "002415.SZ"
+      name: "海康威视"
+      sector: "科技/安防"
+    - ticker: "600519.SH"
+      name: "贵州茅台"
+      sector: "消费"
+
+  hk:
+    - ticker: "0883.HK"
+      name: "中国海洋石油"
+      sector: "能源"
+
+  us:
+    - ticker: "AAPL"
+      name: "Apple Inc."
+      sector: "科技"

@@ -1,0 +1,120 @@
+"""Agent Registry — orchestrates all analysis agents for a given ticker.
+
+Usage:
+    from src.agents.registry import run_all_agents
+    signals, report_path = run_all_agents("601808.SH", "a_share", quick=True)
+
+Execution order (serial to share data between agents):
+    Phase 1 (pure code, no LLM):
+        1. Fundamentals Agent
+        2. Valuation Agent
+    Phase 2 (LLM agents — receive Phase 1 results as context):
+        3. Buffett Agent
+        4. Graham Agent
+        5. Sentiment Agent  (independent of Phase 1 results)
+    Phase 3:
+        6. Report Generator
+"""
+
+from datetime import date
+from pathlib import Path
+
+from src.data.models import AgentSignal
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def run_all_agents(
+    ticker: str,
+    market: str,
+    *,
+    quick: bool = False,
+    use_llm: bool = True,
+    analysis_date: str | None = None,
+) -> tuple[dict[str, AgentSignal], Path]:
+    """
+    Orchestrate all agents for a given ticker.
+
+    Args:
+        ticker:    Full ticker with suffix, e.g. "601808.SH"
+        market:    Market type: "a_share" | "hk" | "us"
+        quick:     If True, skip all LLM calls (data-only report)
+        use_llm:   Set to False to force no-LLM mode even for non-quick runs
+        analysis_date: Override report date (default: today)
+
+    Returns:
+        (signals dict, report file Path)
+    """
+    if analysis_date is None:
+        analysis_date = str(date.today())
+
+    _use_llm = use_llm and not quick
+    signals: dict[str, AgentSignal] = {}
+
+    logger.info("[Registry] Starting analysis for %s (%s) | quick=%s llm=%s",
+                ticker, market, quick, _use_llm)
+
+    # ── Phase 1: Pure-code agents ─────────────────────────────────────────────
+    try:
+        from src.agents import fundamentals
+        logger.info("[Registry] Running Fundamentals Agent...")
+        signals["fundamentals"] = fundamentals.run(ticker, market)
+    except Exception as e:
+        logger.error("[Registry] Fundamentals Agent failed: %s", e)
+
+    try:
+        from src.agents import valuation
+        logger.info("[Registry] Running Valuation Agent...")
+        signals["valuation"] = valuation.run(ticker, market, use_llm=_use_llm)
+    except Exception as e:
+        logger.error("[Registry] Valuation Agent failed: %s", e)
+
+    # ── Phase 2: LLM agents ───────────────────────────────────────────────────
+    try:
+        from src.agents import warren_buffett
+        logger.info("[Registry] Running Buffett Agent...")
+        signals["warren_buffett"] = warren_buffett.run(
+            ticker, market,
+            fundamentals_signal=signals.get("fundamentals"),
+            valuation_signal=signals.get("valuation"),
+            use_llm=_use_llm,
+        )
+    except Exception as e:
+        logger.error("[Registry] Buffett Agent failed: %s", e)
+
+    try:
+        from src.agents import ben_graham
+        logger.info("[Registry] Running Graham Agent...")
+        signals["ben_graham"] = ben_graham.run(
+            ticker, market,
+            valuation_signal=signals.get("valuation"),
+            use_llm=_use_llm,
+        )
+    except Exception as e:
+        logger.error("[Registry] Graham Agent failed: %s", e)
+
+    try:
+        from src.agents import sentiment
+        logger.info("[Registry] Running Sentiment Agent...")
+        signals["sentiment"] = sentiment.run(ticker, market, use_llm=_use_llm)
+    except Exception as e:
+        logger.error("[Registry] Sentiment Agent failed: %s", e)
+
+    # ── Phase 3: Report Generator ─────────────────────────────────────────────
+    try:
+        from src.agents import report_generator
+        logger.info("[Registry] Generating report...")
+        _, report_path = report_generator.run(
+            ticker, market,
+            signals=signals,
+            analysis_date=analysis_date,
+            use_llm=_use_llm,
+        )
+    except Exception as e:
+        logger.error("[Registry] Report generation failed: %s", e)
+        from src.utils.config import get_project_root
+        report_path = get_project_root() / "output" / "reports" / f"{ticker}_{analysis_date}_error.md"
+
+    logger.info("[Registry] Analysis complete for %s → %s", ticker, report_path)
+    return signals, report_path

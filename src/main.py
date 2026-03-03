@@ -1,0 +1,323 @@
+"""CLI entry point — all user-facing commands."""
+
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.table import Table
+from rich import print as rprint
+
+from src.data.database import init_db
+from src.utils.config import get_project_root, load_watchlist
+
+console = Console()
+
+
+@click.group()
+@click.version_option("0.1.0")
+def cli():
+    """
+    AI Value Investor — automated research assistant for value investing.
+
+    Run `invest COMMAND --help` for usage on any command.
+    """
+    # Ensure the database and output directories are ready
+    init_db()
+
+
+# ─── fetch ────────────────────────────────────────────────────────────────────
+
+@cli.command("fetch")
+@click.option("--ticker", "-t", default=None, help="Single ticker, e.g. 601808.SH")
+@click.option("--market", "-m",
+              type=click.Choice(["a_share", "hk", "us"], case_sensitive=False),
+              default=None, help="Market type (required with --ticker)")
+@click.option("--all", "fetch_all_flag", is_flag=True,
+              help="Fetch all tickers in watchlist")
+@click.option("--days", "-d", default=None, type=int,
+              help="Number of days of price history (default: 3 years)")
+def fetch(ticker, market, fetch_all_flag, days):
+    """Fetch market data and financial statements."""
+    from src.data.fetcher import Fetcher
+
+    fetcher = Fetcher()
+
+    if fetch_all_flag:
+        console.print("[bold cyan]Fetching all watchlist tickers...[/bold cyan]")
+        watchlist = load_watchlist()
+        results = fetcher.fetch_watchlist(watchlist)
+        _print_fetch_summary(results)
+        return
+
+    if not ticker:
+        raise click.UsageError("Provide --ticker or --all")
+    if not market:
+        # Auto-detect market from ticker suffix
+        market = _detect_market(ticker)
+        if not market:
+            raise click.UsageError("Cannot auto-detect market. Please provide --market")
+
+    start = (date.today() - timedelta(days=days)) if days else None
+    console.print(f"[bold]Fetching:[/bold] {ticker} ({market})")
+    result = fetcher.fetch_all(ticker, market, start_date=start)
+    _print_fetch_result(result)
+
+
+def _detect_market(ticker: str) -> str | None:
+    t = ticker.upper()
+    if t.endswith(".SH") or t.endswith(".SZ") or t.endswith(".BJ"):
+        return "a_share"
+    if t.endswith(".HK"):
+        return "hk"
+    # Assume pure-alpha tickers are US
+    if ticker.isalpha():
+        return "us"
+    return None
+
+
+def _print_fetch_result(result: dict):
+    table = Table(show_header=False, box=None)
+    for k, v in result.items():
+        table.add_row(f"  [cyan]{k}[/cyan]", str(v))
+    console.print(table)
+
+
+def _print_fetch_summary(results: list[dict]):
+    table = Table("Ticker", "Market", "Prices", "Income", "Balance", "Cashflow", "Status")
+    for r in results:
+        status = "[red]ERROR[/red]" if "error" in r else "[green]OK[/green]"
+        table.add_row(
+            r.get("ticker", "?"), r.get("market", "?"),
+            str(r.get("prices", "-")), str(r.get("income", "-")),
+            str(r.get("balance", "-")), str(r.get("cashflow", "-")),
+            status,
+        )
+    console.print(table)
+
+
+# ─── ingest ───────────────────────────────────────────────────────────────────
+
+@cli.command("ingest")
+@click.option("--ticker", "-t", default=None,
+              help="Ingest files for a specific ticker only")
+def ingest(ticker):
+    """Parse and store manually uploaded financial documents."""
+    from src.data.manual_source import ingest_all, ingest_ticker_dir
+
+    if ticker:
+        console.print(f"[bold]Ingesting files for {ticker}...[/bold]")
+        docs = ingest_ticker_dir(ticker)
+    else:
+        console.print("[bold]Ingesting all manual files...[/bold]")
+        docs = ingest_all()
+
+    for doc in docs:
+        icon = "[green]✓[/green]" if doc.status == "success" else "[red]✗[/red]"
+        console.print(f"  {icon} {doc.ticker}/{doc.file_name} "
+                      f"({doc.text_length:,} chars) [{doc.status}]")
+
+    console.print(f"\n[bold]Done:[/bold] {len(docs)} file(s) processed")
+
+
+# ─── scan ─────────────────────────────────────────────────────────────────────
+
+@cli.command("scan")
+@click.option("--notify", is_flag=True, help="Send email if signals are found")
+def scan(notify):
+    """Run factor screening on the watchlist (pure code, no LLM)."""
+    console.print("[bold cyan]Running factor scan...[/bold cyan]")
+    # Placeholder: strategy/screener.py will be implemented in Week 2/3
+    console.print("[yellow]⚠ Screener not yet implemented (Week 3)[/yellow]")
+
+
+# ─── report ───────────────────────────────────────────────────────────────────
+
+@cli.command("report")
+@click.option("--ticker", "-t", required=True, help="Ticker, e.g. 601808.SH")
+@click.option("--quick", is_flag=True, help="Data-only report (no LLM, faster)")
+@click.option("--model", default=None, help="Override LLM model (e.g. gpt-4o, deepseek-chat)")
+def report(ticker, quick, model):
+    """Generate a deep research report for a ticker.
+
+    Use --quick for fast data-only report without LLM.
+    Requires data to be fetched first: invest fetch --ticker TICKER
+    """
+    from src.agents.registry import run_all_agents
+
+    market = _detect_market(ticker)
+    if not market:
+        raise click.UsageError(f"Cannot auto-detect market for '{ticker}'. "
+                               "Use standard format: 601808.SH / 0700.HK / AAPL")
+
+    mode_label = "[yellow]快速数据版[/yellow]" if quick else "[cyan]完整版（含LLM分析）[/cyan]"
+    console.print(f"[bold]Generating report for {ticker}[/bold] ({mode_label})")
+    if not quick:
+        console.print("[dim]需要 OPENAI_API_KEY / DEEPSEEK_API_KEY 环境变量。无 Key 请加 --quick[/dim]")
+
+    # Set model override in environment (router.py reads from config, not env directly,
+    # but a future extension can pick this up)
+    if model:
+        import os
+        os.environ["LLM_MODEL_OVERRIDE"] = model
+
+    try:
+        signals, report_path = run_all_agents(ticker, market, quick=quick)
+    except Exception as e:
+        console.print(f"[red]Report generation failed: {e}[/red]")
+        raise SystemExit(1)
+
+    # Print signal summary table
+    table = Table("Agent", "Signal", "Confidence", box=None)
+    _SIGNAL_COLORS = {"bullish": "green", "neutral": "yellow", "bearish": "red"}
+    for name, sig in signals.items():
+        if sig:
+            color = _SIGNAL_COLORS.get(sig.signal, "white")
+            table.add_row(
+                name.replace("_", " ").title(),
+                f"[{color}]{sig.signal.upper()}[/{color}]",
+                f"{sig.confidence:.0%}",
+            )
+    console.print("\n[bold]Agent Signals:[/bold]")
+    console.print(table)
+    console.print(f"\n[green]✓ Report saved:[/green] {report_path}")
+
+
+# ─── invest ───────────────────────────────────────────────────────────────────
+
+@cli.command("invest")
+@click.option("--ticker", "-t", required=True, help="Ticker to evaluate")
+@click.option("--confirm", is_flag=True, help="Confirm investment execution")
+@click.option("--amount", type=float, default=None, help="Actual amount invested (with --confirm)")
+def invest(ticker, confirm, amount):
+    """Generate position sizing recommendation and record executions."""
+    console.print(f"[bold]Portfolio analysis for {ticker}...[/bold]")
+    # Placeholder: portfolio/portfolio_manager.py will be implemented in Week 4
+    console.print("[yellow]⚠ Portfolio Manager not yet implemented (Week 4)[/yellow]")
+
+
+# ─── profile ──────────────────────────────────────────────────────────────────
+
+@cli.command("profile")
+@click.option("--setup", is_flag=True, help="Interactively set up investor profile")
+@click.option("--show", is_flag=True, help="Show current investor profile")
+def profile(setup, show):
+    """Manage the investor profile (capital, risk tolerance, etc.)."""
+    from src.utils.config import load_investor_profile, get_project_root
+    import yaml
+
+    profile_path = get_project_root() / "config" / "investor_profile.yaml"
+
+    if show:
+        p = load_investor_profile()
+        if not p:
+            console.print("[yellow]No profile found. Run: invest profile --setup[/yellow]")
+            return
+        for k, v in p.items():
+            console.print(f"  [cyan]{k}:[/cyan] {v}")
+        return
+
+    if setup:
+        console.print("[bold]Setting up Investor Profile[/bold]\n")
+        total_capital = click.prompt("Total investment capital (CNY ¥)", type=float)
+        monthly_addition = click.prompt("Monthly additional funds (CNY ¥)", type=float, default=0)
+        max_single = click.prompt("Max single position % (e.g. 0.15 = 15%)", type=float, default=0.15)
+        max_risk = click.prompt("Max total risk exposure % (e.g. 0.30 = 30%)", type=float, default=0.30)
+        horizon = click.prompt("Investment horizon",
+                               type=click.Choice(["short", "medium", "long"]), default="long")
+
+        data = {
+            "total_capital": total_capital,
+            "monthly_addition": monthly_addition,
+            "max_single_position_pct": max_single,
+            "max_total_risk_pct": max_risk,
+            "investment_horizon": horizon,
+        }
+        profile_path.parent.mkdir(exist_ok=True)
+        with open(profile_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        console.print(f"\n[green]✓ Profile saved to {profile_path}[/green]")
+
+
+# ─── portfolio ────────────────────────────────────────────────────────────────
+
+@cli.command("portfolio")
+def portfolio():
+    """Show current portfolio holdings and performance."""
+    import json
+    portfolio_path = get_project_root() / "data" / "portfolio.json"
+    if not portfolio_path.exists():
+        console.print("[yellow]No portfolio data yet. Execute an investment first.[/yellow]")
+        return
+    with open(portfolio_path) as f:
+        data = json.load(f)
+
+    positions = data.get("positions", [])
+    if not positions:
+        console.print("[yellow]No active positions.[/yellow]")
+        return
+
+    table = Table("Ticker", "Invested", "Avg Cost", "Shares")
+    for pos in positions:
+        table.add_row(
+            pos["ticker"],
+            f"¥{pos['total_invested']:,.0f}",
+            f"¥{pos['avg_cost']:.2f}",
+            f"{pos['shares']:,.0f}",
+        )
+    console.print(table)
+    console.print(f"\n[bold]Cash available:[/bold] ¥{data.get('cash_available', 0):,.0f}")
+
+
+# ─── status ───────────────────────────────────────────────────────────────────
+
+@cli.command("status")
+def status():
+    """Show system status — data freshness, source health, watchlist size."""
+    from src.data.database import get_latest_prices, get_income_statements
+    from src.data.akshare_source import AKShareSource
+    from src.data.baostock_source import BaoStockSource
+    from src.data.yfinance_source import YFinanceSource
+    from src.data.fmp_source import FMPSource
+
+    console.print("[bold]System Status[/bold]\n")
+
+    # Watchlist size
+    watchlist = load_watchlist()
+    all_tickers = []
+    for market, items in watchlist.get("watchlist", {}).items():
+        all_tickers.extend(items)
+    console.print(f"[cyan]Watchlist:[/cyan] {len(all_tickers)} tickers")
+
+    # Data source health
+    console.print("\n[bold]Data Sources:[/bold]")
+    for name, SourceClass in [
+        ("AKShare", AKShareSource),
+        ("BaoStock", BaoStockSource),
+        ("yfinance", YFinanceSource),
+        ("FMP API", FMPSource),
+    ]:
+        try:
+            ok = SourceClass().health_check()
+            icon = "[green]✓[/green]" if ok else "[yellow]⚠[/yellow]"
+            console.print(f"  {icon} {name}")
+        except Exception:
+            console.print(f"  [red]✗[/red] {name}")
+
+
+# ─── backtest ─────────────────────────────────────────────────────────────────
+
+@cli.command("backtest")
+@click.option("--rule", required=True, help="Rule name from screening_rules.yaml")
+@click.option("--start", type=int, required=True, help="Start year, e.g. 2015")
+@click.option("--end", type=int, required=True, help="End year, e.g. 2024")
+@click.option("--hold", type=int, default=3, help="Hold period in years")
+def backtest(rule, start, end, hold):
+    """Run a factor backtest (pure code, no LLM)."""
+    console.print(f"[bold]Backtesting rule '{rule}' ({start}-{end}, hold {hold}y)...[/bold]")
+    console.print("[yellow]⚠ Backtester not yet implemented (Week 3)[/yellow]")
+
+
+if __name__ == "__main__":
+    cli()
