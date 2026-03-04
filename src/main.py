@@ -126,25 +126,99 @@ def ingest(ticker):
 @cli.command("scan")
 @click.option("--notify", is_flag=True, help="Send email if signals are found")
 def scan(notify):
-    """Run factor screening on the watchlist (pure code, no LLM)."""
+    """Run factor screening on the watchlist (pure code, no LLM).
+
+    Reads config/screening_rules.yaml rules and evaluates all watchlist tickers.
+    Results saved to output/signals/{date}.json.
+    """
+    from src.strategy.screener import run_scan
+
     console.print("[bold cyan]Running factor scan...[/bold cyan]")
-    # Placeholder: strategy/screener.py will be implemented in Week 2/3
-    console.print("[yellow]⚠ Screener not yet implemented (Week 3)[/yellow]")
+    watchlist = load_watchlist()
+    n_tickers = sum(len(v) for v in watchlist.get("watchlist", {}).values())
+    console.print(f"[dim]Watchlist: {n_tickers} tickers[/dim]")
+
+    signals = run_scan(watchlist=watchlist, notify=notify)
+
+    if not signals:
+        console.print("[yellow]No signals triggered today.[/yellow]")
+        return
+
+    # Print summary table
+    opps   = [s for s in signals if s.signal == "opportunity"]
+    alerts = [s for s in signals if s.signal == "alert"]
+
+    if opps:
+        table = Table("Ticker", "Rule", "PE", "ROE", "价格", "安全边际", title="📈 Investment Opportunities")
+        for s in opps:
+            m = s.metrics or {}
+            table.add_row(
+                s.ticker, s.rule_name,
+                f"{m.get('pe_ratio', '-')}" if m.get('pe_ratio') else "-",
+                f"{m.get('roe', '-')}%" if m.get('roe') else "-",
+                f"¥{m.get('current_price', '-')}" if m.get('current_price') else "-",
+                f"{m.get('margin_of_safety', 0)*100:.0f}%" if m.get('margin_of_safety') else "-",
+            )
+        console.print(table)
+
+    if alerts:
+        atbl = Table("Ticker", "Rule", "Description", title="⚠️  Risk Alerts", style="red")
+        for s in alerts:
+            atbl.add_row(s.ticker, s.rule_name, s.description or "")
+        console.print(atbl)
+
+    console.print(f"\n[bold]Total:[/bold] {len(opps)} opportunities, {len(alerts)} alerts")
+    if notify:
+        console.print(f"[green]✓ Email notification sent[/green]" if signals else "")
 
 
 # ─── report ───────────────────────────────────────────────────────────────────
 
 @cli.command("report")
-@click.option("--ticker", "-t", required=True, help="Ticker, e.g. 601808.SH")
+@click.option("--ticker", "-t", default=None, help="Ticker, e.g. 601808.SH")
 @click.option("--quick", is_flag=True, help="Data-only report (no LLM, faster)")
 @click.option("--model", default=None, help="Override LLM model (e.g. gpt-4o, deepseek-chat)")
-def report(ticker, quick, model):
-    """Generate a deep research report for a ticker.
+@click.option("--watchlist-top", "watchlist_top", default=None, type=int,
+              help="Generate reports for top N watchlist tickers (for automation)")
+@click.option("--notify", is_flag=True, help="Email the generated report(s) via Brevo")
+def report(ticker, quick, model, watchlist_top, notify):
+    """Generate a deep research report for one ticker or top-N watchlist tickers.
 
     Use --quick for fast data-only report without LLM.
+    Use --watchlist-top N for automated weekly reports (GitHub Actions).
+    Use --notify to email the report via Brevo.
     Requires data to be fetched first: invest fetch --ticker TICKER
     """
     from src.agents.registry import run_all_agents
+    from src.notification.email_sender import send_report_email
+
+    # ── watchlist-top mode (GitHub Actions automation) ────────────────────────
+    if watchlist_top:
+        wl = load_watchlist()
+        tickers_markets: list[tuple[str, str]] = []
+        for market_key, items in wl.get("watchlist", {}).items():
+            for item in items:
+                t = item.get("ticker") if isinstance(item, dict) else str(item)
+                tickers_markets.append((t, market_key))
+        tickers_markets = tickers_markets[:watchlist_top]
+        console.print(f"[bold]Generating reports for top {watchlist_top} watchlist tickers...[/bold]")
+        for t, m in tickers_markets:
+            mode = "[yellow]quick[/yellow]" if quick else "[cyan]full LLM[/cyan]"
+            console.print(f"  → {t} ({mode})")
+            try:
+                sigs, rpath = run_all_agents(t, m, quick=quick)
+                if notify:
+                    send_report_email(t, rpath, sigs)
+                    console.print(f"    [green]✓ Report emailed[/green]")
+                else:
+                    console.print(f"    [green]✓ {rpath}[/green]")
+            except Exception as e:
+                console.print(f"    [red]✗ {e}[/red]")
+        return
+
+    # ── single ticker mode ────────────────────────────────────────────────────
+    if not ticker:
+        raise click.UsageError("Provide --ticker TICKER or --watchlist-top N")
 
     market = _detect_market(ticker)
     if not market:
@@ -182,6 +256,12 @@ def report(ticker, quick, model):
     console.print("\n[bold]Agent Signals:[/bold]")
     console.print(table)
     console.print(f"\n[green]✓ Report saved:[/green] {report_path}")
+    if notify:
+        ok = send_report_email(ticker, report_path, signals)
+        if ok:
+            console.print("[green]✓ Report emailed successfully[/green]")
+        else:
+            console.print("[yellow]⚠ Email failed (check BREVO_API_KEY in .env)[/yellow]")
 
 
 # ─── invest ───────────────────────────────────────────────────────────────────
@@ -314,9 +394,42 @@ def status():
 @click.option("--end", type=int, required=True, help="End year, e.g. 2024")
 @click.option("--hold", type=int, default=3, help="Hold period in years")
 def backtest(rule, start, end, hold):
-    """Run a factor backtest (pure code, no LLM)."""
+    """Run a factor backtest (pure code, no LLM).
+
+    Example: invest backtest --rule "安全边际" --start 2020 --end 2024 --hold 3
+    Requires historical price + financial data (invest fetch --all first).
+    """
+    from src.strategy.backtester import run_factor_backtest
+
     console.print(f"[bold]Backtesting rule '{rule}' ({start}-{end}, hold {hold}y)...[/bold]")
-    console.print("[yellow]⚠ Backtester not yet implemented (Week 3)[/yellow]")
+    try:
+        results = run_factor_backtest(rule_name=rule, start=start, end=end, hold=hold)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1)
+
+    if "error" in results:
+        console.print(f"[yellow]⚠ {results['error']}[/yellow]")
+        return
+
+    # Print statistics table
+    stats = Table(show_header=False, box=None, title=f"Backtest Results: {rule}")
+    stats.add_row("年份范围",         f"{start} – {end} (持有{hold}年)")
+    stats.add_row("筛选到的仓位数",    str(results.get("n_screened", 0)))
+    stats.add_row("有价格数据的仓位",   str(results.get("n_with_price_data", 0)))
+    stats.add_row("胜率",             f"{results.get('win_rate', 0):.1f}%")
+    stats.add_row("平均持有期回报",     f"{results.get('avg_return_pct', 0):.1f}%")
+    stats.add_row("平均CAGR",         f"{results.get('avg_cagr_pct', 0):.1f}%")
+    stats.add_row("Sharpe Ratio",     f"{results.get('sharpe', 0):.3f}")
+    stats.add_row("最大回撤",          f"{results.get('max_drawdown_pct', 0):.1f}%")
+    console.print(stats)
+
+    best = results.get("best_position")
+    worst = results.get("worst_position")
+    if best:
+        console.print(f"\n[green]最佳仓位:[/green] {best['ticker']} {best['buy_year']}→{best['sell_year']} 回报 {best['return']*100:.1f}%")
+    if worst:
+        console.print(f"[red]最差仓位:[/red] {worst['ticker']} {worst['buy_year']}→{worst['sell_year']} 回报 {worst['return']*100:.1f}%")
 
 
 if __name__ == "__main__":

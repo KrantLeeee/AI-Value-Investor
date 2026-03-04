@@ -1,0 +1,58 @@
+name: Weekly Research Reports
+
+on:
+  schedule:
+    # UTC 02:00 Sunday = 北京时间 10:00 周日（周末复盘）
+    - cron: '0 2 * * 0'
+  workflow_dispatch:    # 支持手动触发
+    inputs:
+      top_n:
+        description: 'Number of top watchlist tickers to report'
+        required: false
+        default: '3'
+        type: string
+
+jobs:
+  weekly-reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install --no-root
+          poetry run pip install -e .
+
+      - name: Fetch latest market data
+        run: poetry run invest fetch --all
+        env:
+          FMP_API_KEY:      ${{ secrets.FMP_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+      - name: Generate reports for top watchlist tickers
+        run: |
+          TOP_N=${{ github.event.inputs.top_n || '3' }}
+          poetry run invest report --watchlist-top $TOP_N --notify
+        env:
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY:   ${{ secrets.DEEPSEEK_API_KEY }}
+          BREVO_API_KEY:      ${{ secrets.BREVO_API_KEY }}
+          EMAIL_RECIPIENT:    ${{ secrets.EMAIL_RECIPIENT }}
+          EMAIL_SENDER_EMAIL: ${{ secrets.EMAIL_SENDER_EMAIL }}
+
+      - name: Upload generated reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ github.run_number }}
+          path: output/reports/
+          retention-days: 90

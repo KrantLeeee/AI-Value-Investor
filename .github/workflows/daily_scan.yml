@@ -1,0 +1,57 @@
+name: Daily Opportunity Scan
+
+on:
+  schedule:
+    # UTC 08:00 = 北京时间 16:00，工作日（A股/港股收盘后）
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:   # 支持手动触发
+    inputs:
+      notify:
+        description: 'Send email notification if signals found'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install --no-root
+          # Also install in editable mode for `invest` CLI
+          poetry run pip install -e .
+
+      - name: Fetch latest market data
+        run: poetry run invest fetch --all
+        env:
+          FMP_API_KEY:       ${{ secrets.FMP_API_KEY }}
+          DEEPSEEK_API_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
+
+      - name: Run factor screening scan
+        run: poetry run invest scan --notify
+        env:
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
+          BREVO_API_KEY:     ${{ secrets.BREVO_API_KEY }}
+          EMAIL_RECIPIENT:   ${{ secrets.EMAIL_RECIPIENT }}
+          EMAIL_SENDER_EMAIL: ${{ secrets.EMAIL_SENDER_EMAIL }}
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results-${{ github.run_number }}
+          path: output/signals/
+          retention-days: 30

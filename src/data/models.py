@@ -136,6 +136,8 @@ class ScreeningSignal(BaseModel):
     ticker: str
     name: str = ""
     rule_name: str
+    signal: Literal["opportunity", "alert"] = "opportunity"
+    description: str = ""
     triggered_at: datetime = Field(default_factory=datetime.now)
     metrics: dict = Field(default_factory=dict)
     dcf_intrinsic_value: float | None = None
