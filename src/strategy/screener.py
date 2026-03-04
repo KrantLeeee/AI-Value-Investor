@@ -365,10 +365,10 @@ def run_scan(
     # Send email notification
     if notify and all_signals:
         try:
-            from src.notification.email_sender import send_signal_alert
+            from src.notification.telegram_notifier import send_signal_alert
             send_signal_alert(all_signals, scan_date)
         except Exception as e:
-            logger.warning("[Screener] Email notification failed: %s", e)
+            logger.warning("[Screener] Telegram notification failed: %s", e)
     elif notify and not all_signals:
         logger.info("[Screener] No signals found — skipping email notification")
 

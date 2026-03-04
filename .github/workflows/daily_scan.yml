@@ -44,9 +44,8 @@ jobs:
         env:
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
-          BREVO_API_KEY:     ${{ secrets.BREVO_API_KEY }}
-          EMAIL_RECIPIENT:   ${{ secrets.EMAIL_RECIPIENT }}
-          EMAIL_SENDER_EMAIL: ${{ secrets.EMAIL_SENDER_EMAIL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Upload scan results
         if: always()

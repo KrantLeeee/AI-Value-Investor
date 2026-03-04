@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     # ── Data Source Keys ─────────────────────────────────
     fmp_api_key: str = Field(default="", alias="FMP_API_KEY")
 
-    # ── Email ─────────────────────────────────────────────
+    # ── Notification — Telegram ───────────────────────────
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str   = Field(default="", alias="TELEGRAM_CHAT_ID")
+
+    # ── Email (legacy Brevo, kept for backward compat) ────
     brevo_api_key: str = Field(default="", alias="BREVO_API_KEY")
     email_recipient: str = Field(default="", alias="EMAIL_RECIPIENT")
     email_sender_name: str = Field(default="AI Value Investor", alias="EMAIL_SENDER_NAME")

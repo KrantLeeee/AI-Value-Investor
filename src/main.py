@@ -190,7 +190,7 @@ def report(ticker, quick, model, watchlist_top, notify):
     Requires data to be fetched first: invest fetch --ticker TICKER
     """
     from src.agents.registry import run_all_agents
-    from src.notification.email_sender import send_report_email
+    from src.notification.telegram_notifier import send_report_message as _notify_report
 
     # ── watchlist-top mode (GitHub Actions automation) ────────────────────────
     if watchlist_top:
@@ -208,8 +208,8 @@ def report(ticker, quick, model, watchlist_top, notify):
             try:
                 sigs, rpath = run_all_agents(t, m, quick=quick)
                 if notify:
-                    send_report_email(t, rpath, sigs)
-                    console.print(f"    [green]✓ Report emailed[/green]")
+                    _notify_report(t, rpath, sigs)
+                    console.print(f"    [green]✓ Telegram 通知已发送[/green]")
                 else:
                     console.print(f"    [green]✓ {rpath}[/green]")
             except Exception as e:
@@ -257,11 +257,11 @@ def report(ticker, quick, model, watchlist_top, notify):
     console.print(table)
     console.print(f"\n[green]✓ Report saved:[/green] {report_path}")
     if notify:
-        ok = send_report_email(ticker, report_path, signals)
+        ok = _notify_report(ticker, report_path, signals)
         if ok:
-            console.print("[green]✓ Report emailed successfully[/green]")
+            console.print("[green]✓ Telegram 通知已发送[/green]")
         else:
-            console.print("[yellow]⚠ Email failed (check BREVO_API_KEY in .env)[/yellow]")
+            console.print("[yellow]⚠ Telegram 发送失败 (检查 .env 中的 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)[/yellow]")
 
 
 # ─── invest ───────────────────────────────────────────────────────────────────
