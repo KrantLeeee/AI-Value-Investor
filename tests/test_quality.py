@@ -91,3 +91,81 @@ def test_quality_score_empty():
     flags = []
     score = _calculate_quality_score(flags)
     assert score == 1.0
+
+
+def test_financial_freshness_all_current():
+    """All financial statements within 120 days - no flags"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet, CashFlow, IncomeStatement
+    from src.data.quality import check_financial_freshness
+
+    recent = date.today() - timedelta(days=100)
+
+    income = [IncomeStatement(
+        ticker="TEST", period_end_date=recent, period_type="quarterly",
+        revenue=1000.0, net_income=100.0, source="test"
+    )]
+    balance = [BalanceSheet(
+        ticker="TEST", period_end_date=recent, period_type="quarterly",
+        total_assets=5000.0, total_liabilities=3000.0, total_equity=2000.0, source="test"
+    )]
+    cash_flow = [CashFlow(
+        ticker="TEST", period_end_date=recent, period_type="quarterly",
+        operating_cash_flow=200.0, source="test"
+    )]
+
+    flags = check_financial_freshness(income, balance, cash_flow)
+    assert len(flags) == 0
+
+
+def test_financial_freshness_critical():
+    """Financial data > 180 days old - critical flag"""
+    from datetime import timedelta
+
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_financial_freshness
+
+    stale = date.today() - timedelta(days=500)
+
+    income = [IncomeStatement(
+        ticker="TEST", period_end_date=stale, period_type="quarterly",
+        revenue=1000.0, net_income=100.0, source="test"
+    )]
+
+    flags = check_financial_freshness(income, [], [])
+    assert len(flags) == 1
+    assert flags[0].flag == "stale_financials"
+    assert flags[0].severity == "critical"
+    assert "500 days old" in flags[0].detail
+
+
+def test_financial_freshness_warning():
+    """Financial data 120-180 days old - warning flag"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet
+    from src.data.quality import check_financial_freshness
+
+    aging = date.today() - timedelta(days=150)
+
+    balance = [BalanceSheet(
+        ticker="TEST", period_end_date=aging, period_type="quarterly",
+        total_assets=5000.0, total_liabilities=3000.0, total_equity=2000.0, source="test"
+    )]
+
+    flags = check_financial_freshness([], balance, [])
+    assert len(flags) == 1
+    assert flags[0].flag == "aging_financials"
+    assert flags[0].severity == "warning"
+    assert "150 days old" in flags[0].detail
+
+
+def test_financial_freshness_empty():
+    """No financial data - critical flag for missing data"""
+    from src.data.quality import check_financial_freshness
+
+    flags = check_financial_freshness([], [], [])
+    assert len(flags) == 1
+    assert flags[0].flag == "missing_financials"
+    assert flags[0].severity == "critical"
