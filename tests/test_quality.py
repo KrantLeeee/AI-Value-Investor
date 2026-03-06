@@ -313,3 +313,57 @@ def test_negative_equity_none():
 
     flags = check_negative_equity(balance)
     assert len(flags) == 0
+
+
+def test_magnitude_normal():
+    """Revenue > net_income - no flags"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_magnitude
+
+    income = [IncomeStatement(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        revenue=1e10, net_income=5e8, period_type="quarterly", source="test"  # 100亿 revenue, 5亿 profit
+    )]
+
+    flags = check_magnitude(income)
+    assert len(flags) == 0
+
+
+def test_magnitude_error():
+    """Net income > revenue - critical flag (unit conversion error)"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_magnitude
+
+    income = [IncomeStatement(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        revenue=5e8, net_income=1e10, period_type="quarterly", source="test"  # Revenue 5亿, profit 100亿 (错误!)
+    )]
+
+    flags = check_magnitude(income)
+    assert len(flags) == 1
+    assert flags[0].flag == "magnitude_error"
+    assert flags[0].severity == "critical"
+    assert "5.00亿" in flags[0].detail
+    assert "100.00亿" in flags[0].detail
+
+
+def test_magnitude_none_revenue():
+    """None revenue - no flags"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_magnitude
+
+    income = [IncomeStatement(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        revenue=None, net_income=1e10, period_type="quarterly", source="test"
+    )]
+
+    flags = check_magnitude(income)
+    assert len(flags) == 0
+
+
+def test_magnitude_empty():
+    """No income data - no flags"""
+    from src.data.quality import check_magnitude
+
+    flags = check_magnitude([])
+    assert len(flags) == 0

@@ -212,3 +212,44 @@ def check_negative_equity(
         ))
 
     return flags
+
+
+def check_magnitude(
+    income_statements: list[IncomeStatement],
+) -> list[QualityFlag]:
+    """Check if revenue < net_income (likely unit conversion error).
+
+    Rule: Revenue should always be >= net_income. If net_income > revenue,
+    this indicates a data error, typically unit conversion (万 vs 亿).
+
+    Severity:
+    - critical: net_income > revenue (data corruption)
+
+    Args:
+        income_statements: Recent income statements
+
+    Returns:
+        List of quality flags (empty if revenue >= net_income)
+    """
+    flags = []
+
+    if not income_statements:
+        return flags
+
+    # Check most recent income statement
+    most_recent = max(income_statements, key=lambda stmt: stmt.period_end_date)
+
+    # Handle None values
+    if most_recent.revenue is None or most_recent.net_income is None:
+        return flags
+
+    # Check for magnitude error
+    if most_recent.revenue > 0 and most_recent.net_income > most_recent.revenue:
+        flags.append(QualityFlag(
+            flag="magnitude_error",
+            field="revenue",
+            detail=f"Revenue ({most_recent.revenue/1e8:.2f}亿) < Net Income ({most_recent.net_income/1e8:.2f}亿), likely unit conversion error",
+            severity="critical"
+        ))
+
+    return flags
