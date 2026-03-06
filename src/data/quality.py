@@ -159,3 +159,56 @@ def check_price_freshness(
         ))
 
     return flags
+
+
+def check_negative_equity(
+    balance_sheets: list[BalanceSheet],
+) -> list[QualityFlag]:
+    """Check for negative or zero equity (bankruptcy risk indicator).
+
+    Rule: Companies with negative equity are insolvent (liabilities > assets).
+    Zero equity indicates extreme financial distress.
+
+    Severity:
+    - critical: negative equity (liabilities > assets)
+    - warning: zero equity (liabilities == assets)
+
+    Args:
+        balance_sheets: Recent balance sheet data
+
+    Returns:
+        List of quality flags (empty if equity is positive)
+    """
+    flags = []
+
+    # No balance sheets means no data to check (freshness check handles this)
+    if not balance_sheets:
+        return flags
+
+    # Check most recent balance sheet
+    most_recent = max(balance_sheets, key=lambda bs: bs.period_end_date)
+    equity = most_recent.total_equity
+
+    # Handle missing equity data
+    if equity is None:
+        return flags
+
+    if equity < 0:
+        flags.append(QualityFlag(
+            flag="negative_equity",
+            field="total_equity",
+            detail=(
+                f"Company has negative equity ({equity}), "
+                "indicating insolvency (liabilities > assets)"
+            ),
+            severity="critical"
+        ))
+    elif equity == 0.0:
+        flags.append(QualityFlag(
+            flag="zero_equity",
+            field="total_equity",
+            detail="Company has zero equity, indicating extreme financial distress",
+            severity="warning"
+        ))
+
+    return flags

@@ -239,3 +239,77 @@ def test_price_freshness_empty():
     assert len(flags) == 1
     assert flags[0].flag == "missing_prices"
     assert flags[0].severity == "critical"
+
+
+def test_negative_equity_positive():
+    """Positive equity - no flags"""
+    from src.data.models import BalanceSheet
+    from src.data.quality import check_negative_equity
+
+    balance = [BalanceSheet(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        period_type="quarterly", total_assets=5000.0, total_liabilities=3000.0,
+        total_equity=2000.0, source="test"
+    )]
+
+    flags = check_negative_equity(balance)
+    assert len(flags) == 0
+
+
+def test_negative_equity_negative():
+    """Negative equity - critical flag"""
+    from src.data.models import BalanceSheet
+    from src.data.quality import check_negative_equity
+
+    balance = [BalanceSheet(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        period_type="quarterly", total_assets=3000.0, total_liabilities=5000.0,
+        total_equity=-2000.0, source="test"
+    )]
+
+    flags = check_negative_equity(balance)
+    assert len(flags) == 1
+    assert flags[0].flag == "negative_equity"
+    assert flags[0].field == "total_equity"
+    assert flags[0].severity == "critical"
+    assert "-2000.0" in flags[0].detail
+
+
+def test_negative_equity_zero():
+    """Zero equity - warning flag (bankruptcy risk)"""
+    from src.data.models import BalanceSheet
+    from src.data.quality import check_negative_equity
+
+    balance = [BalanceSheet(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        period_type="quarterly", total_assets=5000.0, total_liabilities=5000.0,
+        total_equity=0.0, source="test"
+    )]
+
+    flags = check_negative_equity(balance)
+    assert len(flags) == 1
+    assert flags[0].flag == "zero_equity"
+    assert flags[0].severity == "warning"
+
+
+def test_negative_equity_empty():
+    """No balance sheet data - no flags (handled by freshness check)"""
+    from src.data.quality import check_negative_equity
+
+    flags = check_negative_equity([])
+    assert len(flags) == 0
+
+
+def test_negative_equity_none():
+    """None equity - no flags (missing data doesn't trigger negative equity)"""
+    from src.data.models import BalanceSheet
+    from src.data.quality import check_negative_equity
+
+    balance = [BalanceSheet(
+        ticker="TEST", market="a_share", period_end_date=date.today(),
+        period_type="quarterly", total_assets=5000.0, total_liabilities=3000.0,
+        total_equity=None, source="test"
+    )]
+
+    flags = check_negative_equity(balance)
+    assert len(flags) == 0
