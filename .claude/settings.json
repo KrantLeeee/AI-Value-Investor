@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PostToolUse": {
+      "Edit": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true",
+      "Write": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true"
+    },
+    "PreToolUse": {
+      "Edit": {
+        "command": "bash -c 'filepath=\"{file_path}\"; if [[ \"$filepath\" == *\"llm_config.yaml\"* ]] || [[ \"$filepath\" == *\".github/workflows/\"* ]] || [[ \"$filepath\" == *\"screening_rules.yaml\"* ]]; then echo \"⚠️  Editing critical config: $filepath\"; echo \"   - llm_config.yaml: LLM task routing and model selection\"; echo \"   - GitHub workflows: Production automation\"; echo \"   - screening_rules.yaml: Factor screening logic\"; echo \"\"; echo \"Please review changes carefully before applying.\"; exit 1; fi'",
+        "requireApproval": true
+      }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Bash",
+      "Glob",
+      "Grep"
+    ]
+  }
+}
