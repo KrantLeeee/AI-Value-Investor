@@ -3,6 +3,7 @@
 from datetime import date
 
 from src.data.models import QualityFlag, QualityReport
+from src.data.quality import _calculate_quality_score
 
 
 def test_quality_flag_instantiation():
@@ -36,3 +37,57 @@ def test_quality_report_instantiation():
     assert report.overall_quality_score == 0.95
     assert report.data_completeness == 0.90
     assert report.records_checked == {"income": 4, "balance": 4}
+
+
+def test_quality_score_single_critical():
+    """Single critical flag: 1.0 × 0.70 = 0.70"""
+    flags = [
+        QualityFlag(flag="test", field="f", detail="", severity="critical")
+    ]
+    score = _calculate_quality_score(flags)
+    assert abs(score - 0.70) < 0.01
+
+
+def test_quality_score_single_warning():
+    """Single warning flag: 1.0 × 0.90 = 0.90"""
+    flags = [
+        QualityFlag(flag="test", field="f", detail="", severity="warning")
+    ]
+    score = _calculate_quality_score(flags)
+    assert abs(score - 0.90) < 0.01
+
+
+def test_quality_score_single_info():
+    """Info flags don't affect score: 1.0 × 1.0 = 1.0"""
+    flags = [
+        QualityFlag(flag="test", field="f", detail="", severity="info")
+    ]
+    score = _calculate_quality_score(flags)
+    assert abs(score - 1.0) < 0.01
+
+
+def test_quality_score_multiple_critical():
+    """Two critical flags: 1.0 × 0.70 × 0.70 = 0.49"""
+    flags = [
+        QualityFlag(flag="test1", field="f1", detail="", severity="critical"),
+        QualityFlag(flag="test2", field="f2", detail="", severity="critical"),
+    ]
+    score = _calculate_quality_score(flags)
+    assert abs(score - 0.49) < 0.01
+
+
+def test_quality_score_mixed():
+    """1 critical + 1 warning: 1.0 × 0.70 × 0.90 = 0.63"""
+    flags = [
+        QualityFlag(flag="test1", field="f1", detail="", severity="critical"),
+        QualityFlag(flag="test2", field="f2", detail="", severity="warning"),
+    ]
+    score = _calculate_quality_score(flags)
+    assert abs(score - 0.63) < 0.01
+
+
+def test_quality_score_empty():
+    """No flags: perfect score of 1.0"""
+    flags = []
+    score = _calculate_quality_score(flags)
+    assert score == 1.0
