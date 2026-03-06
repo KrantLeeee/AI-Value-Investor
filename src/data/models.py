@@ -106,6 +106,28 @@ class NewsItem(BaseModel):
     sentiment_score: float | None = None  # -1.0 to 1.0
 
 
+# ── Data Quality ──────────────────────────────────────────────────────────────
+
+class QualityFlag(BaseModel):
+    """A single data quality issue found during validation."""
+    flag: str
+    field: str
+    detail: str
+    severity: Literal["critical", "warning", "info"]
+
+
+class QualityReport(BaseModel):
+    """Quality validation report for a single ticker."""
+    ticker: str
+    market: MarketType
+    check_date: date = Field(default_factory=date.today)
+    flags: list[QualityFlag]
+    overall_quality_score: float = Field(..., ge=0.0, le=1.0)
+    data_completeness: float = Field(..., ge=0.0, le=1.0)
+    stale_fields: list[str]
+    records_checked: dict[str, int]
+
+
 # ── Manual documents ──────────────────────────────────────────────────────────
 
 class ManualDoc(BaseModel):
