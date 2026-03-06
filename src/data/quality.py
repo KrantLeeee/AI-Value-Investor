@@ -6,7 +6,7 @@ and logical consistency across all data sources.
 
 from datetime import date
 
-from src.data.models import BalanceSheet, CashFlow, IncomeStatement, QualityFlag
+from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement, QualityFlag
 
 
 def _calculate_quality_score(flags: list[QualityFlag]) -> float:
@@ -100,6 +100,61 @@ def check_financial_freshness(
             flag="aging_financials",
             field="financial_statements",
             detail=f"Most recent financial data is {days_old} days old (> 120 day threshold)",
+            severity="warning"
+        ))
+
+    return flags
+
+
+def check_price_freshness(
+    prices: list[DailyPrice],
+) -> list[QualityFlag]:
+    """Check if price data is recent enough for reliable analysis.
+
+    Rule: Price data should be < 5 calendar days old (approximates ~3 trading days).
+
+    Note: Uses calendar days as approximation. Does not account for holidays/weekends.
+
+    Severity:
+    - critical: > 10 days old or completely missing
+    - warning: 5-10 days old
+
+    Args:
+        prices: Recent price data points
+
+    Returns:
+        List of quality flags (empty if price data is current)
+    """
+    flags = []
+    today = date.today()
+
+    # Check for missing data
+    if not prices:
+        flags.append(QualityFlag(
+            flag="missing_prices",
+            field="price_data",
+            detail="No price data available",
+            severity="critical"
+        ))
+        return flags
+
+    # Find most recent price date
+    most_recent = max(p.date for p in prices)
+    days_old = (today - most_recent).days
+
+    # Check freshness thresholds
+    if days_old > 10:
+        flags.append(QualityFlag(
+            flag="stale_prices",
+            field="price_data",
+            detail=f"Most recent price data is {days_old} days old (> 10 day threshold)",
+            severity="critical"
+        ))
+    elif days_old > 5:
+        flags.append(QualityFlag(
+            flag="aging_prices",
+            field="price_data",
+            detail=f"Most recent price data is {days_old} days old (> 5 day threshold)",
             severity="warning"
         ))
 

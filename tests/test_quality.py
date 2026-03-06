@@ -169,3 +169,73 @@ def test_financial_freshness_empty():
     assert len(flags) == 1
     assert flags[0].flag == "missing_financials"
     assert flags[0].severity == "critical"
+
+
+def test_price_freshness_current():
+    """Price data within 5 trading days - no flags"""
+    from datetime import timedelta
+
+    from src.data.models import DailyPrice
+    from src.data.quality import check_price_freshness
+
+    recent = date.today() - timedelta(days=3)
+
+    prices = [DailyPrice(
+        ticker="TEST", market="a_share", date=recent,
+        close=10.0, open=9.5, high=10.5, low=9.0, volume=1000000, source="test"
+    )]
+
+    flags = check_price_freshness(prices)
+    assert len(flags) == 0
+
+
+def test_price_freshness_warning():
+    """Price data 5-10 trading days old - warning flag"""
+    from datetime import timedelta
+
+    from src.data.models import DailyPrice
+    from src.data.quality import check_price_freshness
+
+    aging = date.today() - timedelta(days=7)
+
+    prices = [DailyPrice(
+        ticker="TEST", market="a_share", date=aging,
+        close=10.0, open=9.5, high=10.5, low=9.0, volume=1000000, source="test"
+    )]
+
+    flags = check_price_freshness(prices)
+    assert len(flags) == 1
+    assert flags[0].flag == "aging_prices"
+    assert flags[0].severity == "warning"
+    assert "7 days old" in flags[0].detail
+
+
+def test_price_freshness_critical():
+    """Price data > 10 trading days old - critical flag"""
+    from datetime import timedelta
+
+    from src.data.models import DailyPrice
+    from src.data.quality import check_price_freshness
+
+    stale = date.today() - timedelta(days=15)
+
+    prices = [DailyPrice(
+        ticker="TEST", market="a_share", date=stale,
+        close=10.0, open=9.5, high=10.5, low=9.0, volume=1000000, source="test"
+    )]
+
+    flags = check_price_freshness(prices)
+    assert len(flags) == 1
+    assert flags[0].flag == "stale_prices"
+    assert flags[0].severity == "critical"
+    assert "15 days old" in flags[0].detail
+
+
+def test_price_freshness_empty():
+    """No price data - critical flag for missing data"""
+    from src.data.quality import check_price_freshness
+
+    flags = check_price_freshness([])
+    assert len(flags) == 1
+    assert flags[0].flag == "missing_prices"
+    assert flags[0].severity == "critical"
