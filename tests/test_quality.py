@@ -367,3 +367,275 @@ def test_magnitude_empty():
 
     flags = check_magnitude([])
     assert len(flags) == 0
+
+
+# ── Rule 3: Revenue/Profit Anomaly Tests ──────────────────────────────────
+
+
+def test_revenue_anomaly_normal():
+    """Normal YoY change should not trigger flag"""
+    from datetime import timedelta
+
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_revenue_profit_anomaly
+
+    income = [
+        IncomeStatement(
+            ticker="TEST",
+            period_end_date=date(2024, 12, 31),
+            period_type="annual",
+            revenue=1e10,
+            net_income=5e8,
+            source="test"
+        ),
+        IncomeStatement(
+            ticker="TEST",
+            period_end_date=date(2023, 12, 31),
+            period_type="annual",
+            revenue=9e9,  # +11% YoY
+            net_income=4.5e8,
+            source="test"
+        ),
+    ]
+
+    flags = check_revenue_profit_anomaly(income)
+    assert len(flags) == 0
+
+
+def test_revenue_anomaly_flagged():
+    """YoY change > 80% with absolute > 500M should flag"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_revenue_profit_anomaly
+
+    income = [
+        IncomeStatement(
+            ticker="TEST",
+            period_end_date=date(2024, 12, 31),
+            period_type="annual",
+            revenue=2e10,
+            net_income=1e9,
+            source="test"
+        ),
+        IncomeStatement(
+            ticker="TEST",
+            period_end_date=date(2023, 12, 31),
+            period_type="annual",
+            revenue=1e10,  # +100% YoY, Δ=10亿
+            net_income=5e8,
+            source="test"
+        ),
+    ]
+
+    flags = check_revenue_profit_anomaly(income)
+    assert len(flags) >= 1
+    assert any(f.flag == "revenue_anomaly" for f in flags)
+    assert all(f.severity == "warning" for f in flags)
+
+
+# ── Rule 4: NI vs OCF Divergence Tests ────────────────────────────────────
+
+
+def test_ni_ocf_divergence_ok():
+    """Both positive or both negative should not flag"""
+    from src.data.models import CashFlow, IncomeStatement
+    from src.data.quality import check_ni_ocf_divergence
+
+    income = [
+        IncomeStatement(ticker="TEST", period_end_date=date(2024, 12, 31),
+                       period_type="annual", net_income=1e9, source="test"),
+        IncomeStatement(ticker="TEST", period_end_date=date(2023, 12, 31),
+                       period_type="annual", net_income=9e8, source="test"),
+    ]
+    cashflow = [
+        CashFlow(ticker="TEST", period_end_date=date(2024, 12, 31),
+                period_type="annual", operating_cash_flow=8e8, source="test"),
+        CashFlow(ticker="TEST", period_end_date=date(2023, 12, 31),
+                period_type="annual", operating_cash_flow=7e8, source="test"),
+    ]
+
+    flags = check_ni_ocf_divergence(income, cashflow)
+    assert len(flags) == 0
+
+
+def test_ni_ocf_divergence_flagged():
+    """NI > 0 but OCF < 0 for 2 consecutive years should flag"""
+    from src.data.models import CashFlow, IncomeStatement
+    from src.data.quality import check_ni_ocf_divergence
+
+    income = [
+        IncomeStatement(ticker="TEST", period_end_date=date(2024, 12, 31),
+                       period_type="annual", net_income=1e9, source="test"),
+        IncomeStatement(ticker="TEST", period_end_date=date(2023, 12, 31),
+                       period_type="annual", net_income=9e8, source="test"),
+    ]
+    cashflow = [
+        CashFlow(ticker="TEST", period_end_date=date(2024, 12, 31),
+                period_type="annual", operating_cash_flow=-5e8, source="test"),
+        CashFlow(ticker="TEST", period_end_date=date(2023, 12, 31),
+                period_type="annual", operating_cash_flow=-3e8, source="test"),
+    ]
+
+    flags = check_ni_ocf_divergence(income, cashflow)
+    assert len(flags) == 1
+    assert flags[0].flag == "ni_ocf_divergence"
+    assert flags[0].severity == "warning"
+
+
+# ── Rule 6: Missing Core Fields Tests ─────────────────────────────────────
+
+
+def test_missing_fields_none():
+    """All core fields present should not flag"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet, CashFlow, IncomeStatement
+    from src.data.quality import check_missing_fields
+
+    raw_data = {
+        'income': [IncomeStatement(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", revenue=1e10, net_income=5e8,
+            eps=0.5, shares_outstanding=1e9, source="test"
+        )],
+        'balance': [BalanceSheet(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", total_assets=5e10, total_equity=2e10,
+            total_debt=1e10, current_assets=2e10, current_liabilities=5e9,
+            source="test"
+        )],
+        'cashflow': [CashFlow(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", operating_cash_flow=8e8,
+            free_cash_flow=3e8, source="test"
+        )],
+    }
+
+    flags = check_missing_fields(raw_data)
+    assert len(flags) == 0
+
+
+def test_missing_fields_critical():
+    """Missing >= 4 core fields should trigger critical"""
+    from datetime import timedelta
+
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_missing_fields
+
+    raw_data = {
+        'income': [IncomeStatement(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", revenue=1e10,  # Missing: net_income, eps, shares
+            source="test"
+        )],
+        'balance': [],  # Missing all balance fields
+        'cashflow': [],  # Missing all cashflow fields
+    }
+
+    flags = check_missing_fields(raw_data)
+    assert len(flags) == 1
+    assert flags[0].severity == "critical"
+
+
+# ── Rule 7: FCF Approximation Tests ───────────────────────────────────────
+
+
+def test_fcf_approximation_flagged():
+    """FCF present but capex missing should flag as approximation"""
+    from datetime import timedelta
+
+    from src.data.models import CashFlow
+    from src.data.quality import check_fcf_approximation
+
+    cashflow = [CashFlow(
+        ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+        period_type="annual", operating_cash_flow=8e8,
+        free_cash_flow=3e8, capital_expenditure=None, source="test"
+    )]
+
+    flags = check_fcf_approximation(cashflow)
+    assert len(flags) == 1
+    assert flags[0].flag == "fcf_approximation"
+    assert flags[0].severity == "info"
+
+
+# ── Rule 8: EPS Consistency Tests ─────────────────────────────────────────
+
+
+def test_eps_consistency_ok():
+    """EPS matching calculated value should not flag"""
+    from datetime import timedelta
+
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_eps_consistency
+
+    income = [IncomeStatement(
+        ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+        period_type="annual", revenue=1e10, net_income=1e9,
+        eps=1.0, shares_outstanding=1e9, source="test"
+    )]
+
+    flags = check_eps_consistency(income)
+    assert len(flags) == 0
+
+
+def test_eps_consistency_flagged():
+    """EPS differing > 10% from calculated should flag"""
+    from datetime import timedelta
+
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_eps_consistency
+
+    income = [IncomeStatement(
+        ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+        period_type="annual", revenue=1e10, net_income=1e9,
+        eps=1.5, shares_outstanding=1e9, source="test"  # Calculated: 1.0
+    )]
+
+    flags = check_eps_consistency(income)
+    assert len(flags) == 1
+    assert flags[0].flag == "eps_inconsistency"
+    assert flags[0].severity == "warning"
+
+
+# ── Rule 9: Duplicate Periods Tests ───────────────────────────────────────
+
+
+def test_duplicate_periods_none():
+    """Unique periods should not flag"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_duplicate_periods
+
+    raw_data = {
+        'income': [
+            IncomeStatement(ticker="TEST", period_end_date=date(2024, 12, 31),
+                          period_type="annual", revenue=1e10, source="test"),
+            IncomeStatement(ticker="TEST", period_end_date=date(2023, 12, 31),
+                          period_type="annual", revenue=9e9, source="test"),
+        ]
+    }
+
+    flags = check_duplicate_periods(raw_data)
+    assert len(flags) == 0
+
+
+# ── Rule 11: Source Changes Tests ─────────────────────────────────────────
+
+
+def test_source_changes_flagged():
+    """Different sources across periods should flag"""
+    from src.data.models import IncomeStatement
+    from src.data.quality import check_source_changes
+
+    raw_data = {
+        'income': [
+            IncomeStatement(ticker="TEST", period_end_date=date(2024, 12, 31),
+                          period_type="annual", revenue=1e10, source="akshare"),
+            IncomeStatement(ticker="TEST", period_end_date=date(2023, 12, 31),
+                          period_type="annual", revenue=9e9, source="baostock"),
+        ]
+    }
+
+    flags = check_source_changes(raw_data)
+    assert len(flags) >= 1
+    assert any(f.flag == "source_change" for f in flags)
+    assert all(f.severity == "info" for f in flags)
