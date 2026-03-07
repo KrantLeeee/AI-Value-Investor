@@ -10,6 +10,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+from jinja2 import Template
+
 from src.data.database import (
     get_income_statements,
     get_balance_sheets,
@@ -192,6 +194,53 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _render_contrarian_chapter(contrarian_signal: AgentSignal | None) -> str:
+    """
+    Build Chapter 5: Risk Factors (Contrarian template).
+
+    Args:
+        contrarian_signal: Contrarian agent result
+
+    Returns:
+        Chapter 5 markdown text
+    """
+    if not contrarian_signal or not contrarian_signal.metrics:
+        return """## 5. 风险因素与辩证分析
+
+辩证分析暂不可用。请结合其他章节自行评估风险。
+"""
+
+    mode = contrarian_signal.metrics.get("mode")
+    if not mode:
+        return """## 5. 风险因素与辩证分析
+
+辩证分析数据格式错误。
+"""
+
+    # Load mode-specific template
+    template_path = Path(__file__).parent.parent.parent / "templates" / "contrarian_templates" / f"{mode}.md"
+
+    if not template_path.exists():
+        logger.warning(f"[Report] Contrarian template not found: {template_path}")
+        return f"""## 5. 风险因素与辩证分析
+
+模板文件缺失 ({mode}.md)。
+
+**辩证分析结果**: {contrarian_signal.reasoning}
+"""
+
+    # Load and render template
+    with open(template_path, "r", encoding="utf-8") as f:
+        template = Template(f.read())
+
+    # Prepare template context - add reasoning if not in metrics
+    context = dict(contrarian_signal.metrics)
+    if "reasoning" not in context:
+        context["reasoning"] = contrarian_signal.reasoning
+
+    return template.render(**context)
 
 
 def _quick_report(

@@ -1,6 +1,10 @@
 """Tests for individual chapter generation functions."""
 
-from src.agents.report_generator import _build_financial_quality_table, _build_valuation_analysis
+from src.agents.report_generator import (
+    _build_financial_quality_table,
+    _build_valuation_analysis,
+    _render_contrarian_chapter,
+)
 from src.data.models import AgentSignal, QualityReport
 
 
@@ -68,3 +72,46 @@ def test_build_valuation_analysis():
     assert "24.00" in result  # Current price
     assert "|" in result  # Has tables
     assert "敏感性" in result or "情景" in result
+
+
+def test_render_contrarian_bear_case():
+    """Ch5 should render bear_case Contrarian template."""
+    contrarian_signal = AgentSignal(
+        ticker="TEST",
+        agent_name="contrarian",
+        signal="bearish",
+        confidence=0.60,
+        reasoning="风险场景分析完成",
+        metrics={
+            "mode": "bear_case",
+            "consensus": {"direction": "bullish", "strength": 0.75},
+            "assumption_challenges": [
+                {
+                    "original_claim": "增长率20%",
+                    "assumption": "需求持续",
+                    "challenge": "需求可能饱和",
+                    "impact_if_wrong": "增长停滞",
+                    "severity": "high",
+                }
+            ],
+            "risk_scenarios": [
+                {
+                    "scenario": "原材料价格上涨",
+                    "probability": "30%",
+                    "impact": "利润率下降5%",
+                    "precedent": "2020年Q2",
+                }
+            ],
+            "bear_case_target_price": 18.50,
+        },
+    )
+
+    result = _render_contrarian_chapter(contrarian_signal)
+
+    # Verify structure
+    assert "## 5. 风险因素" in result
+    assert "bullish" in result
+    assert "75%" in result
+    assert "Bear Case" in result
+    assert "增长率20%" in result
+    assert "18.50" in result
