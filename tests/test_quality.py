@@ -715,3 +715,94 @@ def test_completeness_empty():
 
     completeness = _calculate_completeness({})
     assert completeness == 0.0
+
+
+# ── Task 9: Orchestrator Integration Tests ───────────────────────────────
+
+
+def test_run_quality_checks_comprehensive():
+    """Integration test: run all checks and produce QualityReport"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement
+    from src.data.quality import run_quality_checks
+
+    raw_data = {
+        'income': [
+            IncomeStatement(
+                ticker="TEST",
+                period_end_date=date.today() - timedelta(days=500),  # Stale
+                period_type="annual",
+                revenue=1e10,
+                net_income=5e8,
+                eps=0.5,
+                shares_outstanding=1e9,
+                source="test"
+            )
+        ],
+        'balance': [
+            BalanceSheet(
+                ticker="TEST",
+                period_end_date=date.today() - timedelta(days=500),  # Also stale
+                period_type="annual",
+                total_equity=-1e9,  # Negative
+                total_assets=5e10,
+                total_debt=1e10,
+                current_assets=2e10,
+                current_liabilities=5e9,
+                source="test"
+            )
+        ],
+        'cashflow': [
+            CashFlow(
+                ticker="TEST",
+                period_end_date=date.today() - timedelta(days=500),  # Also stale
+                period_type="annual",
+                operating_cash_flow=8e8,
+                free_cash_flow=3e8,
+                source="test"
+            )
+        ],
+        'prices': [
+            DailyPrice(
+                ticker="TEST",
+                market="a_share",
+                date=date.today() - timedelta(days=1),
+                close=10.5,
+                source="test"
+            )
+        ],
+    }
+
+    report = run_quality_checks("TEST", "a_share", raw_data)
+
+    # Should have QualityReport
+    assert report.ticker == "TEST"
+    assert report.market == "a_share"
+
+    # Should have flags (stale financials + negative equity)
+    assert len(report.flags) >= 2
+    assert any(f.flag == "stale_financials" for f in report.flags)
+    assert any(f.flag == "negative_equity" for f in report.flags)
+
+    # Score should be reduced (2 critical flags)
+    assert report.overall_quality_score < 0.7  # 0.70 × 0.70 = 0.49
+
+    # Completeness should be high (most fields present)
+    assert report.data_completeness > 0.7
+
+    # Should track records checked
+    assert report.records_checked["income"] == 1
+    assert report.records_checked["balance"] == 1
+
+
+def test_run_quality_checks_empty_data():
+    """Quality checks should not crash with empty data"""
+    from src.data.quality import run_quality_checks
+
+    report = run_quality_checks("EMPTY", "a_share", {})
+
+    assert report.ticker == "EMPTY"
+    assert report.overall_quality_score >= 0.0
+    assert report.data_completeness == 0.0
+    assert isinstance(report.flags, list)

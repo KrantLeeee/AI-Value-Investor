@@ -7,7 +7,10 @@ and logical consistency across all data sources.
 from datetime import date
 from typing import Any, Literal
 
-from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement, QualityFlag
+from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement, QualityFlag, QualityReport
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _calculate_quality_score(flags: list[QualityFlag]) -> float:
@@ -546,3 +549,91 @@ def check_source_changes(raw_data: dict[str, list[Any]]) -> list[QualityFlag]:
             ))
 
     return flags
+
+
+# ── Orchestration ─────────────────────────────────────────────────────────
+
+def run_quality_checks(ticker: str, market: str, raw_data: dict[str, list[Any]]) -> QualityReport:
+    """
+    Main orchestration function - runs all 11 quality checks.
+
+    Guaranteed to return a QualityReport. Individual rule failures are logged
+    but don't crash the pipeline.
+
+    Args:
+        ticker: Stock ticker (e.g., "601808.SH")
+        market: Market type ("a_share", "hk", "us")
+        raw_data: Dict with keys ['income', 'balance', 'cashflow', 'prices']
+
+    Returns:
+        QualityReport with flags, scores, and metadata
+    """
+    logger.info(f"[Quality] Running checks for {ticker} ({market})")
+
+    flags: list[QualityFlag] = []
+
+    # Execute all 11 rules with error isolation
+    # IMPORTANT: Use the correct function signatures!
+    rules = [
+        ("financial_freshness", lambda: check_financial_freshness(
+            raw_data.get('income', []),
+            raw_data.get('balance', []),
+            raw_data.get('cashflow', [])
+        )),
+        ("price_freshness", lambda: check_price_freshness(raw_data.get('prices', []))),
+        ("revenue_profit_anomaly", lambda: check_revenue_profit_anomaly(raw_data.get('income', []))),
+        ("ni_ocf_divergence", lambda: check_ni_ocf_divergence(
+            raw_data.get('income', []), raw_data.get('cashflow', []))),
+        ("negative_equity", lambda: check_negative_equity(raw_data.get('balance', []))),
+        ("missing_fields", lambda: check_missing_fields(raw_data)),
+        ("fcf_approximation", lambda: check_fcf_approximation(raw_data.get('cashflow', []))),
+        ("eps_consistency", lambda: check_eps_consistency(raw_data.get('income', []))),
+        ("duplicate_periods", lambda: check_duplicate_periods(raw_data)),
+        ("magnitude", lambda: check_magnitude(raw_data.get('income', []))),
+        ("source_changes", lambda: check_source_changes(raw_data)),
+    ]
+
+    for rule_name, rule_func in rules:
+        try:
+            flags.extend(rule_func())
+        except Exception as e:
+            logger.warning(f"[Quality] Rule '{rule_name}' failed: {e}")
+            flags.append(QualityFlag(
+                flag="check_error",
+                field=rule_name,
+                detail=f"Quality check failed: {str(e)[:100]}",
+                severity="info"
+            ))
+
+    # Calculate scores
+    try:
+        score = _calculate_quality_score(flags)
+        completeness = _calculate_completeness(raw_data)
+    except Exception as e:
+        logger.error(f"[Quality] Scoring failed: {e}")
+        score = 0.5
+        completeness = 0.0
+
+    # Extract stale fields
+    stale_fields = [f.field for f in flags if f.flag in ("stale_financials", "stale_prices")]
+
+    # Count flags by severity for logging
+    critical_count = sum(1 for f in flags if f.severity == "critical")
+    warning_count = sum(1 for f in flags if f.severity == "warning")
+
+    logger.info(f"[Quality] {ticker}: score={score:.2f}, "
+                f"completeness={completeness:.2%}, "
+                f"flags={len(flags)} (critical={critical_count}, warning={warning_count})")
+
+    if score < 0.5:
+        logger.warning(f"[Quality] {ticker} has low quality score: {score:.2f}")
+
+    return QualityReport(
+        ticker=ticker,
+        market=market,
+        flags=flags,
+        overall_quality_score=score,
+        data_completeness=completeness,
+        stale_fields=stale_fields,
+        records_checked={k: len(v) for k, v in raw_data.items()}
+    )
