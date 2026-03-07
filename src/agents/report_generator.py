@@ -562,27 +562,28 @@ def run(
     market: str,
     *,
     signals: dict[str, AgentSignal],
-    quality_report: QualityReport | None = None,  # NEW: P0-① quality report (optional for backward compat)
+    quality_report: QualityReport | None = None,
     analysis_date: str | None = None,
     use_llm: bool = True,
 ) -> tuple[str, Path]:
     """
-    Generate the final research report.
+    Generate the final research report (restructured with chapters).
+
+    Args:
+        ticker: Stock ticker
+        market: Market type
+        signals: All agent signals (including contrarian from P0-②)
+        quality_report: Data quality report from P0-①
+        analysis_date: Report date (defaults to today)
+        use_llm: Whether to use LLM (False = quick mode)
 
     Returns:
         (report_markdown_text, report_file_path)
     """
-    # TODO(P0-③): Use quality_report in report appendix
-    # For now, quality_report is passed but not yet used
+    from datetime import datetime
 
     if analysis_date is None:
         analysis_date = str(date.today())
-
-    fund  = signals.get("fundamentals")
-    val   = signals.get("valuation")
-    buff  = signals.get("warren_buffett")
-    gram  = signals.get("ben_graham")
-    sent  = signals.get("sentiment")
 
     # Prepare output directory
     output_dir = get_project_root() / "output" / "reports"
@@ -590,64 +591,113 @@ def run(
     safe_ticker = ticker.replace(".", "_")
     report_path = output_dir / f"{safe_ticker}_{analysis_date}.md"
 
+    # Quick mode: use existing code-only report
     if not use_llm:
         report_text = _quick_report(ticker, market, signals, analysis_date)
         report_path.write_text(report_text, encoding="utf-8")
         logger.info("[Report] Quick report saved: %s", report_path)
         return report_text, report_path
 
-    # ── LLM report generation ─────────────────────────────────────────────────
+    # ── New Chapter-by-Chapter Generation ─────────────────────────────────────
+
+    logger.info("[Report] Generating structured report for %s", ticker)
+
+    # Get industry context from watchlist (if available)
+    # For MVP, we'll use empty string and let LLM infer
+    industry_context = ""
+
+    # Ensure quality_report exists for fallback
+    if quality_report is None:
+        from src.data.models import QualityReport
+        quality_report = QualityReport(
+            ticker=ticker,
+            market=market,
+            flags=[],
+            overall_quality_score=0.0,
+            data_completeness=0.0,
+            stale_fields=[],
+            records_checked={},
+        )
+
+    # Generate all 8 chapters
+    chapters = {}
+
     try:
-        from src.llm.router import call_llm, LLMError
-        from src.llm.prompts import REPORT_SYSTEM_PROMPT, REPORT_USER_TEMPLATE
+        # Ch1: Industry Background (LLM)
+        logger.info("[Report] Generating Ch1: Industry Background")
+        chapters["ch1_industry"] = _generate_llm_chapter(
+            "ch1_industry", ticker, market, signals, quality_report, industry_context
+        )
 
-        def _sig_text(sig: AgentSignal | None, default="未运行") -> tuple[str, str, float, str]:
-            if sig is None:
-                return default, default, 0.0, default
-            return sig.signal, sig.signal, sig.confidence, sig.reasoning
+        # Ch2: Competitive Analysis (LLM)
+        logger.info("[Report] Generating Ch2: Competitive Analysis")
+        chapters["ch2_competitive"] = _generate_llm_chapter(
+            "ch2_competitive", ticker, market, signals, quality_report, industry_context
+        )
 
-        val_detail = ""
-        if val:
-            dcf = val.metrics.get("dcf_per_share")
-            gn  = val.metrics.get("graham_number")
-            mos = val.metrics.get("margin_of_safety")
-            val_detail = (
-                f"DCF基准: ¥{dcf:.2f}/股\n" if dcf else ""
-                f"Graham Number: ¥{gn:.2f}/股\n" if gn else ""
-                f"安全边际: {mos*100:.1f}%" if mos else "安全边际: 数据不足"
-            )
+        # Ch3: Financial Quality (Code)
+        logger.info("[Report] Generating Ch3: Financial Quality")
+        chapters["ch3_financial"] = _build_financial_quality_table(
+            ticker, signals.get("fundamentals"), quality_report
+        )
 
-        fund_detail = (fund.reasoning if fund else "未运行") or "N/A"
+        # Ch4: Valuation Analysis (Code)
+        logger.info("[Report] Generating Ch4: Valuation Analysis")
+        chapters["ch4_valuation"] = _build_valuation_analysis(signals.get("valuation"))
 
-        user_msg = REPORT_USER_TEMPLATE.format(
+        # Ch5: Risk Factors (Contrarian Template)
+        logger.info("[Report] Generating Ch5: Risk Factors (Contrarian)")
+        chapters["ch5_risks"] = _render_contrarian_chapter(signals.get("contrarian"))
+
+        # Ch6: Market Sentiment (LLM)
+        logger.info("[Report] Generating Ch6: Market Sentiment")
+        chapters["ch6_sentiment"] = _generate_llm_chapter(
+            "ch6_sentiment", ticker, market, signals, quality_report, industry_context
+        )
+
+        # Ch7: Investment Recommendation (LLM)
+        logger.info("[Report] Generating Ch7: Investment Recommendation")
+        chapters["ch7_recommendation"] = _generate_llm_chapter(
+            "ch7_recommendation", ticker, market, signals, quality_report, industry_context
+        )
+
+        # Ch8: Appendix (Code)
+        logger.info("[Report] Generating Appendix")
+        chapters["appendix"] = _build_appendix(signals, quality_report)
+
+    except Exception as e:
+        logger.error("[Report] Chapter generation failed: %s", e)
+        # Fall back to quick report
+        report_text = _quick_report(ticker, market, signals, analysis_date)
+        report_text += f"\n\n---\n*报告生成失败: {e}。已输出快速报告。*"
+        report_path.write_text(report_text, encoding="utf-8")
+        return report_text, report_path
+
+    # Render main template
+    try:
+        template_path = get_project_root() / "templates" / "report_template.md"
+        with open(template_path, "r", encoding="utf-8") as f:
+            template = Template(f.read())
+
+        report_text = template.render(
             ticker=ticker,
             market=market,
             analysis_date=analysis_date,
-            fundamentals_score=fund.metrics.get("total_score", "N/A") if fund else "N/A",
-            fundamentals_signal=fund.signal if fund else "未运行",
-            fundamentals_detail=fund_detail,
-            valuation_signal=val.signal if val else "未运行",
-            valuation_confidence=f"{val.confidence:.0%}" if val else "N/A",
-            valuation_detail=val_detail or (val.reasoning if val else "未运行"),
-            buffett_signal=buff.signal if buff else "未运行",
-            buffett_confidence=f"{buff.confidence:.0%}" if buff else "N/A",
-            buffett_reasoning=buff.reasoning if buff else "LLM 分析未运行",
-            graham_signal=gram.signal if gram else "未运行",
-            graham_confidence=f"{gram.confidence:.0%}" if gram else "N/A",
-            graham_reasoning=gram.reasoning if gram else "LLM 分析未运行",
-            sentiment_signal=sent.signal if sent else "未运行",
-            sentiment_score=sent.metrics.get("sentiment_score", "N/A") if sent else "N/A",
-            sentiment_reasoning=sent.reasoning if sent else "暂无新闻数据",
-            financial_snapshot=_build_financial_snapshot(ticker),
+            quality_score=quality_report.overall_quality_score,
+            generation_timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **chapters  # ch1_industry, ch2_competitive, etc.
         )
 
-        report_text = call_llm("report_writing", REPORT_SYSTEM_PROMPT, user_msg)
-
     except Exception as e:
-        logger.warning("[Report] LLM failed, falling back to quick report: %s", e)
+        logger.critical("[Report] Template rendering failed: %s", e)
+        # Emergency fallback
         report_text = _quick_report(ticker, market, signals, analysis_date)
-        report_text += f"\n\n---\n*LLM报告生成失败: {e}。已输出数据版报告。*"
+        report_text += f"\n\n---\n*模板渲染失败: {e}。已输出快速报告。*"
+        report_path.write_text(report_text, encoding="utf-8")
+        return report_text, report_path
 
+    # Save report
     report_path.write_text(report_text, encoding="utf-8")
-    logger.info("[Report] Report saved: %s", report_path)
+    logger.info("[Report] Structured report saved: %s (%d chars)", report_path, len(report_text))
+
     return report_text, report_path
