@@ -12,8 +12,10 @@ Execution order (serial to share data between agents):
         3. Buffett Agent
         4. Graham Agent
         5. Sentiment Agent  (independent of Phase 1 results)
+    Phase 2.5 (contrarian analysis):
+        6. Contrarian Agent  (analyzes consensus from all previous agents)
     Phase 3:
-        6. Report Generator
+        7. Report Generator
 """
 
 from datetime import date
@@ -131,6 +133,20 @@ def run_all_agents(
         signals["sentiment"] = sentiment.run(ticker, market, use_llm=_use_llm)
     except Exception as e:
         logger.error("[Registry] Sentiment Agent failed: %s", e)
+
+    # ── Phase 2.5: Contrarian Agent ───────────────────────────────────────────
+    try:
+        from src.agents import contrarian
+        logger.info("[Registry] Running Contrarian Agent...")
+        signals["contrarian"] = contrarian.run(
+            ticker=ticker,
+            market=market,
+            signals=signals,
+            quality_report=quality_report,
+            use_llm=_use_llm,
+        )
+    except Exception as e:
+        logger.error("[Registry] Contrarian Agent failed: %s", e)
 
     # ── Phase 3: Report Generator ─────────────────────────────────────────────
     try:
