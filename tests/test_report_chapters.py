@@ -4,6 +4,7 @@ from src.agents.report_generator import (
     _build_financial_quality_table,
     _build_valuation_analysis,
     _render_contrarian_chapter,
+    _build_appendix,
 )
 from src.data.models import AgentSignal, QualityReport
 
@@ -115,3 +116,38 @@ def test_render_contrarian_bear_case():
     assert "Bear Case" in result
     assert "增长率20%" in result
     assert "18.50" in result
+
+
+def test_build_appendix():
+    """Appendix should show all agent signals and quality report."""
+    signals = {
+        "fundamentals": AgentSignal(
+            ticker="TEST", agent_name="fundamentals",
+            signal="bearish", confidence=0.55, reasoning="Test"
+        ),
+        "valuation": AgentSignal(
+            ticker="TEST", agent_name="valuation",
+            signal="neutral", confidence=0.60, reasoning="Test"
+        ),
+    }
+
+    quality_report = QualityReport(
+        ticker="TEST",
+        market="a_share",
+        flags=[],
+        overall_quality_score=0.90,
+        data_completeness=0.95,
+        stale_fields=[],
+        records_checked={},
+    )
+
+    result = _build_appendix(signals, quality_report)
+
+    # Verify structure
+    assert "## 附录" in result
+    assert "Agent信号汇总" in result
+    assert "fundamentals" in result
+    assert "bearish" in result
+    assert "55%" in result
+    assert "数据质量" in result
+    assert "0.90" in result

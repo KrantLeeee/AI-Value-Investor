@@ -243,6 +243,89 @@ def _render_contrarian_chapter(contrarian_signal: AgentSignal | None) -> str:
     return template.render(**context)
 
 
+def _build_appendix(
+    signals: dict[str, AgentSignal],
+    quality_report: QualityReport,
+) -> str:
+    """
+    Build Appendix: Technical Details (code-based).
+
+    Args:
+        signals: All agent signals
+        quality_report: Data quality report
+
+    Returns:
+        Appendix markdown text
+    """
+    lines = ["## 附录：数据质量与技术说明", ""]
+
+    # Agent signals summary table
+    lines.append("### Agent信号汇总")
+    lines.append("")
+    lines.append("| Agent | 信号 | 置信度 | 关键指标 |")
+    lines.append("|:------|:-----|:-------|:---------|")
+
+    for agent_name, signal in signals.items():
+        if signal:
+            emoji = _signal_emoji(signal.signal)
+            # Extract key metric from each agent
+            key_metric = ""
+            if agent_name == "fundamentals":
+                key_metric = f"得分: {signal.metrics.get('total_score', 'N/A')}/100"
+            elif agent_name == "valuation":
+                mos = signal.metrics.get('margin_of_safety')
+                key_metric = f"安全边际: {mos*100:+.1f}%" if mos else "N/A"
+            elif agent_name == "warren_buffett":
+                key_metric = f"护城河: {signal.metrics.get('moat_type', 'N/A')}"
+            elif agent_name == "ben_graham":
+                passed = signal.metrics.get('standards_passed', 0)
+                key_metric = f"通过: {passed}/7标准"
+            elif agent_name == "sentiment":
+                score = signal.metrics.get('sentiment_score')
+                key_metric = f"情绪: {score:.2f}" if score else "N/A"
+            elif agent_name == "contrarian":
+                mode = signal.metrics.get('mode', 'N/A')
+                key_metric = f"模式: {mode}"
+
+            lines.append(f"| {agent_name} | {emoji} {signal.signal} | {signal.confidence:.0%} | {key_metric} |")
+
+    lines.append("")
+
+    # Data quality details
+    lines.append("### 数据质量详情")
+    lines.append("")
+    lines.append(f"- **整体质量评分**: {quality_report.overall_quality_score:.2f}/1.0")
+    lines.append(f"- **数据完整度**: {quality_report.data_completeness:.0%}")
+    lines.append(f"- **过期字段数**: {len(quality_report.stale_fields)}")
+    lines.append("")
+
+    if quality_report.flags:
+        lines.append(f"**质量标记 ({len(quality_report.flags)} 个):**")
+        lines.append("")
+        for flag in quality_report.flags:
+            lines.append(f"- [{flag.severity.upper()}] {flag.flag}: {flag.detail}")
+        lines.append("")
+    else:
+        lines.append("✅ 所有质量检查通过。")
+        lines.append("")
+
+    # Technical notes
+    lines.append("### 技术说明")
+    lines.append("")
+    lines.append("**估值假设:**")
+    lines.append("- DCF折现率(WACC): 基于行业平均成本")
+    lines.append("- 永续增长率: 3% (保守估计)")
+    lines.append("- Graham Number: 基于EPS和每股净资产")
+    lines.append("")
+    lines.append("**数据来源:**")
+    lines.append("- 财务数据: AKShare API")
+    lines.append("- 市场数据: 实时行情接口")
+    lines.append("- 新闻数据: 东方财富/新浪财经")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def _quick_report(
     ticker: str,
     market: str,
