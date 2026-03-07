@@ -58,6 +58,7 @@ def run_all_agents(
     # ── Phase 0: Data Quality ─────────────────────────────────────────────────
     from src.data import database
     from src.data.quality import run_quality_checks
+    from src.data.models import QualityReport
 
     try:
         logger.info("[Registry] Running data quality checks...")
@@ -75,13 +76,14 @@ def run_all_agents(
     except Exception as e:
         logger.error(f"[Registry] Quality checks failed: {e}")
         # Create empty quality report as fallback
-        from src.data.models import QualityReport
         quality_report = QualityReport(
             ticker=ticker,
             market=market,
             flags=[],
             overall_quality_score=0.5,
-            data_completeness=0.0
+            data_completeness=0.0,
+            stale_fields=[],
+            records_checked={}
         )
 
     # ── Phase 1: Pure-code agents ─────────────────────────────────────────────

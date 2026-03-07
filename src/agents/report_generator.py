@@ -16,7 +16,7 @@ from src.data.database import (
     get_financial_metrics,
     insert_agent_signal,
 )
-from src.data.models import AgentSignal
+from src.data.models import AgentSignal, QualityReport
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
 
@@ -139,7 +139,7 @@ def run(
     market: str,
     *,
     signals: dict[str, AgentSignal],
-    quality_report=None,  # NEW: P0-① quality report (optional for backward compat)
+    quality_report: QualityReport | None = None,  # NEW: P0-① quality report (optional for backward compat)
     analysis_date: str | None = None,
     use_llm: bool = True,
 ) -> tuple[str, Path]:

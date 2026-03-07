@@ -124,8 +124,8 @@ class QualityReport(BaseModel):
     flags: list[QualityFlag]
     overall_quality_score: float = Field(..., ge=0.0, le=1.0)
     data_completeness: float = Field(..., ge=0.0, le=1.0)
-    stale_fields: list[str]
-    records_checked: dict[str, int]
+    stale_fields: list[str] = Field(default_factory=list)
+    records_checked: dict[str, int] = Field(default_factory=dict)
 
 
 # ── Manual documents ──────────────────────────────────────────────────────────
