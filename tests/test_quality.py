@@ -639,3 +639,79 @@ def test_source_changes_flagged():
     assert len(flags) >= 1
     assert any(f.flag == "source_change" for f in flags)
     assert all(f.severity == "info" for f in flags)
+
+
+# ── Task 8: Completeness Calculation Tests ────────────────────────────────
+
+
+def test_completeness_all_fields():
+    """All 11 core fields present = 1.0"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement
+    from src.data.quality import _calculate_completeness
+
+    raw_data = {
+        'income': [IncomeStatement(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", revenue=1e10, net_income=5e8,
+            eps=0.5, shares_outstanding=1e9, source="test"
+        )],
+        'balance': [BalanceSheet(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", total_assets=5e10, total_equity=2e10,
+            total_debt=1e10, current_assets=2e10, current_liabilities=5e9,
+            source="test"
+        )],
+        'cashflow': [CashFlow(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", operating_cash_flow=8e8,
+            free_cash_flow=3e8, source="test"
+        )],
+        'prices': [DailyPrice(
+            ticker="TEST", market="a_share", date=date.today() - timedelta(days=1),
+            close=10.5, source="test"
+        )],
+    }
+
+    completeness = _calculate_completeness(raw_data)
+    assert completeness == 1.0
+
+
+def test_completeness_half_fields():
+    """~6/12 fields present ≈ 0.5"""
+    from datetime import timedelta
+
+    from src.data.models import BalanceSheet, DailyPrice, IncomeStatement
+    from src.data.quality import _calculate_completeness
+
+    raw_data = {
+        'income': [IncomeStatement(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", revenue=1e10, net_income=5e8,
+            # Missing: eps, shares_outstanding
+            source="test"
+        )],
+        'balance': [BalanceSheet(
+            ticker="TEST", period_end_date=date.today() - timedelta(days=180),
+            period_type="annual", total_assets=5e10, total_equity=2e10,
+            # Missing: total_debt, current_assets, current_liabilities
+            source="test"
+        )],
+        'cashflow': [],  # Missing all cashflow fields
+        'prices': [DailyPrice(
+            ticker="TEST", market="a_share", date=date.today() - timedelta(days=1),
+            close=10.5, source="test"
+        )],
+    }
+
+    completeness = _calculate_completeness(raw_data)
+    assert 0.4 < completeness < 0.6
+
+
+def test_completeness_empty():
+    """No data = 0.0"""
+    from src.data.quality import _calculate_completeness
+
+    completeness = _calculate_completeness({})
+    assert completeness == 0.0

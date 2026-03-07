@@ -348,6 +348,41 @@ CORE_FIELDS_MAP = {
 }
 
 
+def _calculate_completeness(raw_data: dict) -> float:
+    """
+    Calculate data completeness = available_core_fields / total_core_fields.
+
+    Checks latest record from each statement type for presence of core fields.
+    Total: 12 core fields (4 income + 5 balance + 2 cashflow + 1 price)
+
+    Returns:
+        Completeness ratio between 0.0 and 1.0
+    """
+    available = 0
+    total_fields = sum(len(fields) for fields in CORE_FIELDS_MAP.values()) + 1  # +1 for price
+
+    # Check financial data fields
+    for data_type, fields in CORE_FIELDS_MAP.items():
+        data = raw_data.get(data_type, [])
+        if not data:
+            continue
+
+        latest = max(data, key=lambda x: x.period_end_date)
+
+        for field in fields:
+            if getattr(latest, field, None) is not None:
+                available += 1
+
+    # Check price data
+    price_data = raw_data.get('prices', [])
+    if price_data:
+        latest_price = max(price_data, key=lambda x: x.date)
+        if latest_price.close is not None:
+            available += 1
+
+    return available / total_fields if total_fields > 0 else 0.0
+
+
 def check_missing_fields(raw_data: dict[str, list[Any]]) -> list[QualityFlag]:
     """
     Check for missing core fields in latest reports.
