@@ -71,6 +71,63 @@ def _signal_emoji(s: str) -> str:
     return {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}.get(s, "❓")
 
 
+def _build_financial_quality_table(
+    ticker: str,
+    fundamentals_signal: AgentSignal | None,
+    quality_report: QualityReport,
+) -> str:
+    """
+    Build Chapter 3: Financial Quality Assessment (code-based).
+
+    Args:
+        ticker: Stock ticker
+        fundamentals_signal: Fundamentals agent result
+        quality_report: Data quality report from P0-①
+
+    Returns:
+        Chapter 3 markdown text
+    """
+    lines = ["## 3. 财务质量评估", ""]
+
+    # Fundamentals scoring breakdown
+    if fundamentals_signal:
+        lines.append(f"**基本面评分**: {fundamentals_signal.metrics.get('total_score', 'N/A')}/100")
+        lines.append("")
+        lines.append("| 维度 | 得分 | 说明 |")
+        lines.append("|:-----|:-----|:-----|")
+        lines.append(f"| 营收质量 | {fundamentals_signal.metrics.get('revenue_score', 'N/A')}/25 | 增长稳定性与规模 |")
+        lines.append(f"| 盈利能力 | {fundamentals_signal.metrics.get('profitability_score', 'N/A')}/25 | ROE与净利率 |")
+        lines.append(f"| 杠杆健康 | {fundamentals_signal.metrics.get('leverage_score', 'N/A')}/25 | 负债水平 |")
+        lines.append(f"| 现金流质量 | {fundamentals_signal.metrics.get('cash_flow_score', 'N/A')}/25 | FCF与OCF |")
+        lines.append("")
+        lines.append(f"**评估**: {fundamentals_signal.reasoning}")
+        lines.append("")
+    else:
+        lines.append("基本面Agent未运行，数据不可用。")
+        lines.append("")
+
+    # Data quality section
+    lines.append("### 数据质量评估")
+    lines.append("")
+    lines.append(f"- **整体质量评分**: {quality_report.overall_quality_score:.2f}/1.0")
+    lines.append(f"- **数据完整度**: {quality_report.data_completeness:.0%}")
+    lines.append("")
+
+    if quality_report.flags:
+        lines.append(f"**发现 {len(quality_report.flags)} 个数据质量问题：**")
+        lines.append("")
+        for flag in quality_report.flags[:5]:  # Top 5 flags
+            lines.append(f"- [{flag.severity.upper()}] {flag.detail}")
+        if len(quality_report.flags) > 5:
+            lines.append(f"- ... 及其他 {len(quality_report.flags) - 5} 个问题")
+        lines.append("")
+    else:
+        lines.append("✅ 数据质量良好，未发现重大问题。")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _quick_report(
     ticker: str,
     market: str,
