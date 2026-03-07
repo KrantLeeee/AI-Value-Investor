@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.agents.contrarian import _determine_consensus, _select_mode
-from src.data.models import AgentSignal
+from src.agents.contrarian import _determine_consensus, _select_mode, _build_prompt
+from src.data.models import AgentSignal, QualityReport
 
 
 def test_consensus_bullish():
@@ -200,3 +200,51 @@ def test_mode_critical_questions():
     mode, signal = _select_mode("mixed", 0.5)
     assert mode == "critical_questions"
     assert signal == "neutral"
+
+
+# ── Task 4: Prompt Construction Logic Tests ──────────────────────────────────
+
+
+def test_prompt_extracts_strongest_args():
+    """Prompt should include reasoning from consensus-aligned agents."""
+    signals = {
+        "fundamentals": AgentSignal(
+            ticker="TEST", agent_name="fundamentals",
+            signal="bullish", confidence=0.7,
+            reasoning="Strong fundamentals with ROE 25% and debt ratio 0.3"
+        ),
+        "valuation": AgentSignal(
+            ticker="TEST", agent_name="valuation",
+            signal="bullish", confidence=0.6,
+            reasoning="DCF shows 36% margin of safety with WACC 10%"
+        ),
+    }
+
+    quality_report = QualityReport(
+        ticker="TEST",
+        market="a_share",
+        flags=[],
+        overall_quality_score=0.9,
+        data_completeness=0.85,
+        stale_fields=[],
+        records_checked={}
+    )
+
+    mode = "bear_case"
+    consensus_direction = "bullish"
+    consensus_strength = 1.0
+
+    system, user = _build_prompt(
+        mode, consensus_direction, consensus_strength, signals, quality_report
+    )
+
+    # Verify system prompt is correct
+    assert "辩证分析师" in system
+
+    # Verify user prompt contains arguments
+    assert "Strong fundamentals" in user
+    assert "36% margin of safety" in user
+
+    # Verify consensus info
+    assert "bullish" in user
+    assert "100%" in user or "1.0" in user
