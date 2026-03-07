@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.agents.contrarian import _determine_consensus
+from src.agents.contrarian import _determine_consensus, _select_mode
 from src.data.models import AgentSignal
 
 
@@ -176,3 +176,27 @@ def test_consensus_with_neutral_signals():
     # Should return mixed with max(0.4, 0.2) = 0.4
     assert direction == "mixed"
     assert strength == 0.4
+
+
+# ── Task 2: Mode Selection Logic Tests ───────────────────────────────────────
+
+
+def test_mode_bear_case():
+    """Bullish consensus → bear_case mode with bearish signal."""
+    mode, signal = _select_mode("bullish", 0.8)
+    assert mode == "bear_case"
+    assert signal == "bearish"
+
+
+def test_mode_bull_case():
+    """Bearish consensus → bull_case mode with bullish signal."""
+    mode, signal = _select_mode("bearish", 0.75)
+    assert mode == "bull_case"
+    assert signal == "bullish"
+
+
+def test_mode_critical_questions():
+    """Mixed consensus → critical_questions mode with neutral signal."""
+    mode, signal = _select_mode("mixed", 0.5)
+    assert mode == "critical_questions"
+    assert signal == "neutral"

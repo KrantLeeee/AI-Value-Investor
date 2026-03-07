@@ -15,7 +15,7 @@ Signal thresholds:
   Consensus < 60%  → Mixed mode (explore uncertainty)
 """
 
-from src.data.models import AgentSignal
+from src.data.models import AgentSignal, SignalType
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,3 +65,29 @@ def _determine_consensus(signals: dict[str, AgentSignal | None]) -> tuple[str, f
     else:
         max_ratio = max(bull_ratio, bear_ratio)
         return ("mixed", round(max_ratio, 3))
+
+
+def _select_mode(consensus_direction: str, consensus_strength: float) -> tuple[str, SignalType]:
+    """
+    Select analysis mode based on consensus direction.
+
+    Args:
+        consensus_direction: "bullish", "bearish", or "mixed"
+        consensus_strength: Strength of consensus (0.0 to 1.0)
+
+    Returns:
+        Tuple of (mode, signal):
+        - mode: "bear_case", "bull_case", or "critical_questions"
+        - signal: "bearish", "bullish", or "neutral"
+
+    Logic:
+        - Bullish consensus → Challenge with bear_case mode (bearish signal)
+        - Bearish consensus → Challenge with bull_case mode (bullish signal)
+        - Mixed consensus → Explore with critical_questions mode (neutral signal)
+    """
+    if consensus_direction == "bullish":
+        return ("bear_case", "bearish")
+    elif consensus_direction == "bearish":
+        return ("bull_case", "bullish")
+    else:  # mixed
+        return ("critical_questions", "neutral")
