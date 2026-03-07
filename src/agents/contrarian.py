@@ -15,7 +15,7 @@ Signal thresholds:
   Consensus < 60%  → Mixed mode (explore uncertainty)
 """
 
-from src.data.models import AgentSignal, SignalType, MarketType, QualityReport
+from src.data.models import AgentSignal
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 AGENT_NAME = "contrarian"
 
 
-def _determine_consensus(signals: dict[str, AgentSignal]) -> tuple[str, float]:
+def _determine_consensus(signals: dict[str, AgentSignal | None]) -> tuple[str, float]:
     """
     Determine if there's a bullish/bearish consensus among agent signals.
 

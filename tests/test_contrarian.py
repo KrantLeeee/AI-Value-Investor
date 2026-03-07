@@ -3,7 +3,7 @@
 import pytest
 
 from src.agents.contrarian import _determine_consensus
-from src.data.models import AgentSignal, SignalType
+from src.data.models import AgentSignal
 
 
 def test_consensus_bullish():
