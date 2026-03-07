@@ -21,6 +21,7 @@ from src.data.database import (
 from src.data.models import AgentSignal, QualityReport
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
+from src.agents.report_config import CHAPTERS, validate_chapter
 
 logger = get_logger(__name__)
 
@@ -324,6 +325,173 @@ def _build_appendix(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _generate_llm_chapter(
+    chapter_key: str,
+    ticker: str,
+    market: str,
+    signals: dict[str, AgentSignal],
+    quality_report: QualityReport,
+    industry_context: str,
+) -> str:
+    """
+    Generate a single LLM chapter with validation and retry.
+
+    Args:
+        chapter_key: Chapter identifier (ch1_industry, ch2_competitive, etc.)
+        ticker: Stock ticker
+        market: Market type
+        signals: All agent signals
+        quality_report: Data quality report
+        industry_context: Industry background from watchlist
+
+    Returns:
+        Chapter markdown text (with warning marker if validation failed)
+    """
+    from src.llm.router import call_llm
+    from src.llm.prompts import (
+        REPORT_CH1_SYSTEM, REPORT_CH1_USER,
+        REPORT_CH2_SYSTEM, REPORT_CH2_USER,
+        REPORT_CH6_SYSTEM, REPORT_CH6_USER,
+        REPORT_CH7_SYSTEM, REPORT_CH7_USER,
+    )
+
+    config = CHAPTERS[chapter_key]
+
+    # Select prompts based on chapter
+    prompt_map = {
+        "ch1_industry": (REPORT_CH1_SYSTEM, REPORT_CH1_USER),
+        "ch2_competitive": (REPORT_CH2_SYSTEM, REPORT_CH2_USER),
+        "ch6_sentiment": (REPORT_CH6_SYSTEM, REPORT_CH6_USER),
+        "ch7_recommendation": (REPORT_CH7_SYSTEM, REPORT_CH7_USER),
+    }
+
+    system_prompt, user_template = prompt_map[chapter_key]
+
+    # Build user prompt (chapter-specific data injection)
+    user_prompt = _build_chapter_user_prompt(
+        chapter_key, user_template, ticker, market, signals, quality_report, industry_context
+    )
+
+    # Retry loop with validation
+    for attempt in range(config["max_retries"] + 1):
+        try:
+            text = call_llm(config["task_name"], system_prompt, user_prompt)
+        except Exception as e:
+            logger.error(f"[Report] {chapter_key} LLM call failed: {e}")
+            return f"## {config['title']}\n\n⚠️ LLM调用失败: {str(e)}"
+
+        # Validate
+        issues = validate_chapter(text, config)
+
+        if not issues:
+            logger.info(f"[Report] {chapter_key} passed validation (attempt {attempt+1})")
+            return f"## {config['title']}\n\n{text}"
+
+        # Log issues and retry
+        if attempt < config["max_retries"]:
+            logger.warning(f"[Report] {chapter_key} validation failed (attempt {attempt+1}): {issues}")
+            user_prompt += f"\n\n[重试要求] 上次输出未通过验证: {', '.join(issues)}。请修正。"
+        else:
+            logger.error(f"[Report] {chapter_key} validation failed after {config['max_retries']+1} attempts")
+
+    # Failed after all retries
+    return f"## {config['title']}\n\n{text}\n\n> ⚠️ 质量验证未通过: {', '.join(issues)}"
+
+
+def _build_chapter_user_prompt(
+    chapter_key: str,
+    user_template: str,
+    ticker: str,
+    market: str,
+    signals: dict[str, AgentSignal],
+    quality_report: QualityReport,
+    industry_context: str,
+) -> str:
+    """Build user prompt for LLM chapter with data injection."""
+
+    # Extract common data
+    fund = signals.get("fundamentals")
+    val = signals.get("valuation")
+    buff = signals.get("warren_buffett")
+    gram = signals.get("ben_graham")
+    sent = signals.get("sentiment")
+    contr = signals.get("contrarian")
+
+    # Chapter-specific formatting
+    if chapter_key == "ch1_industry":
+        return user_template.format(
+            ticker=ticker,
+            sector=market,  # Simplified - would need actual sector from watchlist
+            sub_industry="",
+            industry_context=industry_context or "（用户未提供，请根据财务数据推测）",
+            revenue=_format_yuan(fund.metrics.get("revenue")) if fund else "N/A",
+            growth_rate=f"{fund.metrics.get('revenue_growth', 0)*100:.1f}%" if fund else "N/A",
+            roe=f"{fund.metrics.get('roe', 0):.1f}" if fund else "N/A",
+            debt_ratio=f"{fund.metrics.get('debt_ratio', 0):.1f}" if fund else "N/A",
+        )
+
+    elif chapter_key == "ch2_competitive":
+        return user_template.format(
+            buffett_signal=buff.signal if buff else "未运行",
+            moat_type=buff.metrics.get("moat_type", "N/A") if buff else "N/A",
+            management_quality=buff.metrics.get("management_quality", "N/A") if buff else "N/A",
+            has_pricing_power=buff.metrics.get("has_pricing_power", False) if buff else False,
+            buffett_reasoning=buff.reasoning if buff else "未分析",
+            graham_signal=gram.signal if gram else "未运行",
+            graham_standards_passed=gram.metrics.get("standards_passed", 0) if gram else 0,
+            graham_reasoning=gram.reasoning if gram else "未分析",
+        )
+
+    elif chapter_key == "ch6_sentiment":
+        return user_template.format(
+            sentiment_signal=sent.signal if sent else "未运行",
+            sentiment_score=f"{sent.metrics.get('sentiment_score', 0):.2f}" if sent else "N/A",
+            sentiment_reasoning=sent.reasoning if sent else "暂无新闻数据",
+            news_summary=sent.reasoning[:500] if sent else "（无）",
+        )
+
+    elif chapter_key == "ch7_recommendation":
+        # Get DCF values
+        dcf_base = val.metrics.get("dcf_per_share", 0) if val else 0
+        dcf_optimistic = dcf_base * 1.2 if dcf_base else 0
+        dcf_pessimistic = dcf_base * 0.8 if dcf_base else 0
+        current_price = val.metrics.get("current_price", 0) if val else 0
+
+        # Extract contrarian risks summary
+        contrarian_risks = "（辩证分析未运行）"
+        if contr and contr.metrics:
+            mode = contr.metrics.get("mode")
+            if mode == "bear_case":
+                risks = contr.metrics.get("risk_scenarios", [])
+                contrarian_risks = "\n".join([f"- {r.get('scenario', '')}" for r in risks[:3]])
+            elif mode == "bull_case":
+                contrarian_risks = "（当前共识看空，辩证分析聚焦上行机会）"
+            else:
+                contrarian_risks = contr.metrics.get("core_contradiction", "（信号分歧，关键不确定性待解决）")
+
+        return user_template.format(
+            fundamentals_signal=fund.signal if fund else "未运行",
+            fundamentals_confidence=f"{fund.confidence:.0%}" if fund else "N/A",
+            valuation_signal=val.signal if val else "未运行",
+            valuation_confidence=f"{val.confidence:.0%}" if val else "N/A",
+            buffett_signal=buff.signal if buff else "未运行",
+            buffett_confidence=f"{buff.confidence:.0%}" if buff else "N/A",
+            graham_signal=gram.signal if gram else "未运行",
+            graham_confidence=f"{gram.confidence:.0%}" if gram else "N/A",
+            sentiment_signal=sent.signal if sent else "未运行",
+            sentiment_confidence=f"{sent.confidence:.0%}" if sent else "N/A",
+            contrarian_signal=contr.signal if contr else "未运行",
+            contrarian_confidence=f"{contr.confidence:.0%}" if contr else "N/A",
+            dcf_base=f"{dcf_base:.2f}",
+            dcf_optimistic=f"{dcf_optimistic:.2f}",
+            dcf_pessimistic=f"{dcf_pessimistic:.2f}",
+            current_price=f"{current_price:.2f}",
+            contrarian_risks=contrarian_risks,
+        )
+
+    return "（章节配置错误）"
 
 
 def _quick_report(

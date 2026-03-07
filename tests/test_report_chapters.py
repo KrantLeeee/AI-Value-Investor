@@ -1,10 +1,12 @@
 """Tests for individual chapter generation functions."""
 
+from unittest.mock import patch
 from src.agents.report_generator import (
     _build_financial_quality_table,
     _build_valuation_analysis,
     _render_contrarian_chapter,
     _build_appendix,
+    _generate_llm_chapter,
 )
 from src.data.models import AgentSignal, QualityReport
 
@@ -151,3 +153,66 @@ def test_build_appendix():
     assert "55%" in result
     assert "数据质量" in result
     assert "0.90" in result
+
+
+@patch('src.llm.router.call_llm')
+def test_generate_llm_chapter_pass_validation(mock_llm):
+    """LLM chapter should pass validation on first try."""
+    # Ch2 requires "护城河" or "竞争" keywords
+    mock_llm.return_value = "公司具有强大的护城河，在竞争中占据优势。" * 50  # 500+ chars with required keywords
+
+    signals = {
+        "warren_buffett": AgentSignal(
+            ticker="TEST", agent_name="warren_buffett",
+            signal="bullish", confidence=0.70,
+            reasoning="Strong moat",
+            metrics={"moat_type": "Brand", "management_quality": "Excellent", "has_pricing_power": True}
+        ),
+        "ben_graham": AgentSignal(
+            ticker="TEST", agent_name="ben_graham",
+            signal="bullish", confidence=0.65,
+            reasoning="Value",
+            metrics={"standards_passed": 5}
+        ),
+    }
+
+    quality_report = QualityReport(
+        ticker="TEST", market="a_share",
+        flags=[], overall_quality_score=0.90,
+        data_completeness=0.95, stale_fields=[], records_checked={}
+    )
+
+    result = _generate_llm_chapter(
+        "ch2_competitive", "TEST", "a_share", signals, quality_report, ""
+    )
+
+    assert len(result) > 500
+    assert "⚠️" not in result  # No warning markers
+
+
+@patch('src.llm.router.call_llm')
+def test_generate_llm_chapter_fail_validation_retry(mock_llm):
+    """LLM chapter should retry and append warning if validation fails."""
+    # First call fails validation (too short)
+    # Second call also fails
+    # Third call also fails
+    mock_llm.return_value = "短文本"
+
+    signals = {}
+    quality_report = QualityReport(
+        ticker="TEST", market="a_share",
+        flags=[], overall_quality_score=0.90,
+        data_completeness=0.95, stale_fields=[], records_checked={}
+    )
+
+    result = _generate_llm_chapter(
+        "ch1_industry", "TEST", "a_share", signals, quality_report, "Test context"
+    )
+
+    # Should have warning marker
+    assert "⚠️" in result
+    assert "质量验证未通过" in result
+    assert "字数不足" in result
+
+    # Should have attempted retries (3 total calls)
+    assert mock_llm.call_count == 3
