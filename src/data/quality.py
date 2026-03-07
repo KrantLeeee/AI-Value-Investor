@@ -5,12 +5,15 @@ and logical consistency across all data sources.
 """
 
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Callable, Literal, cast
 
-from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement, QualityFlag, QualityReport
+from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement, MarketType, QualityFlag, QualityReport
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Quality score threshold for low quality warning
+LOW_QUALITY_THRESHOLD = 0.5
 
 
 def _calculate_quality_score(flags: list[QualityFlag]) -> float:
@@ -351,7 +354,7 @@ CORE_FIELDS_MAP = {
 }
 
 
-def _calculate_completeness(raw_data: dict) -> float:
+def _calculate_completeness(raw_data: dict[str, list[Any]]) -> float:
     """
     Calculate data completeness = available_core_fields / total_core_fields.
 
@@ -553,7 +556,7 @@ def check_source_changes(raw_data: dict[str, list[Any]]) -> list[QualityFlag]:
 
 # ── Orchestration ─────────────────────────────────────────────────────────
 
-def run_quality_checks(ticker: str, market: str, raw_data: dict[str, list[Any]]) -> QualityReport:
+def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list[Any]]) -> QualityReport:
     """
     Main orchestration function - runs all 11 quality checks.
 
@@ -574,22 +577,24 @@ def run_quality_checks(ticker: str, market: str, raw_data: dict[str, list[Any]])
 
     # Execute all 11 rules with error isolation
     # IMPORTANT: Use the correct function signatures!
-    rules = [
+    rules: list[tuple[str, Callable[[], list[QualityFlag]]]] = [
         ("financial_freshness", lambda: check_financial_freshness(
-            raw_data.get('income', []),
-            raw_data.get('balance', []),
-            raw_data.get('cashflow', [])
+            cast(list[IncomeStatement], raw_data.get('income', [])),
+            cast(list[BalanceSheet], raw_data.get('balance', [])),
+            cast(list[CashFlow], raw_data.get('cashflow', []))
         )),
-        ("price_freshness", lambda: check_price_freshness(raw_data.get('prices', []))),
-        ("revenue_profit_anomaly", lambda: check_revenue_profit_anomaly(raw_data.get('income', []))),
+        ("price_freshness", lambda: check_price_freshness(cast(list[DailyPrice], raw_data.get('prices', [])))),
+        ("revenue_profit_anomaly", lambda: check_revenue_profit_anomaly(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("ni_ocf_divergence", lambda: check_ni_ocf_divergence(
-            raw_data.get('income', []), raw_data.get('cashflow', []))),
-        ("negative_equity", lambda: check_negative_equity(raw_data.get('balance', []))),
+            cast(list[IncomeStatement], raw_data.get('income', [])),
+            cast(list[CashFlow], raw_data.get('cashflow', []))
+        )),
+        ("negative_equity", lambda: check_negative_equity(cast(list[BalanceSheet], raw_data.get('balance', [])))),
         ("missing_fields", lambda: check_missing_fields(raw_data)),
-        ("fcf_approximation", lambda: check_fcf_approximation(raw_data.get('cashflow', []))),
-        ("eps_consistency", lambda: check_eps_consistency(raw_data.get('income', []))),
+        ("fcf_approximation", lambda: check_fcf_approximation(cast(list[CashFlow], raw_data.get('cashflow', [])))),
+        ("eps_consistency", lambda: check_eps_consistency(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("duplicate_periods", lambda: check_duplicate_periods(raw_data)),
-        ("magnitude", lambda: check_magnitude(raw_data.get('income', []))),
+        ("magnitude", lambda: check_magnitude(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("source_changes", lambda: check_source_changes(raw_data)),
     ]
 
@@ -602,7 +607,7 @@ def run_quality_checks(ticker: str, market: str, raw_data: dict[str, list[Any]])
                 flag="check_error",
                 field=rule_name,
                 detail=f"Quality check failed: {str(e)[:100]}",
-                severity="info"
+                severity="warning"
             ))
 
     # Calculate scores
@@ -625,7 +630,7 @@ def run_quality_checks(ticker: str, market: str, raw_data: dict[str, list[Any]])
                 f"completeness={completeness:.2%}, "
                 f"flags={len(flags)} (critical={critical_count}, warning={warning_count})")
 
-    if score < 0.5:
+    if score < LOW_QUALITY_THRESHOLD:
         logger.warning(f"[Quality] {ticker} has low quality score: {score:.2f}")
 
     return QualityReport(
