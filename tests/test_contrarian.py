@@ -289,3 +289,106 @@ def test_validate_invalid_json():
     is_valid, data = _validate_json(json_str, "bear_case")
     assert not is_valid
     assert data is None
+
+
+# ── Task 7: Main run() Function Integration Tests ────────────────────────────
+
+
+def test_run_no_signals():
+    """No signals → return neutral with low confidence"""
+    from src.agents.contrarian import run
+
+    quality_report = QualityReport(
+        ticker="TEST",
+        market="a_share",
+        flags=[],
+        overall_quality_score=0.9,
+        data_completeness=0.85,
+        stale_fields=[],
+        records_checked={}
+    )
+
+    result = run(
+        ticker="TEST",
+        market="a_share",
+        signals={},
+        quality_report=quality_report,
+        use_llm=True,
+    )
+
+    assert result.agent_name == "contrarian"
+    assert result.signal == "neutral"
+    assert result.confidence == 0.20
+    assert "无可用信号" in result.reasoning
+
+
+def test_run_bullish_consensus_bear_case():
+    """Bullish consensus → BEAR_CASE mode → bearish signal"""
+    from src.agents.contrarian import run
+    from unittest.mock import patch
+
+    with patch('src.agents.contrarian._call_llm') as mock_llm:
+        # Mock LLM response
+        mock_llm.return_value = json.dumps({
+            "mode": "bear_case",
+            "consensus": {"direction": "bullish", "strength": 0.8},
+            "assumption_challenges": [{
+                "original_claim": "安全边际36%",
+                "assumption": "WACC=10%",
+                "challenge": "应用12%",
+                "impact_if_wrong": "缩至8%",
+                "severity": "high"
+            }],
+            "risk_scenarios": [{
+                "scenario": "油价下跌",
+                "probability": "20%",
+                "impact": "-25%",
+                "precedent": "2020"
+            }],
+            "bear_case_target_price": 12.50,
+            "reasoning": "存在下行风险"
+        })
+
+        signals = {
+            "fundamentals": AgentSignal(
+                ticker="TEST", agent_name="fundamentals",
+                signal="bullish", confidence=0.7, reasoning="Good"
+            ),
+            "valuation": AgentSignal(
+                ticker="TEST", agent_name="valuation",
+                signal="bullish", confidence=0.8, reasoning="Undervalued"
+            ),
+            "warren_buffett": AgentSignal(
+                ticker="TEST", agent_name="warren_buffett",
+                signal="bullish", confidence=0.8, reasoning="Moat"
+            ),
+            "ben_graham": AgentSignal(
+                ticker="TEST", agent_name="ben_graham",
+                signal="bullish", confidence=0.7, reasoning="Safe"
+            ),
+        }
+
+        quality_report = QualityReport(
+            ticker="TEST",
+            market="a_share",
+            flags=[],
+            overall_quality_score=0.9,
+            data_completeness=0.85,
+            stale_fields=[],
+            records_checked={}
+        )
+
+        result = run(
+            ticker="TEST",
+            market="a_share",
+            signals=signals,
+            quality_report=quality_report,
+            use_llm=True,
+        )
+
+        assert result.agent_name == "contrarian"
+        assert result.signal == "bearish"  # Challenge bulls
+        assert result.confidence == 0.60  # Fixed MVP confidence
+        assert "存在下行风险" in result.reasoning
+        assert result.metrics["mode"] == "bear_case"
+        assert result.metrics["consensus"]["direction"] == "bullish"

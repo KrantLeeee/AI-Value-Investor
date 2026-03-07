@@ -16,9 +16,11 @@ Signal thresholds:
 """
 
 import json
+from datetime import datetime
 from typing import Any
 
-from src.data.models import AgentSignal, SignalType, QualityReport
+from src.data.database import insert_agent_signal
+from src.data.models import AgentSignal, SignalType, QualityReport, MarketType
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -273,3 +275,155 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
     )
 
     return response
+
+
+def run(
+    ticker: str,
+    market: MarketType,
+    *,
+    signals: dict[str, AgentSignal | None],
+    quality_report: QualityReport,
+    use_llm: bool = True,
+) -> AgentSignal:
+    """
+    Run Contrarian Agent with dynamic mode switching.
+
+    Args:
+        ticker: Stock ticker
+        market: Market type
+        signals: Front-running agent signals
+        quality_report: Data quality context
+        use_llm: Whether to use LLM (False for quick mode)
+
+    Returns:
+        AgentSignal with dialectical analysis
+    """
+    logger.info(f"[Contrarian] Starting analysis for {ticker}")
+
+    # Handle case: no signals available
+    if not signals or all(s is None for s in signals.values()):
+        agent_signal = AgentSignal(
+            ticker=ticker,
+            agent_name=AGENT_NAME,
+            signal="neutral",
+            confidence=0.20,
+            reasoning="无可用信号，辩证分析无法运行。",
+            metrics={"error": "no_signals"},
+        )
+        insert_agent_signal(agent_signal)
+        logger.warning(f"[Contrarian] {ticker}: no signals, returning neutral")
+        return agent_signal
+
+    # Step 1: Calculate consensus
+    consensus_direction, consensus_strength = _determine_consensus(signals)
+    logger.info(f"[Contrarian] Consensus: {consensus_direction} ({consensus_strength:.0%})")
+
+    # Step 2: Select mode
+    mode, signal_output = _select_mode(consensus_direction, consensus_strength)
+    logger.info(f"[Contrarian] Selected mode: {mode}, signal: {signal_output}")
+
+    # Handle case: LLM disabled
+    if not use_llm:
+        agent_signal = AgentSignal(
+            ticker=ticker,
+            agent_name=AGENT_NAME,
+            signal=signal_output,
+            confidence=0.30,
+            reasoning=f"LLM分析暂不可用。共识:{consensus_direction}({consensus_strength:.0%}), 模式:{mode}",
+            metrics={
+                "mode": mode,
+                "consensus": {
+                    "direction": consensus_direction,
+                    "strength": consensus_strength
+                },
+                "llm_disabled": True
+            },
+        )
+        insert_agent_signal(agent_signal)
+        return agent_signal
+
+    # Step 3: Build prompts
+    try:
+        system_prompt, user_prompt = _build_prompt(
+            mode, consensus_direction, consensus_strength, signals, quality_report
+        )
+    except Exception as e:
+        logger.error(f"[Contrarian] Prompt construction failed: {e}")
+        agent_signal = AgentSignal(
+            ticker=ticker,
+            agent_name=AGENT_NAME,
+            signal="neutral",
+            confidence=0.30,
+            reasoning=f"提示构建失败: {str(e)}",
+            metrics={"error": "prompt_construction_failed"},
+        )
+        insert_agent_signal(agent_signal)
+        return agent_signal
+
+    # Step 4: Call LLM
+    try:
+        llm_response = _call_llm(system_prompt, user_prompt)
+    except Exception as e:
+        logger.error(f"[Contrarian] LLM call failed: {e}")
+        agent_signal = AgentSignal(
+            ticker=ticker,
+            agent_name=AGENT_NAME,
+            signal="neutral",
+            confidence=0.30,
+            reasoning=f"LLM调用失败: {str(e)}",
+            metrics={
+                "mode": mode,
+                "consensus": {
+                    "direction": consensus_direction,
+                    "strength": consensus_strength
+                },
+                "error": "llm_call_failed"
+            },
+        )
+        insert_agent_signal(agent_signal)
+        return agent_signal
+
+    # Step 5: Validate JSON
+    is_valid, parsed_data = _validate_json(llm_response, mode)
+
+    if not is_valid:
+        # Fallback: extract text reasoning
+        reasoning_text = llm_response[:500] if llm_response else "JSON解析失败"
+        agent_signal = AgentSignal(
+            ticker=ticker,
+            agent_name=AGENT_NAME,
+            signal=signal_output,
+            confidence=0.40,
+            reasoning=f"JSON验证失败。原始输出: {reasoning_text}",
+            metrics={
+                "mode": mode,
+                "consensus": {
+                    "direction": consensus_direction,
+                    "strength": consensus_strength
+                },
+                "json_invalid": True
+            },
+        )
+        insert_agent_signal(agent_signal)
+        logger.warning(f"[Contrarian] {ticker}: JSON validation failed")
+        return agent_signal
+
+    # Step 6: Build successful AgentSignal
+    reasoning_text = parsed_data.get("reasoning", "（无综合论述）")
+
+    # MVP: Fixed confidence 0.60 (marked as uncalibrated)
+    confidence = 0.60
+
+    agent_signal = AgentSignal(
+        ticker=ticker,
+        agent_name=AGENT_NAME,
+        signal=signal_output,
+        confidence=confidence,
+        reasoning=reasoning_text,
+        metrics=parsed_data,  # Full JSON as metrics
+    )
+
+    insert_agent_signal(agent_signal)
+    logger.info(f"[Contrarian] {ticker}: {signal_output} (mode={mode}, confidence={confidence:.2f})")
+
+    return agent_signal
