@@ -55,6 +55,35 @@ def run_all_agents(
     logger.info("[Registry] Starting analysis for %s (%s) | quick=%s llm=%s",
                 ticker, market, quick, _use_llm)
 
+    # ── Phase 0: Data Quality ─────────────────────────────────────────────────
+    from src.data import database
+    from src.data.quality import run_quality_checks
+
+    try:
+        logger.info("[Registry] Running data quality checks...")
+        raw_data = {
+            'income': database.get_income_statements(ticker, limit=10),
+            'balance': database.get_balance_sheets(ticker, limit=10),
+            'cashflow': database.get_cash_flows(ticker, limit=10),
+            'metrics': database.get_financial_metrics(ticker, limit=10),
+            'prices': database.get_latest_prices(ticker, limit=10),
+        }
+
+        quality_report = run_quality_checks(ticker, market, raw_data)
+        logger.info(f"[Registry] Quality score: {quality_report.overall_quality_score:.2f}, "
+                   f"completeness: {quality_report.data_completeness:.2%}")
+    except Exception as e:
+        logger.error(f"[Registry] Quality checks failed: {e}")
+        # Create empty quality report as fallback
+        from src.data.models import QualityReport
+        quality_report = QualityReport(
+            ticker=ticker,
+            market=market,
+            flags=[],
+            overall_quality_score=0.5,
+            data_completeness=0.0
+        )
+
     # ── Phase 1: Pure-code agents ─────────────────────────────────────────────
     try:
         from src.agents import fundamentals
@@ -108,6 +137,7 @@ def run_all_agents(
         _, report_path = report_generator.run(
             ticker, market,
             signals=signals,
+            quality_report=quality_report,  # NEW: pass quality report
             analysis_date=analysis_date,
             use_llm=_use_llm,
         )

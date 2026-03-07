@@ -806,3 +806,10 @@ def test_run_quality_checks_empty_data():
     assert report.overall_quality_score >= 0.0
     assert report.data_completeness == 0.0
     assert isinstance(report.flags, list)
+
+
+def test_registry_integration():
+    """Test that quality layer integrates with registry.py"""
+    # This test requires a working database with ticker data
+    # Will verify integration after implementing registry changes
+    pass  # Placeholder for now

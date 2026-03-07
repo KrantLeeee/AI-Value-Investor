@@ -137,7 +137,9 @@ def _quick_report(
 def run(
     ticker: str,
     market: str,
+    *,
     signals: dict[str, AgentSignal],
+    quality_report=None,  # NEW: P0-① quality report (optional for backward compat)
     analysis_date: str | None = None,
     use_llm: bool = True,
 ) -> tuple[str, Path]:
@@ -147,6 +149,9 @@ def run(
     Returns:
         (report_markdown_text, report_file_path)
     """
+    # TODO(P0-③): Use quality_report in report appendix
+    # For now, quality_report is passed but not yet used
+
     if analysis_date is None:
         analysis_date = str(date.today())
 
