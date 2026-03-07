@@ -392,3 +392,88 @@ def test_run_bullish_consensus_bear_case():
         assert "存在下行风险" in result.reasoning
         assert result.metrics["mode"] == "bear_case"
         assert result.metrics["consensus"]["direction"] == "bullish"
+
+
+# ── Task 9: Comprehensive Tests ──────────────────────────────────────────────
+
+
+def test_prompt_includes_quality_context():
+    """Prompt should include QualityReport flags"""
+    from src.data.models import QualityFlag
+
+    signals = {
+        "fundamentals": AgentSignal(
+            ticker="TEST", agent_name="fundamentals",
+            signal="bullish", confidence=0.7, reasoning="Good"
+        ),
+    }
+
+    quality_report = QualityReport(
+        ticker="TEST",
+        market="a_share",
+        flags=[
+            QualityFlag(
+                flag="stale_financials",
+                field="income",
+                detail="数据过期500天",
+                severity="critical"
+            )
+        ],
+        overall_quality_score=0.5,
+        data_completeness=0.6,
+        stale_fields=["income"],
+        records_checked={}
+    )
+
+    mode = "bear_case"
+    consensus_direction = "bullish"
+    consensus_strength = 1.0
+
+    system, user = _build_prompt(
+        mode, consensus_direction, consensus_strength, signals, quality_report
+    )
+
+    # Verify quality context in prompt
+    assert "0.50" in user or "0.5" in user  # Quality score
+    assert "60" in user  # Completeness (can be 60%, 60.00%, or 0.6)
+    assert "数据过期" in user or "stale" in user.lower()
+
+
+def test_validate_bull_case_json():
+    """Valid bull case JSON should pass"""
+    json_str = json.dumps({
+        "mode": "bull_case",
+        "consensus": {"direction": "bearish", "strength": 0.70},
+        "overlooked_positives": [{
+            "factor": "政策转向",
+            "description": "补贴重启",
+            "potential_impact": "+15%"
+        }],
+        "priced_in_analysis": "已充分反映",
+        "survival_advantage": "现金储备强",
+        "bull_case_target_price": 28.00,
+        "reasoning": "上行空间"
+    })
+
+    is_valid, data = _validate_json(json_str, "bull_case")
+    assert is_valid
+    assert data["mode"] == "bull_case"
+
+
+def test_validate_critical_questions_json():
+    """Valid critical questions JSON should pass"""
+    json_str = json.dumps({
+        "mode": "critical_questions",
+        "consensus": {"direction": "mixed", "strength": 0.45},
+        "core_contradiction": "基本面与情绪矛盾",
+        "questions": [{
+            "question": "油价走向?",
+            "preliminary_judgment": "不确定",
+            "evidence_needed": "OPEC数据"
+        }],
+        "reasoning": "关键问题"
+    })
+
+    is_valid, data = _validate_json(json_str, "critical_questions")
+    assert is_valid
+    assert data["mode"] == "critical_questions"
