@@ -1,8 +1,9 @@
 """Tests for Contrarian Agent - Task 1: Consensus Calculation Logic."""
 
+import json
 import pytest
 
-from src.agents.contrarian import _determine_consensus, _select_mode, _build_prompt
+from src.agents.contrarian import _determine_consensus, _select_mode, _build_prompt, _validate_json
 from src.data.models import AgentSignal, QualityReport
 
 
@@ -248,3 +249,43 @@ def test_prompt_extracts_strongest_args():
     # Verify consensus info
     assert "bullish" in user
     assert "100%" in user or "1.0" in user
+
+
+# ── Task 6: JSON Validation Tests ────────────────────────────────────────────
+
+
+def test_validate_bear_case_json():
+    """Valid bear case JSON should pass validation"""
+    json_str = json.dumps({
+        "mode": "bear_case",
+        "consensus": {"direction": "bullish", "strength": 0.75},
+        "assumption_challenges": [{
+            "original_claim": "安全边际36%",
+            "assumption": "WACC=10%",
+            "challenge": "应用12%WACC",
+            "impact_if_wrong": "安全边际缩至8%",
+            "severity": "high"
+        }],
+        "risk_scenarios": [{
+            "scenario": "油价下跌",
+            "probability": "20-30%",
+            "impact": "-25%营收",
+            "precedent": "2020年Q1"
+        }],
+        "bear_case_target_price": 12.50,
+        "reasoning": "综合分析"
+    })
+
+    is_valid, data = _validate_json(json_str, "bear_case")
+    assert is_valid
+    assert data["mode"] == "bear_case"
+    assert len(data["assumption_challenges"]) == 1
+
+
+def test_validate_invalid_json():
+    """Invalid JSON should be caught"""
+    json_str = "not valid json"
+
+    is_valid, data = _validate_json(json_str, "bear_case")
+    assert not is_valid
+    assert data is None

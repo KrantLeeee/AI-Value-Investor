@@ -15,6 +15,9 @@ Signal thresholds:
   Consensus < 60%  → Mixed mode (explore uncertainty)
 """
 
+import json
+from typing import Any
+
 from src.data.models import AgentSignal, SignalType, QualityReport
 from src.utils.logger import get_logger
 
@@ -203,3 +206,70 @@ def _build_prompt(
         )
 
     return system_prompt, user_prompt
+
+
+def _validate_json(json_str: str, mode: str) -> tuple[bool, dict[str, Any] | None]:
+    """
+    Validate JSON output from LLM.
+
+    Args:
+        json_str: Raw JSON string from LLM
+        mode: Expected mode ("bear_case" | "bull_case" | "critical_questions")
+
+    Returns:
+        Tuple of (is_valid, parsed_data or None)
+    """
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        logger.warning(f"[Contrarian] JSON parse error: {e}")
+        return False, None
+
+    # Check required fields
+    if not isinstance(data, dict):
+        logger.warning("[Contrarian] JSON is not a dict")
+        return False, None
+
+    if data.get("mode") != mode:
+        logger.warning(f"[Contrarian] Mode mismatch: expected {mode}, got {data.get('mode')}")
+        return False, None
+
+    # Mode-specific validation
+    if mode == "bear_case":
+        required = ["consensus", "assumption_challenges", "risk_scenarios", "reasoning"]
+    elif mode == "bull_case":
+        required = ["consensus", "overlooked_positives", "reasoning"]
+    else:  # critical_questions
+        required = ["consensus", "core_contradiction", "questions", "reasoning"]
+
+    for field in required:
+        if field not in data:
+            logger.warning(f"[Contrarian] Missing required field: {field}")
+            return False, None
+
+    return True, data
+
+
+def _call_llm(system_prompt: str, user_prompt: str) -> str:
+    """
+    Call LLM with contrarian_analysis task.
+
+    Args:
+        system_prompt: System instruction
+        user_prompt: User query
+
+    Returns:
+        LLM response text
+
+    Raises:
+        Exception: If LLM call fails
+    """
+    from src.llm.router import call_llm
+
+    response = call_llm(
+        task_name="contrarian_analysis",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+
+    return response
