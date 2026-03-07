@@ -128,6 +128,72 @@ def _build_financial_quality_table(
     return "\n".join(lines)
 
 
+def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
+    """
+    Build Chapter 4: Valuation Analysis (code-based).
+
+    Args:
+        valuation_signal: Valuation agent result
+
+    Returns:
+        Chapter 4 markdown text
+    """
+    lines = ["## 4. 估值分析与敏感性测试", ""]
+
+    if not valuation_signal:
+        lines.append("估值Agent未运行，数据不可用。")
+        return "\n".join(lines)
+
+    metrics = valuation_signal.metrics
+    dcf = metrics.get("dcf_per_share")
+    graham = metrics.get("graham_number")
+    current = metrics.get("current_price")
+    mos = metrics.get("margin_of_safety")
+
+    # Valuation summary table
+    lines.append("### 估值指标")
+    lines.append("")
+    lines.append("| 估值方法 | 内在价值 | 当前价格 | 安全边际 |")
+    lines.append("|:---------|:---------|:---------|:---------|")
+    lines.append(f"| DCF现金流折现 | ¥{dcf:.2f}/股 | ¥{current:.2f}/股 | {mos*100:+.1f}% |" if dcf else "| DCF现金流折现 | 数据不足 | - | - |")
+    lines.append(f"| Graham Number | ¥{graham:.2f}/股 | ¥{current:.2f}/股 | {((current-graham)/graham)*100:+.1f}% |" if graham else "| Graham Number | 数据不足 | - | - |")
+    lines.append("")
+
+    # Valuation interpretation
+    if dcf and mos:
+        if mos > 0.20:
+            lines.append(f"**解读**: DCF显示 {mos*100:.0f}% 安全边际，当前价格低估。")
+        elif mos < -0.20:
+            lines.append(f"**解读**: DCF显示 {abs(mos)*100:.0f}% 溢价，当前价格高估。")
+        else:
+            lines.append(f"**解读**: DCF显示 {abs(mos)*100:.0f}% {'安全边际' if mos > 0 else '溢价'}，估值合理。")
+        lines.append("")
+
+    # Sensitivity scenarios (simple 3-scenario analysis)
+    lines.append("### 敏感性分析")
+    lines.append("")
+    lines.append("不同假设下的估值区间：")
+    lines.append("")
+    lines.append("| 情景 | 假设 | 估值 |")
+    lines.append("|:-----|:-----|:-----|")
+
+    if dcf:
+        # Simple sensitivity: ±20% on DCF
+        lines.append(f"| 乐观情景 | 增长率+2%或WACC-1% | ¥{dcf*1.2:.2f}/股 |")
+        lines.append(f"| 基准情景 | 当前假设 | ¥{dcf:.2f}/股 |")
+        lines.append(f"| 悲观情景 | 增长率-2%或WACC+1% | ¥{dcf*0.8:.2f}/股 |")
+    else:
+        lines.append("| - | 数据不足 | - |")
+
+    lines.append("")
+
+    # Add reasoning from valuation agent
+    lines.append(f"**Agent评估**: {valuation_signal.reasoning}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def _quick_report(
     ticker: str,
     market: str,

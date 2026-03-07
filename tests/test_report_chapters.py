@@ -1,6 +1,6 @@
 """Tests for individual chapter generation functions."""
 
-from src.agents.report_generator import _build_financial_quality_table
+from src.agents.report_generator import _build_financial_quality_table, _build_valuation_analysis
 from src.data.models import AgentSignal, QualityReport
 
 
@@ -40,3 +40,31 @@ def test_build_financial_quality_table():
     assert "|" in result  # Has table
     assert "数据质量" in result
     assert "0.85" in result
+
+
+def test_build_valuation_analysis():
+    """Ch4 should generate valuation tables from valuation agent."""
+    valuation_signal = AgentSignal(
+        ticker="TEST",
+        agent_name="valuation",
+        signal="neutral",
+        confidence=0.60,
+        reasoning="估值适中",
+        metrics={
+            "dcf_per_share": 25.50,
+            "graham_number": 23.00,
+            "current_price": 24.00,
+            "margin_of_safety": 0.06,
+            "ev_ebitda": 8.5,
+        },
+    )
+
+    result = _build_valuation_analysis(valuation_signal)
+
+    # Verify structure
+    assert "## 4. 估值分析" in result
+    assert "25.50" in result  # DCF value
+    assert "23.00" in result  # Graham number
+    assert "24.00" in result  # Current price
+    assert "|" in result  # Has tables
+    assert "敏感性" in result or "情景" in result
