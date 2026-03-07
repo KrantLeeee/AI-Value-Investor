@@ -23,12 +23,12 @@ logger = get_logger(__name__)
 AGENT_NAME = "contrarian"
 
 
-def _determine_consensus(signals: dict[str, SignalType | None]) -> tuple[str, float]:
+def _determine_consensus(signals: dict[str, AgentSignal]) -> tuple[str, float]:
     """
     Determine if there's a bullish/bearish consensus among agent signals.
 
     Args:
-        signals: Dict mapping agent names to their signals (bullish/neutral/bearish/None)
+        signals: Dict mapping agent names to AgentSignal objects
 
     Returns:
         Tuple of (direction, strength):
@@ -44,15 +44,15 @@ def _determine_consensus(signals: dict[str, SignalType | None]) -> tuple[str, fl
         - Otherwise → ("mixed", max(bull_ratio, bear_ratio))
         - Empty signals → ("mixed", 0.0)
     """
-    # Filter out None values
-    valid_signals = {k: v for k, v in signals.items() if v is not None}
+    # Filter out None values and extract AgentSignal objects
+    valid_signals = [s for s in signals.values() if s is not None]
 
     if not valid_signals:
         return ("mixed", 0.0)
 
     total_count = len(valid_signals)
-    bullish_count = sum(1 for signal in valid_signals.values() if signal == "bullish")
-    bearish_count = sum(1 for signal in valid_signals.values() if signal == "bearish")
+    bullish_count = sum(1 for s in valid_signals if s.signal == "bullish")
+    bearish_count = sum(1 for s in valid_signals if s.signal == "bearish")
 
     bull_ratio = bullish_count / total_count
     bear_ratio = bearish_count / total_count
