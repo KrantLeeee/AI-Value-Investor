@@ -43,6 +43,30 @@ task_routing:
     max_tokens: 2500
     temperature: 0.3
     description: "Dialectical analysis - challenges consensus with structured counterarguments"
+  report_ch1:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 1500
+    temperature: 0.3
+    description: "Industry background and company overview chapter"
+  report_ch2:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 2000
+    temperature: 0.3
+    description: "Competitive analysis chapter with moat evaluation"
+  report_ch6:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 800
+    temperature: 0.3
+    description: "Market sentiment and news analysis chapter"
+  report_ch7:
+    provider: openai
+    model: gpt-4o
+    max_tokens: 1500
+    temperature: 0.3
+    description: "Investment recommendation and final verdict chapter"
 
 retry:
   max_attempts: 2
