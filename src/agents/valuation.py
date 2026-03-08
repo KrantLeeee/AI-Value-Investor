@@ -11,6 +11,7 @@ If not set, returns data-only signal.
 """
 
 import math
+import statistics
 from datetime import date
 
 from src.data.database import (
@@ -73,6 +74,162 @@ def _dcf(base_fcf: float, growth_rate: float, wacc: float = WACC,
     terminal_value = terminal_fcf / (wacc - terminal_growth)
     pv += terminal_value / ((1 + wacc) ** years)
     return pv
+
+
+def _validate_valuation_result(
+    method_name: str,
+    target_price: float,
+    current_price: float,
+    all_results: list[float]
+) -> dict:
+    """
+    Validate a valuation result against three outlier detection rules.
+
+    Rules (any violation triggers exclusion):
+    1. Negative or zero target price → exclude
+    2. Deviation from current price > 80% → exclude
+    3. Deviation from median of all results > 50% → exclude
+
+    Args:
+        method_name: Name of the valuation method (e.g., "DCF", "Graham")
+        target_price: Target price from this method
+        current_price: Current market price
+        all_results: List of all target prices (for median calculation)
+
+    Returns:
+        dict with:
+            - method: str
+            - target_price: float
+            - valid: bool (True if passes all rules)
+            - warnings: list[str] (reasons for exclusion)
+            - exclude_from_weighted: bool (True if should be excluded)
+    """
+    warnings = []
+    valid = True
+
+    # Rule 1: Negative or zero target price
+    if target_price <= 0:
+        warnings.append(f"{method_name}: negative or zero target price (¥{target_price:.2f})")
+        valid = False
+
+    # Rule 2: Deviation from current price > 80%
+    if current_price and current_price > 0:
+        deviation_from_current = abs(target_price - current_price) / current_price
+        if deviation_from_current > 0.80:
+            warnings.append(
+                f"{method_name}: deviation from current price "
+                f"{deviation_from_current*100:.1f}% exceeds 80% threshold "
+                f"(target=¥{target_price:.2f} vs current=¥{current_price:.2f})"
+            )
+            valid = False
+
+    # Rule 3: Deviation from median > 50%
+    # Use statistics.median (resistant to outliers), NOT mean
+    if all_results and len(all_results) > 0:
+        # Filter out invalid values for median calculation
+        valid_prices = [p for p in all_results if p is not None and p > 0]
+        if len(valid_prices) >= 2:
+            median_price = statistics.median(valid_prices)
+            deviation_from_median = abs(target_price - median_price) / median_price
+            if deviation_from_median > 0.50:
+                warnings.append(
+                    f"{method_name}: deviation from median "
+                    f"{deviation_from_median*100:.1f}% exceeds 50% threshold "
+                    f"(target=¥{target_price:.2f} vs median=¥{median_price:.2f})"
+                )
+                valid = False
+
+    return {
+        "method": method_name,
+        "target_price": target_price,
+        "valid": valid,
+        "warnings": warnings,
+        "exclude_from_weighted": not valid,
+    }
+
+
+def _calculate_weighted_target(
+    results: list[dict],
+    current_price: float,
+    weights: dict[str, float] | None = None
+) -> dict:
+    """
+    Calculate weighted target price from validated results.
+
+    Args:
+        results: List of validation results from _validate_valuation_result
+        current_price: Current market price
+        weights: Optional dict of method weights (defaults to equal weights)
+
+    Returns:
+        dict with:
+            - weighted_target: float | None
+            - valid_methods: list[str]
+            - excluded_methods: list[str]
+            - degraded: bool (True if <=1 valid method)
+            - confidence: float (0.25 if degraded, None otherwise)
+            - warning: str (if degraded mode)
+    """
+    # Filter valid methods
+    valid_results = [r for r in results if not r.get("exclude_from_weighted", True)]
+    excluded_results = [r for r in results if r.get("exclude_from_weighted", True)]
+
+    valid_methods = [r["method"] for r in valid_results]
+    excluded_methods = [r["method"] for r in excluded_results]
+
+    # Check for degraded mode (<=1 valid method)
+    if len(valid_results) <= 1:
+        if len(valid_results) == 1:
+            target = valid_results[0]["target_price"]
+            warning = (
+                f"⚠ Degraded mode: only 1 valid method ({valid_results[0]['method']}) "
+                f"remaining after outlier filtering. "
+                f"Excluded: {', '.join(excluded_methods)}"
+            )
+        else:
+            target = None
+            warning = (
+                f"⚠ Degraded mode: 0 valid methods remaining after outlier filtering. "
+                f"All methods excluded: {', '.join(excluded_methods)}"
+            )
+
+        return {
+            "weighted_target": target,
+            "valid_methods": valid_methods,
+            "excluded_methods": excluded_methods,
+            "degraded": True,
+            "confidence": 0.25,
+            "warning": warning,
+        }
+
+    # Normal mode: calculate weighted average
+    # Default to equal weights if not provided
+    if weights is None:
+        weights = {r["method"]: 1.0 / len(valid_results) for r in valid_results}
+
+    # Normalize weights for valid methods only
+    valid_weights = {m: weights.get(m, 0) for m in valid_methods}
+    total_weight = sum(valid_weights.values())
+
+    if total_weight == 0:
+        # Fallback to equal weights
+        valid_weights = {m: 1.0 / len(valid_methods) for m in valid_methods}
+        total_weight = 1.0
+
+    normalized_weights = {m: w / total_weight for m, w in valid_weights.items()}
+
+    # Calculate weighted average
+    weighted_target = sum(
+        r["target_price"] * normalized_weights.get(r["method"], 0)
+        for r in valid_results
+    )
+
+    return {
+        "weighted_target": weighted_target,
+        "valid_methods": valid_methods,
+        "excluded_methods": excluded_methods,
+        "degraded": False,
+    }
 
 
 def _get_current_price(ticker: str) -> float | None:
@@ -191,6 +348,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             shares = latest_ni / eps_raw
             logger.debug("[Valuation] %s: derived shares=%.0f from NI/EPS", ticker, shares)
 
+    owner_earnings = None
     if cashflow_rows:
         ocf  = _safe(cashflow_rows[0].get("operating_cash_flow"))
         fcf  = _safe(cashflow_rows[0].get("free_cash_flow"))
@@ -313,48 +471,139 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             results["net_net_ratio"] = net_net_ratio
             detail_lines.append(f"Net-Net: (CA-TL)/股={net_net_per_share:.2f}, 价格比={net_net_ratio:.2f}" if net_net_ratio else f"Net-Net: {net_net_per_share:.2f}/股")
 
-    # ── 5. Margin of Safety & Signal ─────────────────────────────────────────
-    # Use DCF base as primary intrinsic value; fall back to Graham Number
-    intrinsic_base = dcf_base
-    primary_method = "DCF"
-    if intrinsic_base is None and graham_number_per_share and shares:
-        intrinsic_base = graham_number_per_share * shares
-        primary_method = "Graham Number"
-
-    margin_of_safety = None
+    # ── 5. Outlier Detection & Weighted Target Price ──────────────────────────
+    # Collect all per-share target prices for validation
+    valuation_methods = []
     dcf_per_share = None
+    pb_target_per_share = None
 
-    if intrinsic_base and shares and shares > 0:
-        if primary_method == "DCF":
-            dcf_per_share = intrinsic_base / shares
-            results["dcf_per_share"] = dcf_per_share
-        results["shares_outstanding"] = shares  # expose for Ch7 weighted calc
-        if current_price and dcf_per_share:
-            margin_of_safety = (dcf_per_share - current_price) / dcf_per_share
-            results["margin_of_safety"] = margin_of_safety
-            mos_pct = margin_of_safety * 100
-            detail_lines.append(f"安全边际 ({primary_method}): {mos_pct:.1f}% (DCF基准¥{dcf_per_share:.2f} vs 市价¥{current_price:.2f})")
+    # DCF base case (per share)
+    if dcf_base and shares and shares > 0:
+        dcf_per_share = dcf_base / shares
+        results["dcf_per_share"] = dcf_per_share
+        valuation_methods.append(("DCF", dcf_per_share))
 
-    # Determine signal
+    # Graham Number
+    if graham_number_per_share:
+        valuation_methods.append(("Graham", graham_number_per_share))
+
+    # EV/EBITDA per share
+    if ev_ebitda_per_share:
+        valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+
+    # P/B target per share
+    if bvps:
+        _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
+        pb_target_per_share = bvps * _pb
+        # Only add to results if not already added in EV/EBITDA section
+        if "pb_target" not in results:
+            results["pb_target"] = round(pb_target_per_share, 2)
+        valuation_methods.append(("P/B", pb_target_per_share))
+
+    # Validate each method and calculate weighted target
+    validated_results = []
+    all_target_prices = [price for _, price in valuation_methods if price and price > 0]
+
+    for method_name, target_price in valuation_methods:
+        validation = _validate_valuation_result(
+            method_name=method_name,
+            target_price=target_price,
+            current_price=current_price or 0,
+            all_results=all_target_prices
+        )
+        validated_results.append(validation)
+
+        # Log warnings
+        for warning in validation["warnings"]:
+            logger.warning("[Valuation] %s: %s", ticker, warning)
+            detail_lines.append(f"⚠ {warning}")
+
+    # Calculate weighted target price with default weights
+    # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
+    default_weights = {
+        "DCF": 0.40,
+        "Graham": 0.25,
+        "EV/EBITDA": 0.20,
+        "P/B": 0.15,
+    }
+
+    weighted_result = _calculate_weighted_target(
+        results=validated_results,
+        current_price=current_price or 0,
+        weights=default_weights
+    )
+
+    # Store validation results in metrics
+    results["validation"] = {
+        "validated_methods": [
+            {
+                "method": v["method"],
+                "target_price": v["target_price"],
+                "valid": v["valid"],
+                "excluded": v["exclude_from_weighted"]
+            }
+            for v in validated_results
+        ],
+        "weighted_target": weighted_result["weighted_target"],
+        "valid_methods": weighted_result["valid_methods"],
+        "excluded_methods": weighted_result["excluded_methods"],
+        "degraded": weighted_result["degraded"],
+    }
+    results["shares_outstanding"] = shares  # expose for Ch7 weighted calc
+
+    # Use weighted target for margin of safety calculation
+    weighted_target = weighted_result["weighted_target"]
+    margin_of_safety = None
+    primary_method = "Weighted Average"
+
+    if weighted_target and current_price and current_price > 0:
+        margin_of_safety = (weighted_target - current_price) / weighted_target
+        results["margin_of_safety"] = margin_of_safety
+        mos_pct = margin_of_safety * 100
+
+        if weighted_result["degraded"]:
+            detail_lines.append(f"\n{weighted_result['warning']}")
+            detail_lines.append(f"安全边际 (单一方法): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})")
+        else:
+            valid_method_list = ", ".join(weighted_result["valid_methods"])
+            detail_lines.append(
+                f"\n✓ 加权目标价: ¥{weighted_target:.2f} (基于 {len(weighted_result['valid_methods'])} 个有效方法: {valid_method_list})"
+            )
+            if weighted_result["excluded_methods"]:
+                excluded_list = ", ".join(weighted_result["excluded_methods"])
+                detail_lines.append(f"  已排除异常值: {excluded_list}")
+            detail_lines.append(f"安全边际 (加权): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})")
+    elif not weighted_target and current_price:
+        # Degraded mode with 0 valid methods
+        if weighted_result.get("warning"):
+            detail_lines.append(f"\n{weighted_result['warning']}")
+        detail_lines.append("⚠ 所有估值方法均被排除，无法计算目标价")
+
+    # Determine signal based on margin of safety
     if margin_of_safety is not None:
+        # Adjust confidence based on degraded mode
+        base_confidence_multiplier = 0.5 if weighted_result["degraded"] else 1.0
+
         if margin_of_safety >= 0.30:
-            signal, confidence = "bullish", min(0.90, 0.60 + margin_of_safety * 0.5)
+            signal = "bullish"
+            confidence = min(0.90, (0.60 + margin_of_safety * 0.5) * base_confidence_multiplier)
         elif margin_of_safety >= 0.10:
-            signal, confidence = "neutral", 0.55
+            signal = "neutral"
+            confidence = 0.55 * base_confidence_multiplier
         elif margin_of_safety >= -0.10:
-            signal, confidence = "neutral", 0.45
+            signal = "neutral"
+            confidence = 0.45 * base_confidence_multiplier
         else:
-            signal, confidence = "bearish", min(0.90, 0.55 + abs(margin_of_safety) * 0.5)
-    elif graham_number_per_share and current_price:
-        gn_mos = (graham_number_per_share - current_price) / graham_number_per_share
-        if gn_mos >= 0.30:
-            signal, confidence = "bullish", 0.65
-        elif gn_mos >= 0:
-            signal, confidence = "neutral", 0.50
-        else:
-            signal, confidence = "bearish", 0.55
+            signal = "bearish"
+            confidence = min(0.90, (0.55 + abs(margin_of_safety) * 0.5) * base_confidence_multiplier)
+
+        # Override with degraded confidence if applicable
+        if weighted_result["degraded"]:
+            confidence = min(confidence, weighted_result["confidence"])
     else:
         signal, confidence = "neutral", 0.30
+        if not weighted_target:
+            confidence = 0.25  # Very low confidence when no valid methods
         detail_lines.append("⚠ 估值数据不足，保持中性")
 
     reasoning = (

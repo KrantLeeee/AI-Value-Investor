@@ -1,0 +1,284 @@
+"""Tests for Valuation Agent outlier detection and weighted calculation."""
+
+import pytest
+from unittest.mock import patch, Mock
+
+from src.agents.valuation import (
+    _validate_valuation_result,
+    _calculate_weighted_target,
+)
+
+
+class TestValidateValuationResult:
+    """Tests for _validate_valuation_result function."""
+
+    def test_negative_target_price_excluded(self):
+        """Negative target price should be excluded from weighted average."""
+        all_results = [100, 120, 150]
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=-50,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["method"] == "DCF"
+        assert result["target_price"] == -50
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+        assert "negative" in " ".join(result["warnings"]).lower()
+
+    def test_zero_target_price_excluded(self):
+        """Zero target price should be excluded from weighted average."""
+        all_results = [100, 120, 150]
+        result = _validate_valuation_result(
+            method_name="Graham",
+            target_price=0,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+        assert len(result["warnings"]) > 0
+
+    def test_deviation_from_current_price_over_80_percent_excluded(self):
+        """Target price >80% deviation from current price should be excluded."""
+        # Target at -85% from current (15 vs 100) → should be excluded
+        all_results = [100, 110, 15]
+        result = _validate_valuation_result(
+            method_name="EV/EBITDA",
+            target_price=15,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+        assert "current price" in " ".join(result["warnings"]).lower()
+
+    def test_deviation_from_current_price_over_80_percent_upside(self):
+        """Target price >80% upside from current price should be excluded."""
+        # Target at +100% from current (200 vs 100) → should be excluded
+        all_results = [100, 110, 200]
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=200,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+
+    def test_deviation_from_median_over_50_percent_excluded(self):
+        """Target price >50% deviation from median should be excluded."""
+        # Median of [100, 110, 120] = 110
+        # Target 200 is +81.8% from median → should be excluded
+        all_results = [100, 110, 120, 200]
+        result = _validate_valuation_result(
+            method_name="P/B",
+            target_price=200,
+            current_price=105,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+        assert "median" in " ".join(result["warnings"]).lower()
+
+    def test_deviation_from_median_over_50_percent_downside(self):
+        """Target price >50% below median should be excluded."""
+        # Median of [100, 110, 120] = 110
+        # Target 40 is -63.6% from median → should be excluded
+        all_results = [100, 110, 120, 40]
+        result = _validate_valuation_result(
+            method_name="EV/EBITDA",
+            target_price=40,
+            current_price=105,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+
+    def test_valid_result_within_all_thresholds(self):
+        """Valid result should pass all three rules."""
+        # Median = 110, target = 115
+        # - Not negative ✓
+        # - (115-100)/100 = 15% from current ✓ (<80%)
+        # - (115-110)/110 = 4.5% from median ✓ (<50%)
+        all_results = [100, 110, 120, 115]
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=115,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["valid"] is True
+        assert result["exclude_from_weighted"] is False
+        assert len(result["warnings"]) == 0
+
+    def test_multiple_violations_multiple_warnings(self):
+        """Result violating multiple rules should have multiple warnings."""
+        # Negative AND far from median
+        all_results = [100, 110, 120, -50]
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=-50,
+            current_price=100,
+            all_results=all_results
+        )
+
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+        # Should have warnings for both negative and median deviation
+        assert len(result["warnings"]) >= 1
+
+    def test_median_calculation_uses_statistics_median(self):
+        """Should use statistics.median, not mean (resistant to outliers)."""
+        # Mean = 95, Median = 110
+        # Target 150 is: +57.9% from mean, +36.4% from median
+        # Should use median → valid (36.4% < 50%)
+        all_results = [10, 100, 110, 120, 150]
+        result = _validate_valuation_result(
+            method_name="Graham",
+            target_price=150,
+            current_price=105,
+            all_results=all_results
+        )
+
+        # If using mean incorrectly: (150-95)/95 = 57.9% → would exclude
+        # If using median correctly: (150-110)/110 = 36.4% → should include
+        assert result["valid"] is True
+        assert result["exclude_from_weighted"] is False
+
+
+class TestCalculateWeightedTarget:
+    """Tests for _calculate_weighted_target function."""
+
+    def test_all_valid_methods_weighted_average(self):
+        """Should calculate weighted average when all methods are valid."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": 110, "exclude_from_weighted": False},
+            {"method": "EV/EBITDA", "target_price": 120, "exclude_from_weighted": False},
+        ]
+        weights = {"DCF": 0.5, "Graham": 0.3, "EV/EBITDA": 0.2}
+
+        result = _calculate_weighted_target(results, current_price=105, weights=weights)
+
+        # Expected: 100*0.5 + 110*0.3 + 120*0.2 = 50 + 33 + 24 = 107
+        assert result["weighted_target"] == pytest.approx(107, rel=1e-6)
+        assert len(result["valid_methods"]) == 3
+        assert len(result["excluded_methods"]) == 0
+        assert result["degraded"] is False
+
+    def test_some_excluded_methods_renormalize_weights(self):
+        """Should renormalize weights when some methods are excluded."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": 110, "exclude_from_weighted": False},
+            {"method": "EV/EBITDA", "target_price": -50, "exclude_from_weighted": True},
+        ]
+        weights = {"DCF": 0.5, "Graham": 0.3, "EV/EBITDA": 0.2}
+
+        result = _calculate_weighted_target(results, current_price=105, weights=weights)
+
+        # EV/EBITDA excluded, renormalize: DCF=0.5/0.8=0.625, Graham=0.3/0.8=0.375
+        # Expected: 100*0.625 + 110*0.375 = 62.5 + 41.25 = 103.75
+        assert result["weighted_target"] == pytest.approx(103.75, rel=1e-6)
+        assert len(result["valid_methods"]) == 2
+        assert len(result["excluded_methods"]) == 1
+        assert "EV/EBITDA" in result["excluded_methods"]
+        assert result["degraded"] is False
+
+    def test_default_equal_weights_if_not_provided(self):
+        """Should use equal weights if weights parameter is None."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": 110, "exclude_from_weighted": False},
+            {"method": "EV/EBITDA", "target_price": 120, "exclude_from_weighted": False},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        # Equal weights: each 1/3
+        # Expected: 100*(1/3) + 110*(1/3) + 120*(1/3) = 110
+        assert result["weighted_target"] == pytest.approx(110, rel=1e-6)
+        assert result["degraded"] is False
+
+    def test_degraded_mode_one_valid_method(self):
+        """Should enter degraded mode when only 1 valid method remains."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": -50, "exclude_from_weighted": True},
+            {"method": "EV/EBITDA", "target_price": 300, "exclude_from_weighted": True},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        assert result["degraded"] is True
+        assert result["weighted_target"] == 100  # Only valid method
+        assert result["confidence"] == 0.25  # Degraded confidence
+        assert len(result["valid_methods"]) == 1
+        assert len(result["excluded_methods"]) == 2
+        assert "degraded" in result.get("warning", "").lower()
+
+    def test_degraded_mode_zero_valid_methods(self):
+        """Should enter degraded mode when 0 valid methods remain."""
+        results = [
+            {"method": "DCF", "target_price": -50, "exclude_from_weighted": True},
+            {"method": "Graham", "target_price": 0, "exclude_from_weighted": True},
+            {"method": "EV/EBITDA", "target_price": 500, "exclude_from_weighted": True},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        assert result["degraded"] is True
+        assert result["weighted_target"] is None
+        assert result["confidence"] == 0.25
+        assert len(result["valid_methods"]) == 0
+        assert len(result["excluded_methods"]) == 3
+
+    def test_two_valid_methods_no_degraded_mode(self):
+        """Should NOT enter degraded mode with 2 valid methods."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": 110, "exclude_from_weighted": False},
+            {"method": "EV/EBITDA", "target_price": 500, "exclude_from_weighted": True},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        assert result["degraded"] is False
+        assert result["weighted_target"] == pytest.approx(105, rel=1e-6)  # (100+110)/2
+        assert len(result["valid_methods"]) == 2
+
+    def test_excluded_methods_list_contains_correct_names(self):
+        """Should list all excluded method names."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": -50, "exclude_from_weighted": True},
+            {"method": "EV/EBITDA", "target_price": 0, "exclude_from_weighted": True},
+            {"method": "P/B", "target_price": 500, "exclude_from_weighted": True},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        assert set(result["excluded_methods"]) == {"Graham", "EV/EBITDA", "P/B"}
+        assert len(result["valid_methods"]) == 1
+
+    def test_warning_message_in_degraded_mode(self):
+        """Degraded mode should include a warning message."""
+        results = [
+            {"method": "DCF", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "Graham", "target_price": -50, "exclude_from_weighted": True},
+        ]
+
+        result = _calculate_weighted_target(results, current_price=105, weights=None)
+
+        assert result["degraded"] is True
+        assert "warning" in result
+        assert len(result["warning"]) > 0
