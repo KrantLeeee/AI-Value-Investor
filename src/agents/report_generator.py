@@ -681,10 +681,11 @@ def _build_chapter_user_prompt(
         w_target = validation.get("weighted_target") or 0
 
         # Get individual method prices for reference
-        dcf_base = val.metrics.get("dcf_per_share", 0)
+        # IMPORTANT: Use "or 0" to handle None values from metrics
+        dcf_base = val.metrics.get("dcf_per_share") or 0
         dcf_optimistic = dcf_base * 1.2 if dcf_base else 0
         dcf_pessimistic = dcf_base * 0.8 if dcf_base else 0
-        current_price = val.metrics.get("current_price", 0)
+        current_price = val.metrics.get("current_price") or 0
         graham_number = val.metrics.get("graham_number") or 0
         ev_ebitda_target = val.metrics.get("ev_ebitda_per_share") or 0
         pb_target = val.metrics.get("pb_target") or 0
@@ -727,17 +728,17 @@ def _build_chapter_user_prompt(
             sentiment_confidence=f"{sent.confidence:.0%}" if sent else "N/A",
             contrarian_signal=contr.signal if contr else "未运行",
             contrarian_confidence=f"{contr.confidence:.0%}" if contr else "N/A",
-            # Multi-method valuation fields
-            ev_ebitda_target=f"{ev_ebitda_target:.2f}",
+            # Multi-method valuation fields - all default to "N/A" if 0 or None
+            ev_ebitda_target=f"{ev_ebitda_target:.2f}" if ev_ebitda_target else "N/A",
             pb_target=f"{pb_target:.2f}" if pb_target else "N/A",
-            dcf_base=f"{dcf_base:.2f}",
-            dcf_optimistic=f"{dcf_optimistic:.2f}",
-            dcf_pessimistic=f"{dcf_pessimistic:.2f}",
+            dcf_base=f"{dcf_base:.2f}" if dcf_base else "N/A",
+            dcf_optimistic=f"{dcf_optimistic:.2f}" if dcf_optimistic else "N/A",
+            dcf_pessimistic=f"{dcf_pessimistic:.2f}" if dcf_pessimistic else "N/A",
             graham_number=f"{graham_number:.2f}" if graham_number else "N/A",
-            weighted_target_low=f"{w_target_low:.2f}",
-            weighted_target_high=f"{w_target_high:.2f}",
-            current_price=f"{current_price:.2f}",
-            upside_to_target=f"{upside_pct:+.1f}",
+            weighted_target_low=f"{w_target_low:.2f}" if w_target_low else "N/A",
+            weighted_target_high=f"{w_target_high:.2f}" if w_target_high else "N/A",
+            current_price=f"{current_price:.2f}" if current_price else "N/A",
+            upside_to_target=f"{upside_pct:+.1f}" if upside_pct else "N/A",
             data_completeness=f"{completeness:.0f}",
             confidence_cap=f"{conf_cap:.2f}",
             contrarian_risks=contrarian_risks,
