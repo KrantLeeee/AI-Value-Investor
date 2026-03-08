@@ -349,8 +349,20 @@ def get_latest_prices(ticker: str, limit: int = 252) -> list[dict]:
 
 def get_income_statements(ticker: str, limit: int = 10,
                            period_type: str = "annual") -> list[dict]:
-    sql = """SELECT * FROM income_statements WHERE ticker=? AND period_type=?
-             ORDER BY period_end_date DESC LIMIT ?"""
+    # Deduplicate by year: keep latest period_end_date per year
+    sql = """
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY strftime('%Y', period_end_date)
+                       ORDER BY period_end_date DESC
+                   ) as rn
+            FROM income_statements
+            WHERE ticker=? AND period_type=?
+        )
+        SELECT * FROM ranked WHERE rn=1
+        ORDER BY period_end_date DESC LIMIT ?
+    """
     with get_connection() as conn:
         rows = conn.execute(sql, (ticker, period_type, limit)).fetchall()
     return [dict(r) for r in rows]
@@ -358,8 +370,20 @@ def get_income_statements(ticker: str, limit: int = 10,
 
 def get_balance_sheets(ticker: str, limit: int = 10,
                         period_type: str = "annual") -> list[dict]:
-    sql = """SELECT * FROM balance_sheets WHERE ticker=? AND period_type=?
-             ORDER BY period_end_date DESC LIMIT ?"""
+    # Deduplicate by year: keep latest period_end_date per year
+    sql = """
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY strftime('%Y', period_end_date)
+                       ORDER BY period_end_date DESC
+                   ) as rn
+            FROM balance_sheets
+            WHERE ticker=? AND period_type=?
+        )
+        SELECT * FROM ranked WHERE rn=1
+        ORDER BY period_end_date DESC LIMIT ?
+    """
     with get_connection() as conn:
         rows = conn.execute(sql, (ticker, period_type, limit)).fetchall()
     return [dict(r) for r in rows]
@@ -367,8 +391,20 @@ def get_balance_sheets(ticker: str, limit: int = 10,
 
 def get_cash_flows(ticker: str, limit: int = 10,
                    period_type: str = "annual") -> list[dict]:
-    sql = """SELECT * FROM cash_flows WHERE ticker=? AND period_type=?
-             ORDER BY period_end_date DESC LIMIT ?"""
+    # Deduplicate by year: keep latest period_end_date per year
+    sql = """
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY strftime('%Y', period_end_date)
+                       ORDER BY period_end_date DESC
+                   ) as rn
+            FROM cash_flows
+            WHERE ticker=? AND period_type=?
+        )
+        SELECT * FROM ranked WHERE rn=1
+        ORDER BY period_end_date DESC LIMIT ?
+    """
     with get_connection() as conn:
         rows = conn.execute(sql, (ticker, period_type, limit)).fetchall()
     return [dict(r) for r in rows]
