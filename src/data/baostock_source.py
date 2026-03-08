@@ -368,12 +368,20 @@ class BaoStockSource(BaseDataSource):
             dupont_rows = _query_bs_quarters(bs.query_dupont_data, bs_code, limit)
             # Also get profit ratios to enrich metrics
             profit_rows = _query_bs_quarters(bs.query_profit_data, bs_code, limit)
-            # Build a lookup by statDate
+            # Build a lookup by statDate (normalized to ISO format)
             profit_by_date: dict[str, dict] = {}
             for pr in profit_rows:
                 k = pr.get("statDate") or pr.get("pubDate", "")
                 if k:
-                    profit_by_date[k] = pr
+                    # Normalize date key to ISO format (YYYY-MM-DD) for reliable matching
+                    try:
+                        normalized_key = date.fromisoformat(k).isoformat()
+                        profit_by_date[normalized_key] = pr
+                    except ValueError:
+                        logger.debug("[BaoStock] Skipping profit row with invalid date: %s", k)
+
+            matched_count = 0
+            unmatched_dupont = 0
 
             for row in dupont_rows:
                 period_str = row.get("statDate") or row.get("pubDate", "")
@@ -381,10 +389,16 @@ class BaoStockSource(BaseDataSource):
                     continue
                 try:
                     p_date = date.fromisoformat(period_str)
+                    normalized_key = p_date.isoformat()
                 except ValueError:
                     continue
 
-                profit = profit_by_date.get(period_str, {})
+                profit = profit_by_date.get(normalized_key, {})
+                if profit:
+                    matched_count += 1
+                else:
+                    unmatched_dupont += 1
+                    logger.debug("[BaoStock] No matching profit data for dupont period: %s", period_str)
                 roe_val = _safe_float(row.get("dupontROE") or row.get("dupontRoe"))
                 # BaoStock ROE is in fraction form (0-1), convert to % for consistency
                 if roe_val is not None and abs(roe_val) < 2:  # likely fraction
@@ -411,7 +425,8 @@ class BaoStockSource(BaseDataSource):
                     source=self.source_name,
                 ))
 
-            logger.info("[BaoStock] %s metrics: %d rows", ticker, len(results))
+            logger.info("[BaoStock] %s metrics: %d rows (%d matched with profit data, %d unmatched)",
+                       ticker, len(results), matched_count, unmatched_dupont)
         except Exception as e:
             logger.warning("[BaoStock] get_financial_metrics failed for %s: %s", ticker, e)
 

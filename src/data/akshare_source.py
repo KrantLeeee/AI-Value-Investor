@@ -63,7 +63,9 @@ def _ticker_with_suffix(ticker: str) -> str:
 def _parse_cn_number(val) -> float | None:
     """
     Parse Chinese financial number strings from THS API.
-    Handles unit suffixes: '亿' (×1e8), '万' (×1e4), plain floats, False, '--'.
+    Handles unit suffixes: '亿' (×1e8), '万' (×1e4), '千' (×1e3), '百' (×1e2), plain floats, False, '--'.
+
+    Note: Order matters - check longer suffixes first to handle edge cases like "万亿".
     """
     if val is None or val is False:
         return None
@@ -71,10 +73,15 @@ def _parse_cn_number(val) -> float | None:
     if s in ("--", "-", "—", "", "None", "nan", "False"):
         return None
     try:
+        # Check in order: 亿 → 万 → 千 → 百
         if s.endswith("亿"):
             return float(s[:-1]) * 1e8
         if s.endswith("万"):
             return float(s[:-1]) * 1e4
+        if s.endswith("千"):
+            return float(s[:-1]) * 1e3
+        if s.endswith("百"):
+            return float(s[:-1]) * 1e2
         f = float(s)
         return None if pd.isna(f) else f
     except (ValueError, TypeError):
