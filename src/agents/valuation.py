@@ -22,6 +22,8 @@ from src.data.database import (
     insert_agent_signal,
 )
 from src.data.models import AgentSignal
+from src.agents.wacc import calculate_wacc, generate_sensitivity_matrix
+from src.agents.industry_classifier import get_industry_from_watchlist
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -99,12 +101,42 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     metric_rows   = get_financial_metrics(ticker, limit=3)
 
     current_price = _get_current_price(ticker)
+
+    # Get industry classification for WACC calculation
+    industry = get_industry_from_watchlist(ticker)
+
+    # Calculate industry-adapted WACC (P2-⑦)
+    wacc_result = calculate_wacc(ticker, market, industry, current_price)
+    wacc = wacc_result["wacc"]
+    wacc_fallback = wacc_result.get("fallback_used", False)
+
     results: dict = {
-        "wacc":           WACC * 100,
+        "wacc":           wacc * 100,
+        "wacc_components": {
+            "re": wacc_result.get("re") * 100 if wacc_result.get("re") else None,
+            "rd": wacc_result.get("rd") * 100 if wacc_result.get("rd") else None,
+            "tc": wacc_result.get("tc") * 100 if wacc_result.get("tc") else None,
+            "beta": wacc_result.get("beta"),
+            "equity_weight": wacc_result.get("equity_weight") * 100 if wacc_result.get("equity_weight") else None,
+            "debt_weight": wacc_result.get("debt_weight") * 100 if wacc_result.get("debt_weight") else None,
+        },
         "terminal_growth": TERMINAL_GROWTH * 100,
         "current_price":  current_price,
+        "industry": industry,
     }
     detail_lines: list[str] = []
+
+    # Add WACC breakdown to detail lines
+    if not wacc_fallback:
+        detail_lines.append(
+            f"WACC: {wacc*100:.2f}% (股权成本={wacc_result.get('re', 0)*100:.2f}%, "
+            f"债务成本={wacc_result.get('rd', 0)*100:.2f}%, "
+            f"β={wacc_result.get('beta', 0):.2f}, "
+            f"E/V={wacc_result.get('equity_weight', 0)*100:.0f}%, "
+            f"D/V={wacc_result.get('debt_weight', 0)*100:.0f}%)"
+        )
+    else:
+        detail_lines.append(f"⚠ WACC: {wacc*100:.2f}% (使用行业默认值: {wacc_result.get('note', '')})")
 
     # ── 1. Owner Earnings & DCF ───────────────────────────────────────────────
     dcf_base = dcf_bull = dcf_bear = None
@@ -139,9 +171,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # Use FCF for DCF; fall back to OCF if FCF unavailable
         base_fcf = fcf or ocf
         if base_fcf and base_fcf > 0:
-            dcf_bull = _dcf(base_fcf, FCF_GROWTH_BULL)
-            dcf_base = _dcf(base_fcf, FCF_GROWTH_BASE)
-            dcf_bear = _dcf(base_fcf, FCF_GROWTH_BEAR)
+            # Use calculated WACC instead of hardcoded value (P2-⑦)
+            dcf_bull = _dcf(base_fcf, FCF_GROWTH_BULL, wacc=wacc)
+            dcf_base = _dcf(base_fcf, FCF_GROWTH_BASE, wacc=wacc)
+            dcf_bear = _dcf(base_fcf, FCF_GROWTH_BEAR, wacc=wacc)
             results.update({
                 "base_fcf":     base_fcf,
                 "dcf_bull":     dcf_bull,
@@ -152,6 +185,20 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
             })
             detail_lines.append(f"DCF (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元")
+
+            # Generate sensitivity matrix (P2-⑦)
+            if shares and shares > 0:
+                sensitivity = generate_sensitivity_matrix(
+                    base_fcf=base_fcf,
+                    wacc_current=wacc,
+                    shares=shares,
+                    wacc_range=(wacc * 0.7, wacc * 1.3),  # ±30% around current WACC
+                    growth_range=(0.0, 0.15),
+                    terminal_growth=TERMINAL_GROWTH,
+                    years=PROJECTION_YEARS,
+                )
+                results["sensitivity_matrix"] = sensitivity
+                logger.debug(f"[Valuation] Generated sensitivity matrix for {ticker}")
         else:
             detail_lines.append("⚠ FCF/OCF 为负或缺失，无法进行 DCF 估值")
 
@@ -264,7 +311,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 graham_number=f"¥{graham_number_per_share:.2f}" if graham_number_per_share else "N/A",
                 owner_earnings_value=f"¥{owner_earnings/1e8:.1f}亿" if owner_earnings else "N/A",
                 ev_ebitda_value=f"¥{ev_ebitda_value/1e8:.0f}亿" if ev_ebitda_value else "N/A",
-                wacc=WACC * 100,
+                wacc=wacc * 100,  # Use calculated WACC
                 terminal_growth=TERMINAL_GROWTH * 100,
                 fcf_growth=FCF_GROWTH_BASE * 100,
             )

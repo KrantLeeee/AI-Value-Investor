@@ -23,6 +23,8 @@ industry_profiles:
       de_thresholds: [0.5, 0.8, 1.5]  # Resource stocks typically have higher leverage
       growth_weight: 0.15  # Cyclical growth is unstable
       cash_quality_weight: 0.30  # Cash flow critical for resource stocks
+      wacc_range: [0.08, 0.10]  # Energy/resources: higher β + cyclical volatility
+      default_beta: 1.1  # Slightly higher than market for cyclical sectors
 
   consumer:
     weights:
@@ -40,6 +42,8 @@ industry_profiles:
       de_thresholds: [0.3, 0.6, 1.0]
       growth_weight: 0.30  # Growth is stable and important
       cash_quality_weight: 0.20
+      wacc_range: [0.07, 0.09]  # Consumer: stable cash flow, defensive
+      default_beta: 0.85  # Lower β for defensive consumer stocks
 
   tech:
     weights:
@@ -57,6 +61,8 @@ industry_profiles:
       de_thresholds: [0.2, 0.5, 0.8]  # Tech usually has low debt
       growth_weight: 0.35  # Growth is critical for tech
       cash_quality_weight: 0.25
+      wacc_range: [0.06, 0.08]  # Tech/New Energy: low debt + market optimism
+      default_beta: 1.2  # Higher volatility in tech sector
 
   banking:
     weights:
@@ -74,6 +80,8 @@ industry_profiles:
       de_thresholds: [8.0, 12.0, 15.0]  # Banks have much higher D/E
       growth_weight: 0.15
       cash_quality_weight: 0.15
+      wacc_range: [0.07, 0.09]  # Banking: special treatment, equity cost dominates
+      default_beta: 0.95  # Moderate volatility, regulated sector
 
   manufacturing:
     weights:
@@ -91,6 +99,8 @@ industry_profiles:
       de_thresholds: [0.6, 1.0, 1.5]
       growth_weight: 0.20
       cash_quality_weight: 0.25
+      wacc_range: [0.09, 0.11]  # Steel/Manufacturing: high β + leverage
+      default_beta: 1.15  # Higher cyclicality
 
   healthcare:
     weights:
@@ -108,6 +118,8 @@ industry_profiles:
       de_thresholds: [0.3, 0.6, 1.0]
       growth_weight: 0.25
       cash_quality_weight: 0.20
+      wacc_range: [0.07, 0.09]  # Healthcare: moderate, policy-sensitive
+      default_beta: 0.90  # Lower volatility, defensive characteristics
 
   real_estate:
     weights:
@@ -125,6 +137,8 @@ industry_profiles:
       de_thresholds: [1.0, 1.5, 2.5]  # High leverage is normal
       growth_weight: 0.18
       cash_quality_weight: 0.28  # Cash flow critical
+      wacc_range: [0.08, 0.10]  # Real estate: high leverage + policy risk
+      default_beta: 1.05  # Moderate-high cyclicality
 
   default:
     weights:
@@ -142,6 +156,8 @@ industry_profiles:
       de_thresholds: [0.5, 1.0, 1.5]
       growth_weight: 0.25
       cash_quality_weight: 0.25
+      wacc_range: [0.08, 0.10]  # Default: conservative middle range
+      default_beta: 1.0  # Market average beta
 
 # Industry keyword mapping (for classification from sector names)
 industry_keywords:
