@@ -317,6 +317,17 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         "industry": industry,
     }
 
+    # Initialize all valuation variables to None for defensive coding
+    # These will be set conditionally based on data availability
+    dcf_bull = None
+    dcf_base = None
+    dcf_bear = None
+    shares = None
+    graham_number = None
+    graham_number_per_share = None
+    ev_ebitda_per_share = None
+    pb_target = None
+
     # Apply cyclical sector WACC premium
     _is_cyclical = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "mining", "steel"])
     if _is_cyclical:

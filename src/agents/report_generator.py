@@ -659,17 +659,32 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch7_recommendation":
+        # ── Handle valuation agent failure ────────────────────────────────────
+        if not val:
+            # Valuation failed - cannot generate recommendation without target price
+            return (
+                "## 综合建议与投资决策\n\n"
+                "⚠️ **估值模型未能完成分析**，无法计算目标价。可能原因：\n"
+                "- 财务数据严重缺失（数据完整度 < 30%）\n"
+                "- 价格数据不可用\n"
+                "- 关键财务指标异常\n\n"
+                "**建议**: 等待更完整的财务数据披露后再进行估值分析。\n\n"
+                f"**基本面信号**: {fund.signal if fund else '未运行'} ({fund.confidence:.0%})\n"
+                f"**价值投资框架**: {buff.signal if buff else '未运行'} ({buff.confidence:.0%})\n"
+                f"**防御性投资准则**: {gram.signal if gram else '未运行'} ({gram.confidence:.0%})\n"
+            )
+
         # ── Use weighted target from valuation agent ──────────────────────────
         # CRITICAL: Do NOT recalculate with different weights. Use the validated
         # weighted_target that already applied outlier detection and normalization.
-        validation = val.metrics.get("validation", {}) if val else {}
+        validation = val.metrics.get("validation", {})
         w_target = validation.get("weighted_target") or 0
 
         # Get individual method prices for reference
-        dcf_base = val.metrics.get("dcf_per_share", 0) if val else 0
+        dcf_base = val.metrics.get("dcf_per_share", 0)
         dcf_optimistic = dcf_base * 1.2 if dcf_base else 0
         dcf_pessimistic = dcf_base * 0.8 if dcf_base else 0
-        current_price = val.metrics.get("current_price", 0) if val else 0
+        current_price = val.metrics.get("current_price", 0)
         graham_number = val.metrics.get("graham_number") or 0
         ev_ebitda_target = val.metrics.get("ev_ebitda_per_share") or 0
         pb_target = val.metrics.get("pb_target") or 0
