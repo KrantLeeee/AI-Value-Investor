@@ -195,15 +195,61 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
             return f"{(intrinsic - price) / intrinsic * 100:+.1f}%"
         return "N/A"
 
-    # Valuation summary table (4 methods)
+    # Valuation summary table - use actual validated weights from valuation agent
+    validation = metrics.get("validation", {})
+    validated_methods = validation.get("validated_methods", [])
+    valid_methods = validation.get("valid_methods", [])
+    excluded_methods = validation.get("excluded_methods", [])
+
+    # Build method lookup dict
+    method_lookup = {m["method"]: m for m in validated_methods}
+
+    # Define display order and original weights
+    method_display = [
+        ("DCF", 0.40, dcf, "DCF折现现金流"),
+        ("Graham", 0.25, graham, "Graham Number下限"),
+        ("EV/EBITDA", 0.20, ev_ebps, "EV/EBITDA（6x行业倍数）"),
+        ("P/B", 0.15, pb_tgt, f"P/B（1.8x BVPS={bvps:.2f}）" if bvps else "P/B"),
+    ]
+
+    # Calculate normalized weights for valid methods
+    valid_orig_weights = {m: w for m, w, _, _ in method_display if m in valid_methods}
+    total_weight = sum(valid_orig_weights.values())
+    normalized_weights = {m: (w / total_weight if total_weight > 0 else 0)
+                         for m, w in valid_orig_weights.items()}
+
     lines.append("### 多方法估值汇总")
     lines.append("")
-    lines.append("| 估值方法 | 权重 | 每股隐含价值 | 当前价格 | 安全边际 |")
-    lines.append("|:---------|:-----|:------------|:---------|:---------|")
-    lines.append(f"| EV/EBITDA（6x行业倍数）| 40% | {'¥'+f'{ev_ebps:.2f}' if ev_ebps else '数据估算中'} | ¥{current:.2f} | {_mos(ev_ebps, current)} |" if current else "| EV/EBITDA | 40% | - | - | - |")
-    lines.append(f"| P/B（1.8x BVPS={bvps:.2f}）| 30% | {'¥'+f'{pb_tgt:.2f}' if pb_tgt else 'N/A'} | ¥{current:.2f} | {_mos(pb_tgt, current)} |" if (current and bvps) else "| P/B | 30% | N/A | - | - |")
-    lines.append(f"| DCF折现现金流 | 20% | {'¥'+f'{dcf:.2f}' if dcf else '数据不足'} | {'¥'+f'{current:.2f}' if current else '-'} | {f'{mos*100:+.1f}%' if mos else 'N/A'} |")
-    lines.append(f"| Graham Number下限 | 10% | {'¥'+f'{graham:.2f}' if graham else 'N/A'} | {'¥'+f'{current:.2f}' if current else '-'} | {_mos(graham, current)} |")
+    if excluded_methods:
+        lines.append(f"⚠ **注**: {', '.join(excluded_methods)} 已因异常检测被排除，以下为调整后权重")
+        lines.append("")
+    lines.append("| 估值方法 | 原始权重 | 调整后权重 | 每股隐含价值 | 当前价格 | 安全边际 |")
+    lines.append("|:---------|:--------|:---------|:------------|:---------|:---------|")
+
+    for method_name, orig_weight, price_value, display_name in method_display:
+        orig_w_str = f"{orig_weight*100:.0f}%"
+
+        if method_name in excluded_methods:
+            # Excluded method
+            norm_w_str = "⚠ 已排除"
+            price_str = f"¥{price_value:.2f}" if price_value else "N/A"
+        elif method_name in valid_methods:
+            # Valid method with normalized weight
+            norm_weight = normalized_weights.get(method_name, 0)
+            norm_w_str = f"**{norm_weight*100:.1f}%**"
+            price_str = f"¥{price_value:.2f}" if price_value else "N/A"
+        else:
+            # Method not in validation results (shouldn't happen)
+            norm_w_str = "—"
+            price_str = "N/A"
+
+        current_str = f"¥{current:.2f}" if current else "—"
+        mos_str = _mos(price_value, current)
+
+        lines.append(
+            f"| {display_name} | {orig_w_str} | {norm_w_str} | {price_str} | {current_str} | {mos_str} |"
+        )
+
     lines.append("")
 
     # WACC assumptions box
@@ -386,8 +432,9 @@ def _build_appendix(
             elif agent_name == "warren_buffett":
                 key_metric = f"护城河: {signal.metrics.get('moat_type', 'N/A')}"
             elif agent_name == "ben_graham":
-                passed = signal.metrics.get('standards_passed', 0)
-                key_metric = f"通过: {passed}/7标准"
+                passed = signal.metrics.get('criteria_passed', 0)
+                total = signal.metrics.get('criteria_total', 6)
+                key_metric = f"通过: {passed}/{total}标准"
             elif agent_name == "sentiment":
                 score = signal.metrics.get('sentiment_score')
                 key_metric = f"情绪: {score:.2f}" if score else "N/A"
@@ -579,40 +626,21 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch7_recommendation":
-        # ── Multi-method weighted target price calculation ─────────────────────
-        # Oil services standard: EV/EBITDA(40%) + P/B(30%) + DCF(20%) + Graham(10%)
+        # ── Use weighted target from valuation agent ──────────────────────────
+        # CRITICAL: Do NOT recalculate with different weights. Use the validated
+        # weighted_target that already applied outlier detection and normalization.
+        validation = val.metrics.get("validation", {}) if val else {}
+        w_target = validation.get("weighted_target") or 0
+
+        # Get individual method prices for reference
         dcf_base = val.metrics.get("dcf_per_share", 0) if val else 0
         dcf_optimistic = dcf_base * 1.2 if dcf_base else 0
         dcf_pessimistic = dcf_base * 0.8 if dcf_base else 0
         current_price = val.metrics.get("current_price", 0) if val else 0
         graham_number = val.metrics.get("graham_number") or 0
+        ev_ebitda_target = val.metrics.get("ev_ebitda_per_share") or 0
+        pb_target = val.metrics.get("pb_target") or 0
 
-        # Get EV/EBITDA per-share target from valuation agent (computed in P1 valuation fixes)
-        ev_ebitda_target = val.metrics.get("ev_ebitda_per_share") if val else None
-        if not ev_ebitda_target:
-            # Fallback: estimate from revenue + net margin
-            if fund and fund.metrics.get("revenue") and val:
-                rev = fund.metrics.get("revenue", 0) or 0
-                nm = (fund.metrics.get("net_margin_pct", 7) or 7) / 100
-                ebitda_est = rev * nm * 1.5
-                shares_est = val.metrics.get("shares_outstanding", 4.77e9) or 4.77e9
-                ev_ebitda_target = round((ebitda_est * 6) / shares_est, 2)
-        ev_ebitda_target = ev_ebitda_target or (dcf_base * 0.80)
-
-        # P/B target from valuation agent (bvps × sector-appropriate P/B multiple)
-        pb_target = val.metrics.get("pb_target") if val else None
-        if not pb_target:
-            bvps = val.metrics.get("bvps", 0) if val else 0
-            pb_target = round(bvps * 1.8, 2) if bvps else dcf_base * 0.75
-
-        # Weighted target price
-        dcf_3way_avg = (dcf_optimistic + dcf_base + dcf_pessimistic) / 3 if dcf_base else 0
-        w_target = (
-            ev_ebitda_target * 0.40 +
-            (pb_target or 0) * 0.30 +
-            dcf_3way_avg * 0.20 +
-            (graham_number or 0) * 0.10
-        )
         # Target range: ±10% around weighted target
         w_target_low = round(w_target * 0.90, 2) if w_target else dcf_pessimistic
         w_target_high = round(w_target * 1.10, 2) if w_target else dcf_optimistic
