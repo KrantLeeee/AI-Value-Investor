@@ -27,6 +27,17 @@ logger = get_logger(__name__)
 
 AGENT_NAME = "report_generator"
 
+# Agent name mapping for human-readable report language
+# Maps internal agent names to professional investment terminology
+AGENT_NAME_MAPPING = {
+    "fundamentals": "基本面分析",
+    "valuation": "估值模型",
+    "warren_buffett": "价值投资框架",
+    "ben_graham": "防御性投资准则",
+    "sentiment": "市场情绪监测",
+    "contrarian": "辩证分析",
+}
+
 
 def _safe(x) -> float | None:
     if x is None:
@@ -131,7 +142,7 @@ def _build_financial_quality_table(
         lines.append(f"> {fundamentals_signal.reasoning}")
         lines.append("")
     else:
-        lines.append("基本面Agent未运行，数据不可用。")
+        lines.append("基本面分析未运行，数据不可用。")
         lines.append("")
 
     # Data quality section
@@ -165,7 +176,7 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
     lines = ["## 4. 估值分析与敏感性测试", ""]
 
     if not valuation_signal:
-        lines.append("估值Agent未运行，数据不可用。")
+        lines.append("估值模型未运行，数据不可用。")
         return "\n".join(lines)
 
     metrics = valuation_signal.metrics
@@ -232,7 +243,7 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
         lines.append("| - | 数据不足 | - | - |")
 
     lines.append("")
-    lines.append(f"**Agent完整评估**: {valuation_signal.reasoning}")
+    lines.append(f"**估值模型完整评估**: {valuation_signal.reasoning}")
     lines.append("")
 
     return "\n".join(lines)
@@ -353,16 +364,19 @@ def _build_appendix(
     """
     lines = ["## 附录：数据质量与技术说明", ""]
 
-    # Agent signals summary table
-    lines.append("### Agent信号汇总")
+    # Analysis dimensions summary table (use human-readable names)
+    lines.append("### 分析维度信号汇总")
     lines.append("")
-    lines.append("| Agent | 信号 | 置信度 | 关键指标 |")
-    lines.append("|:------|:-----|:-------|:---------|")
+    lines.append("| 分析维度 | 信号 | 置信度 | 关键指标 |")
+    lines.append("|:---------|:-----|:-------|:---------|")
 
     for agent_name, signal in signals.items():
         if signal:
             emoji = _signal_emoji(signal.signal)
-            # Extract key metric from each agent
+            # Use human-readable name from mapping
+            display_name = AGENT_NAME_MAPPING.get(agent_name, agent_name)
+
+            # Extract key metric from each dimension
             key_metric = ""
             if agent_name == "fundamentals":
                 key_metric = f"得分: {signal.metrics.get('total_score', 'N/A')}/100"
@@ -381,7 +395,7 @@ def _build_appendix(
                 mode = signal.metrics.get('mode', 'N/A')
                 key_metric = f"模式: {mode}"
 
-            lines.append(f"| {agent_name} | {emoji} {signal.signal} | {signal.confidence:.0%} | {key_metric} |")
+            lines.append(f"| {display_name} | {emoji} {signal.signal} | {signal.confidence:.0%} | {key_metric} |")
 
     lines.append("")
 
