@@ -83,12 +83,16 @@ def _validate_valuation_result(
     all_results: list[float]
 ) -> dict:
     """
-    Validate a valuation result against three outlier detection rules.
+    Validate a valuation result against outlier detection rules.
+
+    BUG-02 FIX: Changed from market price baseline to method median baseline.
+    Old rules incorrectly excluded valid valuations for undervalued/overvalued stocks.
 
     Rules (any violation triggers exclusion):
     1. Negative or zero target price → exclude
-    2. Deviation from current price > 80% → exclude
-    3. Deviation from median of all results > 50% → exclude
+    2. Deviation from method median > 60% → exclude (BUG-02 fix: uses median, not market price)
+    3. EXCEPTION: If all methods agree on direction (all above or all below market),
+       skip rule 2 (don't exclude consistent signals)
 
     Args:
         method_name: Name of the valuation method (e.g., "DCF", "Graham")
@@ -112,32 +116,37 @@ def _validate_valuation_result(
         warnings.append(f"{method_name}: negative or zero target price (¥{target_price:.2f})")
         valid = False
 
-    # Rule 2: Deviation from current price > 80%
-    if current_price and current_price > 0:
-        deviation_from_current = abs(target_price - current_price) / current_price
-        if deviation_from_current > 0.80:
-            warnings.append(
-                f"{method_name}: deviation from current price "
-                f"{deviation_from_current*100:.1f}% exceeds 80% threshold "
-                f"(target=¥{target_price:.2f} vs current=¥{current_price:.2f})"
-            )
-            valid = False
-
-    # Rule 3: Deviation from median > 50%
-    # Use statistics.median (resistant to outliers), NOT mean
+    # BUG-02 FIX: Rule 2 now uses method median as baseline, not market price
+    # Also check for directional consensus before excluding
     if all_results and len(all_results) > 0:
         # Filter out invalid values for median calculation
         valid_prices = [p for p in all_results if p is not None and p > 0]
+
         if len(valid_prices) >= 2:
+            # Check for directional consensus (all above or all below market price)
+            # If all methods agree on direction, don't exclude any of them
+            all_above_market = all(p > current_price for p in valid_prices) if current_price > 0 else False
+            all_below_market = all(p < current_price for p in valid_prices) if current_price > 0 else False
+            directional_consensus = all_above_market or all_below_market
+
             median_price = statistics.median(valid_prices)
-            deviation_from_median = abs(target_price - median_price) / median_price
-            if deviation_from_median > 0.50:
+            deviation_from_median = abs(target_price - median_price) / median_price if median_price > 0 else 0
+
+            # BUG-02 FIX: Use 60% threshold (was 50%), and skip if directional consensus
+            if deviation_from_median > 0.60 and not directional_consensus:
                 warnings.append(
                     f"{method_name}: deviation from median "
-                    f"{deviation_from_median*100:.1f}% exceeds 50% threshold "
+                    f"{deviation_from_median*100:.1f}% exceeds 60% threshold "
                     f"(target=¥{target_price:.2f} vs median=¥{median_price:.2f})"
                 )
                 valid = False
+            elif deviation_from_median > 0.60 and directional_consensus:
+                # Log but don't exclude - all methods agree on direction
+                warnings.append(
+                    f"{method_name}: deviation {deviation_from_median*100:.1f}% but retained "
+                    f"(all methods {'above' if all_above_market else 'below'} market price)"
+                )
+                # valid remains True
 
     return {
         "method": method_name,

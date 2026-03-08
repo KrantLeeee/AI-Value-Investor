@@ -206,3 +206,104 @@ class TestHardRules:
         assert result.metrics["criteria_passed"] == 0
         # Note: criteria_total may be 1 (profitable_years is always evaluated)
         # but the insufficient_data logic overrides it
+
+
+class TestBug01NegativePE:
+    """Test BUG-01 fix: Negative PE should not pass Graham criteria."""
+
+    @patch('src.agents.ben_graham.get_income_statements')
+    @patch('src.agents.ben_graham.get_balance_sheets')
+    @patch('src.agents.ben_graham.get_financial_metrics')
+    @patch('src.agents.ben_graham.insert_agent_signal')
+    def test_negative_pe_fails_graham_criteria(self, mock_insert, mock_metrics, mock_balance, mock_income):
+        """
+        BUG-01: Negative PE (like 科大讯飞 PE=-1824) should NOT pass Graham criteria.
+
+        Before fix: PE=-1824 <= 15 evaluated to True (incorrectly passing criterion 5)
+        After fix: Negative PE automatically fails with message "EPS≤0，Graham标准不适用"
+        """
+        # Mock data with negative PE (similar to 科大讯飞)
+        mock_income.return_value = [
+            {"eps": -2.0, "net_income": -1000000000, "fiscal_year": 2023}  # Negative EPS
+        ]
+        mock_balance.return_value = [
+            {
+                "current_assets": 5000000000,
+                "current_liabilities": 2000000000,  # CR = 2.5 ✓
+                "total_debt": 1000000000,
+                "total_equity": 5000000000,  # D/E = 0.2 ✓
+                "total_liabilities": 2000000000
+            }
+        ]
+        mock_metrics.return_value = [
+            {
+                "current_ratio": 2.5,
+                "debt_to_equity": 0.2,
+                "pe_ratio": -1824.0,  # Negative PE due to losses
+                "pb_ratio": 2.0
+            }
+        ]
+
+        result = run(ticker="002230", market="SZ", use_llm=False)
+
+        # Check criteria details for PE-related criteria
+        criteria_details = result.metrics.get("criteria_details", [])
+
+        # Find PE criterion (criterion 5)
+        pe_criterion = [c for c in criteria_details if "P/E=" in c and "P/E×P/B" not in c]
+        assert len(pe_criterion) == 1
+        # Should fail (✗), not pass (✓)
+        assert pe_criterion[0].startswith("✗"), f"Negative PE should fail, got: {pe_criterion[0]}"
+        assert "EPS≤0" in pe_criterion[0] or "Graham标准不适用" in pe_criterion[0]
+
+        # Find PE×PB criterion (criterion 6)
+        pe_pb_criterion = [c for c in criteria_details if "P/E×P/B" in c]
+        assert len(pe_pb_criterion) == 1
+        # Should also fail due to negative PE
+        assert pe_pb_criterion[0].startswith("✗"), f"PE×PB with negative PE should fail, got: {pe_pb_criterion[0]}"
+
+    @patch('src.agents.ben_graham.get_income_statements')
+    @patch('src.agents.ben_graham.get_balance_sheets')
+    @patch('src.agents.ben_graham.get_financial_metrics')
+    @patch('src.agents.ben_graham.insert_agent_signal')
+    def test_positive_pe_over_15_still_fails(self, mock_insert, mock_metrics, mock_balance, mock_income):
+        """Verify positive PE > 15 still fails criterion 5 correctly."""
+        mock_income.return_value = [{"eps": 2.0, "net_income": 1000000, "fiscal_year": 2023}]
+        mock_balance.return_value = [
+            {"current_assets": 4000000, "current_liabilities": 1000000,
+             "total_debt": 500000, "total_equity": 2000000}
+        ]
+        mock_metrics.return_value = [
+            {"current_ratio": 4.0, "debt_to_equity": 0.25, "pe_ratio": 25.0, "pb_ratio": 2.0}
+        ]
+
+        result = run(ticker="TEST", market="SH", use_llm=False)
+
+        criteria_details = result.metrics.get("criteria_details", [])
+        pe_criterion = [c for c in criteria_details if "P/E=" in c and "P/E×P/B" not in c]
+        assert len(pe_criterion) == 1
+        assert pe_criterion[0].startswith("✗")
+        assert "25.0 > 15" in pe_criterion[0]
+
+    @patch('src.agents.ben_graham.get_income_statements')
+    @patch('src.agents.ben_graham.get_balance_sheets')
+    @patch('src.agents.ben_graham.get_financial_metrics')
+    @patch('src.agents.ben_graham.insert_agent_signal')
+    def test_positive_pe_under_15_still_passes(self, mock_insert, mock_metrics, mock_balance, mock_income):
+        """Verify positive PE <= 15 still passes criterion 5 correctly."""
+        mock_income.return_value = [{"eps": 2.0, "net_income": 1000000, "fiscal_year": 2023}]
+        mock_balance.return_value = [
+            {"current_assets": 4000000, "current_liabilities": 1000000,
+             "total_debt": 500000, "total_equity": 2000000}
+        ]
+        mock_metrics.return_value = [
+            {"current_ratio": 4.0, "debt_to_equity": 0.25, "pe_ratio": 10.0, "pb_ratio": 1.5}
+        ]
+
+        result = run(ticker="TEST", market="SH", use_llm=False)
+
+        criteria_details = result.metrics.get("criteria_details", [])
+        pe_criterion = [c for c in criteria_details if "P/E=" in c and "P/E×P/B" not in c]
+        assert len(pe_criterion) == 1
+        assert pe_criterion[0].startswith("✓")
+        assert "10.0 ≤ 15" in pe_criterion[0]

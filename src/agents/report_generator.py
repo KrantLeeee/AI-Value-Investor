@@ -639,7 +639,70 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch2_competitive":
+        # BUG-05 FIX: Inject industry context for proper competitive analysis
+        ctx = company_context or {}
+
+        # Company name and business from company_context or fallback
+        company_name = ctx.get("name") or ctx.get("company_name") or ticker
+        main_business = ctx.get("main_business") or ctx.get("business_scope", "")[:200] or "（请根据行业背景推断主营业务）"
+
+        # Industry classification from company_context or fundamentals
+        industry_classification = ctx.get("industry") or ctx.get("sector") or "未分类"
+
+        # Moat criteria hint based on industry type
+        moat_hints = {
+            "能源": "资质壁垒 + 政府关系护城河（政府关联采购比例/产能利用率）",
+            "消费": "品牌定价权护城河（历史提价次数/毛利率趋势/市占率变化）",
+            "科技": "技术 + 生态护城河（专利数量/开发者数量/技术领先性）",
+            "金融": "规模 + 数据护城河（客户数量/交叉销售率/科技投入占比）",
+            "保险": "规模 + 客户粘性护城河（续保率/代理人数量/品牌信任度）",
+            "医药": "专利护城河（专利数量/到期分布/研发费用率/创新药占比）",
+            "制造": "转换成本护城河（客户复购率/服务收入占比/定制化程度）",
+            "自动化": "转换成本护城河（客户粘性/服务收入占比/系统集成深度）",
+            "工业": "转换成本 + 规模护城河（客户集中度/产能利用率）",
+        }
+        moat_criteria_hint = "品牌/成本/转换成本/网络效应/规模"  # default
+        for keyword, hint in moat_hints.items():
+            if keyword in industry_classification or keyword in main_business:
+                moat_criteria_hint = hint
+                break
+
+        # Top competitors - try to get from context or use placeholder
+        top_competitors = ctx.get("top_competitors") or ctx.get("competitors")
+        if not top_competitors:
+            # Provide placeholder that LLM should identify
+            top_competitors = "（请根据行业背景分析主要竞争对手）"
+
+        # ROE trend from fundamentals agent
+        roe_trend = "N/A"
+        if fund and fund.metrics:
+            roe_vals = fund.metrics.get("roe_history") or []
+            if roe_vals:
+                roe_trend = " → ".join([f"{r:.1f}%" for r in roe_vals[:3]])
+            else:
+                roe = fund.metrics.get("roe")
+                roe_trend = f"{roe:.1f}%（最新）" if roe else "N/A"
+
+        # R&D or margin trend
+        rd_or_margin_trend = "N/A"
+        if fund and fund.metrics:
+            if "科技" in industry_classification or "软件" in industry_classification:
+                rd_rate = fund.metrics.get("rd_expense_ratio")
+                rd_or_margin_trend = f"研发费用率: {rd_rate:.1f}%" if rd_rate else "N/A"
+            else:
+                margin = fund.metrics.get("gross_margin") or fund.metrics.get("net_margin")
+                rd_or_margin_trend = f"毛利率/净利率: {margin:.1f}%" if margin else "N/A"
+
         return user_template.format(
+            # BUG-05 FIX: New industry context fields
+            company_name=company_name,
+            main_business=main_business,
+            industry_classification=industry_classification,
+            top_competitors=top_competitors,
+            moat_criteria_hint=moat_criteria_hint,
+            roe_trend=roe_trend,
+            rd_or_margin_trend=rd_or_margin_trend,
+            # Original fields
             buffett_signal=buff.signal if buff else "未运行",
             moat_type=buff.metrics.get("moat_type", "N/A") if buff else "N/A",
             management_quality=buff.metrics.get("management_quality", "N/A") if buff else "N/A",
@@ -715,6 +778,35 @@ def _build_chapter_user_prompt(
             else:
                 contrarian_risks = contr.metrics.get("core_contradiction", "（信号分歧）")
 
+        # BUG-04 FIX: Extract sentiment direction and key events for Ch7 prompt injection
+        sentiment_direction = "neutral"
+        sentiment_key_events = "无关键事件"
+        profit_warning = "无业绩预告"
+        if sent and sent.metrics:
+            # Determine direction from sentiment_score
+            score = sent.metrics.get("sentiment_score", 0)
+            if score > 0.2:
+                sentiment_direction = "positive（正面）"
+            elif score < -0.2:
+                sentiment_direction = "negative（负面）"
+            else:
+                sentiment_direction = "neutral（中性）"
+
+            # Extract key events
+            events = sent.metrics.get("key_events", [])
+            if events:
+                sentiment_key_events = "; ".join(events[:3])  # Top 3 events
+
+            # Check for profit warnings in reasoning or key events
+            reasoning = sent.reasoning or ""
+            all_text = reasoning + " ".join(events)
+            if "预增" in all_text or "业绩预告" in all_text:
+                profit_warning = "业绩预增"
+            elif "预亏" in all_text or "亏损" in all_text:
+                profit_warning = "业绩预亏"
+            elif "扭亏" in all_text:
+                profit_warning = "扭亏为盈"
+
         return user_template.format(
             fundamentals_signal=fund.signal if fund else "未运行",
             fundamentals_confidence=f"{fund.confidence:.0%}" if fund else "N/A",
@@ -728,6 +820,10 @@ def _build_chapter_user_prompt(
             sentiment_confidence=f"{sent.confidence:.0%}" if sent else "N/A",
             contrarian_signal=contr.signal if contr else "未运行",
             contrarian_confidence=f"{contr.confidence:.0%}" if contr else "N/A",
+            # BUG-04 FIX: Sentiment direction and key events for consistency check
+            sentiment_direction=sentiment_direction,
+            sentiment_key_events=sentiment_key_events,
+            profit_warning=profit_warning,
             # Multi-method valuation fields - all default to "N/A" if 0 or None
             ev_ebitda_target=f"{ev_ebitda_target:.2f}" if ev_ebitda_target else "N/A",
             pb_target=f"{pb_target:.2f}" if pb_target else "N/A",

@@ -210,7 +210,11 @@ def run(
         criteria_passed.append(f"✗ EPS增长：数据缺失")
 
     # Criterion 5: P/E <= 15
-    if pe and pe <= 15:
+    # BUG-01 FIX: Negative PE (EPS ≤ 0) should automatically fail, not pass numerical comparison
+    if pe is not None and pe < 0:
+        # Negative PE indicates negative earnings - Graham criteria not applicable
+        criteria_passed.append(f"✗ P/E={pe:.1f}（EPS≤0，Graham标准不适用）")
+    elif pe and pe <= 15:
         criteria_passed.append(f"✓ P/E={pe:.1f} ≤ 15")
     elif pe:
         criteria_passed.append(f"✗ P/E={pe:.1f} > 15")
@@ -218,7 +222,11 @@ def run(
         criteria_passed.append(f"✗ P/E：数据缺失")
 
     # Criterion 6: P/E × P/B <= 22.5
-    if pe_pb_product and pe_pb_product <= 22.5:
+    # BUG-01 FIX: If PE is negative, PE×PB product is meaningless for Graham analysis
+    if pe is not None and pe < 0:
+        # Negative PE makes PE×PB irrelevant for value investing
+        criteria_passed.append(f"✗ P/E×P/B：EPS≤0，Graham标准不适用")
+    elif pe_pb_product and pe_pb_product <= 22.5:
         criteria_passed.append(f"✓ P/E×P/B={pe_pb_product:.1f} ≤ 22.5")
     elif pe_pb_product:
         criteria_passed.append(f"✗ P/E×P/B={pe_pb_product:.1f} > 22.5")

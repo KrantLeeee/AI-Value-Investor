@@ -42,39 +42,11 @@ class TestValidateValuationResult:
         assert result["exclude_from_weighted"] is True
         assert len(result["warnings"]) > 0
 
-    def test_deviation_from_current_price_over_80_percent_excluded(self):
-        """Target price >80% deviation from current price should be excluded."""
-        # Target at -85% from current (15 vs 100) → should be excluded
-        all_results = [100, 110, 15]
-        result = _validate_valuation_result(
-            method_name="EV/EBITDA",
-            target_price=15,
-            current_price=100,
-            all_results=all_results
-        )
-
-        assert result["valid"] is False
-        assert result["exclude_from_weighted"] is True
-        assert "current price" in " ".join(result["warnings"]).lower()
-
-    def test_deviation_from_current_price_over_80_percent_upside(self):
-        """Target price >80% upside from current price should be excluded."""
-        # Target at +100% from current (200 vs 100) → should be excluded
-        all_results = [100, 110, 200]
-        result = _validate_valuation_result(
-            method_name="DCF",
-            target_price=200,
-            current_price=100,
-            all_results=all_results
-        )
-
-        assert result["valid"] is False
-        assert result["exclude_from_weighted"] is True
-
-    def test_deviation_from_median_over_50_percent_excluded(self):
-        """Target price >50% deviation from median should be excluded."""
+    def test_deviation_from_median_over_60_percent_excluded(self):
+        """BUG-02: Target price >60% deviation from median should be excluded."""
         # Median of [100, 110, 120] = 110
         # Target 200 is +81.8% from median → should be excluded
+        # Note: No directional consensus (100, 110, 120 around current=105, but 200 is outlier)
         all_results = [100, 110, 120, 200]
         result = _validate_valuation_result(
             method_name="P/B",
@@ -87,8 +59,8 @@ class TestValidateValuationResult:
         assert result["exclude_from_weighted"] is True
         assert "median" in " ".join(result["warnings"]).lower()
 
-    def test_deviation_from_median_over_50_percent_downside(self):
-        """Target price >50% below median should be excluded."""
+    def test_deviation_from_median_over_60_percent_downside(self):
+        """BUG-02: Target price >60% below median should be excluded."""
         # Median of [100, 110, 120] = 110
         # Target 40 is -63.6% from median → should be excluded
         all_results = [100, 110, 120, 40]
@@ -102,12 +74,91 @@ class TestValidateValuationResult:
         assert result["valid"] is False
         assert result["exclude_from_weighted"] is True
 
+    def test_bug02_directional_consensus_all_above_market_not_excluded(self):
+        """
+        BUG-02 FIX: When all methods agree on direction (all above market),
+        don't exclude even if deviation from median > 60%.
+
+        Example: 中国平安 with all valuations above market price ¥62.67
+        """
+        # All valuations above market price (simulating undervalued stock)
+        all_results = [100, 110, 180]  # All above current_price=60
+        result = _validate_valuation_result(
+            method_name="P/B",
+            target_price=180,  # 63.6% above median of 110, but all agree stock is undervalued
+            current_price=60,
+            all_results=all_results
+        )
+
+        # Should NOT be excluded because all methods agree the stock is undervalued
+        assert result["valid"] is True
+        assert result["exclude_from_weighted"] is False
+        # Should have info warning about retention due to consensus
+        warnings_text = " ".join(result["warnings"]).lower()
+        assert "retained" in warnings_text or len(result["warnings"]) == 0
+
+    def test_bug02_directional_consensus_all_below_market_not_excluded(self):
+        """
+        BUG-02 FIX: When all methods agree on direction (all below market),
+        don't exclude even if deviation from median > 60%.
+        """
+        # All valuations below market price (simulating overvalued stock)
+        all_results = [30, 40, 80]  # All below current_price=100
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=30,  # Far below median of 40, but all agree stock is overvalued
+            current_price=100,
+            all_results=all_results
+        )
+
+        # Should NOT be excluded because all methods agree the stock is overvalued
+        assert result["valid"] is True
+        assert result["exclude_from_weighted"] is False
+
+    def test_bug02_no_consensus_outlier_still_excluded(self):
+        """
+        BUG-02: Without directional consensus, outliers should still be excluded.
+        """
+        # Mixed directions: 90 below market, 110/120 above market
+        all_results = [90, 110, 120, 200]
+        result = _validate_valuation_result(
+            method_name="P/B",
+            target_price=200,  # 81.8% above median of 110
+            current_price=100,  # Some methods above, some below
+            all_results=all_results
+        )
+
+        # Should be excluded: no consensus and >60% deviation from median
+        assert result["valid"] is False
+        assert result["exclude_from_weighted"] is True
+
+    def test_bug02_market_price_deviation_no_longer_triggers_exclusion(self):
+        """
+        BUG-02 FIX: Deviation from market price should NOT trigger exclusion.
+
+        Old behavior: >80% from market price → excluded
+        New behavior: Only median deviation matters (with consensus exception)
+        """
+        # Target 200 is +100% from current price (100)
+        # But only +33% from median (150)
+        all_results = [120, 150, 180, 200]  # All above market, median=165
+        result = _validate_valuation_result(
+            method_name="DCF",
+            target_price=200,  # +100% from current price
+            current_price=100,
+            all_results=all_results
+        )
+
+        # Should NOT be excluded: all methods above market (consensus)
+        # and deviation from median is only 21% ((200-165)/165)
+        assert result["valid"] is True
+        assert result["exclude_from_weighted"] is False
+
     def test_valid_result_within_all_thresholds(self):
-        """Valid result should pass all three rules."""
+        """Valid result should pass all rules."""
         # Median = 110, target = 115
         # - Not negative ✓
-        # - (115-100)/100 = 15% from current ✓ (<80%)
-        # - (115-110)/110 = 4.5% from median ✓ (<50%)
+        # - (115-110)/110 = 4.5% from median ✓ (<60%)
         all_results = [100, 110, 120, 115]
         result = _validate_valuation_result(
             method_name="DCF",
@@ -138,9 +189,9 @@ class TestValidateValuationResult:
 
     def test_median_calculation_uses_statistics_median(self):
         """Should use statistics.median, not mean (resistant to outliers)."""
-        # Mean = 95, Median = 110
-        # Target 150 is: +57.9% from mean, +36.4% from median
-        # Should use median → valid (36.4% < 50%)
+        # Mean = 98, Median = 110
+        # Target 150 is: +53% from mean, +36.4% from median
+        # Should use median → valid (36.4% < 60%)
         all_results = [10, 100, 110, 120, 150]
         result = _validate_valuation_result(
             method_name="Graham",
@@ -149,8 +200,7 @@ class TestValidateValuationResult:
             all_results=all_results
         )
 
-        # If using mean incorrectly: (150-95)/95 = 57.9% → would exclude
-        # If using median correctly: (150-110)/110 = 36.4% → should include
+        # If using median correctly: (150-110)/110 = 36.4% → should include (<60%)
         assert result["valid"] is True
         assert result["exclude_from_weighted"] is False
 
