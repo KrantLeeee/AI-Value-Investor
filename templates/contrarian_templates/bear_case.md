@@ -26,6 +26,10 @@
 
 ### 悲观目标价
 
+{% if bear_case_target_price is defined and bear_case_target_price %}
 基于风险场景，悲观估值目标: **¥{{ "%.2f"|format(bear_case_target_price) }}/股**
+{% else %}
+悲观目标价暂未测算。
+{% endif %}
 
 **综合论述**: {{ reasoning }}

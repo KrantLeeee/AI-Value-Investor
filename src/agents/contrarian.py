@@ -115,12 +115,59 @@ def _format_quality_context(quality_report: QualityReport) -> str:
     return "\n".join(lines)
 
 
+def _build_industry_context_block(company_context: dict) -> str:
+    """
+    Build an industry context block to prepend to the system prompt.
+    This forces the LLM to use industry-specific knowledge.
+    """
+    if not company_context:
+        return ""
+
+    company_name = company_context.get('company_name', '')
+    main_business = company_context.get('main_business', '')
+    concepts = company_context.get('concepts', '')
+
+    lines = [
+        "\n\n--- 行业上下文（必须考虑，否则分析无效） ---",
+        f"公司: {company_name}",
+        f"业务: {main_business}",
+    ]
+
+    # Add industry-specific risk frameworks based on concepts/business
+    business_lower = (main_business + concepts).lower()
+    if any(kw in business_lower for kw in ['油', '钻井', '油田', '海上']):
+        lines += [
+            "",
+            "【行业风险框架 — 近海油田服务】",
+            "1. 油价联动风险：布伦特原油<$60/桶 → 中国海油削减Capex → 订单下滑15-25%",
+            "2. 地缘政治（MED-HIGH）：南海争端、台海紧张 → 作业区域受限",
+            "   - 注意：过去5年南海年均摩擦>50次，这是结构性高频率风险，非尾风险",
+            "3. 中国海油依赖：约70%收入来自单一客户，议价能力受限",
+            "4. 能源转型：长期碳中和政策压制上游新增投资",
+            "5. 竞争：SLB/HAL等国际巨头技术领先，价格战风险",
+            "",
+            "估值注意：DCF对石油服务周期股可靠性≤30%，应以EV/EBITDA为主要参考",
+        ]
+    elif any(kw in business_lower for kw in ['银行', '金融', '保险']):
+        lines += [
+            "",
+            "【行业风险框架 — 金融/银行】",
+            "1. 信用周期风险：经济下行 → 不良贷款率上升",
+            "2. 利差压缩：降息周期 → 净息差收窄",
+            "3. 监管风险：资本充足率要求提高",
+        ]
+
+    lines.append("--- 以上行业背景必须融入你的质疑和风险场景 ---")
+    return "\n".join(lines)
+
+
 def _build_prompt(
     mode: str,
     consensus_direction: str,
     consensus_strength: float,
     signals: dict[str, AgentSignal | None],
     quality_report: QualityReport,
+    company_context: dict | None = None,
 ) -> tuple[str, str]:
     """
     Construct dynamic prompts based on mode and consensus.
@@ -141,13 +188,17 @@ def _build_prompt(
         CONTRARIAN_CRITICAL_QUESTIONS_SYSTEM, CONTRARIAN_CRITICAL_QUESTIONS_USER,
     )
 
-    # Select system prompt
+    # Select system prompt (with industry context appended)
     system_prompts = {
         "bear_case": CONTRARIAN_BEAR_CASE_SYSTEM,
         "bull_case": CONTRARIAN_BULL_CASE_SYSTEM,
         "critical_questions": CONTRARIAN_CRITICAL_QUESTIONS_SYSTEM,
     }
     system_prompt = system_prompts[mode]
+
+    # Append industry context block (forces industry-specific analysis)
+    if company_context:
+        system_prompt = system_prompt + _build_industry_context_block(company_context)
 
     # Extract strongest arguments
     arguments = []
@@ -222,7 +273,14 @@ def _validate_json(json_str: str, mode: str) -> tuple[bool, dict[str, Any] | Non
         Tuple of (is_valid, parsed_data or None)
     """
     try:
-        data = json.loads(json_str)
+        # Strip markdown code fences if present (LLMs often wrap JSON in ```json...```)
+        cleaned = json_str.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            # Remove first line (```json or ```) and last line (```)
+            lines = [l for l in lines[1:] if l.strip() != "```"]
+            cleaned = "\n".join(lines)
+        data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         logger.warning(f"[Contrarian] JSON parse error: {e}")
         return False, None
@@ -269,9 +327,9 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
     from src.llm.router import call_llm
 
     response = call_llm(
-        task_name="contrarian_analysis",
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        "contrarian_analysis",
+        system_prompt,
+        user_prompt,
     )
 
     return response
@@ -284,6 +342,7 @@ def run(
     signals: dict[str, AgentSignal | None],
     quality_report: QualityReport,
     use_llm: bool = True,
+    company_context: dict | None = None,  # NEW: industry context from QVeris
 ) -> AgentSignal:
     """
     Run Contrarian Agent with dynamic mode switching.
@@ -345,7 +404,8 @@ def run(
     # Step 3: Build prompts
     try:
         system_prompt, user_prompt = _build_prompt(
-            mode, consensus_direction, consensus_strength, signals, quality_report
+            mode, consensus_direction, consensus_strength, signals, quality_report,
+            company_context=company_context,  # NEW
         )
     except Exception as e:
         logger.error(f"[Contrarian] Prompt construction failed: {e}")

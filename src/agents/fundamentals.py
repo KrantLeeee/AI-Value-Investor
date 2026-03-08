@@ -60,6 +60,51 @@ def run(ticker: str, market: str) -> AgentSignal:
     cashflow_rows = get_cash_flows(ticker, limit=3, period_type="annual")
     metric_rows  = get_financial_metrics(ticker, limit=3)
 
+    # ── QVeris supplement: fill missing balance sheet fields ───────────────────
+    # AKShare often lacks current_assets / current_liabilities for A-shares.
+    # Fetch from QVeris iFinD as a fallback enrichment (not DB write).
+    if market == "a_share" and balance_rows:
+        import os
+        has_ca = any(_safe(r.get("current_assets")) for r in balance_rows)
+        has_cl = any(_safe(r.get("current_liabilities")) for r in balance_rows)
+        if not (has_ca and has_cl):
+            try:
+                from src.data.qveris_source import QVerisSource
+                qsrc = QVerisSource()
+                if qsrc.health_check():
+                    qb = qsrc.get_balance_sheets(ticker, market, limit=1)
+                    if qb and balance_rows:
+                        # Patch the first row dict with QVeris values
+                        if not has_ca and qb[0].current_assets:
+                            balance_rows[0]["current_assets"] = qb[0].current_assets
+                        if not has_cl and qb[0].current_liabilities:
+                            balance_rows[0]["current_liabilities"] = qb[0].current_liabilities
+                        if not _safe(balance_rows[0].get("cash_and_equivalents")) and qb[0].cash_and_equivalents:
+                            balance_rows[0]["cash_and_equivalents"] = qb[0].cash_and_equivalents
+                        logger.info("[Fundamentals] Enriched balance sheet from QVeris")
+            except Exception as _e:
+                logger.debug("[Fundamentals] QVeris balance enrichment failed: %s", _e)
+
+    # ── QVeris supplement: fill income YoY gap ────────────────────────────────
+    # If fewer than 2 annual income rows exist, YoY is impossible.
+    if market == "a_share" and len(income_rows) < 2:
+        try:
+            from src.data.qveris_source import QVerisSource
+            qsrc = QVerisSource()
+            if qsrc.health_check():
+                qi = qsrc.get_income_statements(ticker, market, limit=3)
+                if len(qi) >= 2:
+                    synthetic = [
+                        {"revenue": s.revenue, "net_income": s.net_income,
+                         "eps": s.eps, "period_end_date": str(s.period_end_date)}
+                        for s in qi
+                    ]
+                    income_rows = income_rows + synthetic[len(income_rows):]
+                    logger.info("[Fundamentals] Enriched income from QVeris (now %d rows)", len(income_rows))
+        except Exception as _e:
+            logger.debug("[Fundamentals] QVeris income enrichment failed: %s", _e)
+
+
     score = 0
     detail_lines: list[str] = []
     metrics_snapshot: dict = {}
@@ -225,6 +270,13 @@ def run(ticker: str, market: str) -> AgentSignal:
 
     metrics_snapshot["total_score"] = score
     metrics_snapshot["available_periods"] = len(income_rows)
+
+    # Expose raw revenue for Ch1 template (format_yuan needs absolute value)
+    if income_rows and _safe(income_rows[0].get("revenue")):
+        metrics_snapshot["revenue"] = _safe(income_rows[0].get("revenue"))
+    # Expose revenue_yoy_pct if not already set (it's set above if rows>=2)
+    if "revenue_yoy_pct" not in metrics_snapshot and rev_yoy is not None:
+        metrics_snapshot["revenue_yoy_pct"] = round(rev_yoy * 100, 2)
 
     reasoning = (
         f"基本面评分 {score}/100。\n"

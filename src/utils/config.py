@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # ── Data Source Keys ─────────────────────────────────
     fmp_api_key: str = Field(default="", alias="FMP_API_KEY")
+    qveris_api_key: str = Field(default="", alias="QVERIS_API_KEY")
 
     # ── Notification — Telegram ───────────────────────────
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")

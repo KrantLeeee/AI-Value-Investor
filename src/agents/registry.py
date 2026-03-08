@@ -64,12 +64,26 @@ def run_all_agents(
 
     try:
         logger.info("[Registry] Running data quality checks...")
+        from src.data.models import IncomeStatement, BalanceSheet, CashFlow, DailyPrice
+
+        def _to_models(rows: list[dict], model_cls):
+            """Convert DB dicts to Pydantic model objects, skipping invalid rows."""
+            result = []
+            for row in rows:
+                try:
+                    result.append(model_cls(**{
+                        k: v for k, v in row.items()
+                        if k in model_cls.model_fields
+                    }))
+                except Exception:
+                    pass
+            return result
+
         raw_data = {
-            'income': database.get_income_statements(ticker, limit=10),
-            'balance': database.get_balance_sheets(ticker, limit=10),
-            'cashflow': database.get_cash_flows(ticker, limit=10),
-            'metrics': database.get_financial_metrics(ticker, limit=10),
-            'prices': database.get_latest_prices(ticker, limit=10),
+            'income':   _to_models(database.get_income_statements(ticker, limit=10), IncomeStatement),
+            'balance':  _to_models(database.get_balance_sheets(ticker, limit=10), BalanceSheet),
+            'cashflow': _to_models(database.get_cash_flows(ticker, limit=10), CashFlow),
+            'prices':   _to_models(database.get_latest_prices(ticker, limit=10), DailyPrice),
         }
 
         quality_report = run_quality_checks(ticker, market, raw_data)
@@ -88,7 +102,27 @@ def run_all_agents(
             records_checked={}
         )
 
-    # ── Phase 1: Pure-code agents ─────────────────────────────────────────────
+    # ── Phase -1: Company Context (runs BEFORE all agents) ───────────────────
+    # Fetch company basics from QVeris iFinD so all downstream agents know
+    # the company name, industry, main business before analysis begins.
+    company_context: dict = {}
+    try:
+        from src.data.fetcher import Fetcher
+        fetcher = Fetcher()
+        basics = fetcher.fetch_company_basics(ticker, market)
+        if basics:
+            company_context = basics
+            logger.info(
+                "[Registry] Company context: %s | business: %s",
+                basics.get('company_name', ticker),
+                (basics.get('main_business') or '')[:30],
+            )
+        else:
+            logger.warning("[Registry] Company basics not available (QVeris returned None)")
+    except Exception as e:
+        logger.warning("[Registry] Company context fetch failed: %s", e)
+
+
     try:
         from src.agents import fundamentals
         logger.info("[Registry] Running Fundamentals Agent...")
@@ -144,6 +178,7 @@ def run_all_agents(
             signals=signals,
             quality_report=quality_report,
             use_llm=_use_llm,
+            company_context=company_context,  # NEW: inject industry context
         )
     except Exception as e:
         logger.error("[Registry] Contrarian Agent failed: %s", e)
@@ -155,9 +190,10 @@ def run_all_agents(
         _, report_path = report_generator.run(
             ticker, market,
             signals=signals,
-            quality_report=quality_report,  # NEW: pass quality report
+            quality_report=quality_report,
             analysis_date=analysis_date,
             use_llm=_use_llm,
+            company_context=company_context,  # NEW: inject company context
         )
     except Exception as e:
         logger.error("[Registry] Report generation failed: %s", e)

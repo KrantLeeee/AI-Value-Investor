@@ -81,29 +81,54 @@ def _build_financial_quality_table(
 ) -> str:
     """
     Build Chapter 3: Financial Quality Assessment (code-based).
-
-    Args:
-        ticker: Stock ticker
-        fundamentals_signal: Fundamentals agent result
-        quality_report: Data quality report from P0-①
-
-    Returns:
-        Chapter 3 markdown text
+    Uses actual computed values from metrics_snapshot.
     """
     lines = ["## 3. 财务质量评估", ""]
 
-    # Fundamentals scoring breakdown
     if fundamentals_signal:
-        lines.append(f"**基本面评分**: {fundamentals_signal.metrics.get('total_score', 'N/A')}/100")
+        m = fundamentals_signal.metrics
+        total_score = m.get('total_score', 'N/A')
+        lines.append(f"**基本面评分**: {total_score}/100  |  信号: {_signal_emoji(fundamentals_signal.signal)} {fundamentals_signal.signal.upper()}")
         lines.append("")
-        lines.append("| 维度 | 得分 | 说明 |")
+
+        # ── 核心财务指标表（直接显示计算值，不再显示 N/A 分段）
+        lines.append("### 核心财务指标")
+        lines.append("")
+        lines.append("| 指标 | 数值 | 状态 |")
         lines.append("|:-----|:-----|:-----|")
-        lines.append(f"| 营收质量 | {fundamentals_signal.metrics.get('revenue_score', 'N/A')}/25 | 增长稳定性与规模 |")
-        lines.append(f"| 盈利能力 | {fundamentals_signal.metrics.get('profitability_score', 'N/A')}/25 | ROE与净利率 |")
-        lines.append(f"| 杠杆健康 | {fundamentals_signal.metrics.get('leverage_score', 'N/A')}/25 | 负债水平 |")
-        lines.append(f"| 现金流质量 | {fundamentals_signal.metrics.get('cash_flow_score', 'N/A')}/25 | FCF与OCF |")
+
+        def _fmt(val, fmt=".1f", suffix=""):
+            return f"{val:{fmt}}{suffix}" if val is not None else "N/A"
+
+        roe    = m.get('roe')
+        nm     = m.get('net_margin_pct')
+        rev_yoy = m.get('revenue_yoy_pct')
+        ni_yoy  = m.get('net_income_yoy_pct')
+        de     = m.get('debt_to_equity')
+        cr     = m.get('current_ratio')
+        fcf_ni = m.get('fcf_to_net_income')
+
+        def _status(val, thresholds, icons=("✓", "△", "✗")):
+            """Map value to status icon based on thresholds (high→low)."""
+            if val is None:
+                return "❓ 数据缺失"
+            if val >= thresholds[0]: return f"{icons[0]} 优秀"
+            if val >= thresholds[1]: return f"{icons[1]} 良好" if len(thresholds) > 1 else f"{icons[1]} 合格"
+            return f"{icons[2]} 偏弱"
+
+        lines.append(f"| ROE（净资产收益率）| {_fmt(roe, '.1f', '%')} | {_status(roe, (20, 10))} |")
+        lines.append(f"| 净利率 | {_fmt(nm, '.1f', '%')} | {_status(nm, (15, 8))} |")
+        lines.append(f"| 营收YoY（同比增长）| {_fmt(rev_yoy, '+.1f', '%')} | {_status(rev_yoy, (10, 0))} |")
+        lines.append(f"| 净利YoY（同比增长）| {_fmt(ni_yoy, '+.1f', '%')} | {_status(ni_yoy, (10, 0))} |")
+        lines.append(f"| 负债/权益（D/E）| {_fmt(de, '.2f', 'x')} | {'✓ 低负债' if de and de <= 0.5 else ('△ 中等' if de and de <= 1.0 else '✗ 高负债') if de else '❓ 数据缺失'} |")
+        lines.append(f"| 流动比率 | {_fmt(cr, '.2f', 'x')} | {'✓ 充裕' if cr and cr >= 2.0 else ('△ 合格' if cr and cr >= 1.0 else '⚠ 偏低') if cr else '❓ 数据缺失'} |")
+        lines.append(f"| FCF/净利覆盖率 | {_fmt(fcf_ni, '.2f', 'x')} | {_status(fcf_ni, (0.8, 0.5))} |")
         lines.append("")
-        lines.append(f"**评估**: {fundamentals_signal.reasoning}")
+
+        # ── 评分明细（原始文字）
+        lines.append("### 评分明细")
+        lines.append("")
+        lines.append(f"> {fundamentals_signal.reasoning}")
         lines.append("")
     else:
         lines.append("基本面Agent未运行，数据不可用。")
@@ -119,7 +144,7 @@ def _build_financial_quality_table(
     if quality_report.flags:
         lines.append(f"**发现 {len(quality_report.flags)} 个数据质量问题：**")
         lines.append("")
-        for flag in quality_report.flags[:5]:  # Top 5 flags
+        for flag in quality_report.flags[:5]:
             lines.append(f"- [{flag.severity.upper()}] {flag.detail}")
         if len(quality_report.flags) > 5:
             lines.append(f"- ... 及其他 {len(quality_report.flags) - 5} 个问题")
@@ -131,15 +156,11 @@ def _build_financial_quality_table(
     return "\n".join(lines)
 
 
+
 def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
     """
     Build Chapter 4: Valuation Analysis (code-based).
-
-    Args:
-        valuation_signal: Valuation agent result
-
-    Returns:
-        Chapter 4 markdown text
+    Shows all 4 methods: DCF, Graham, EV/EBITDA, P/B.
     """
     lines = ["## 4. 估值分析与敏感性测试", ""]
 
@@ -148,100 +169,172 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
         return "\n".join(lines)
 
     metrics = valuation_signal.metrics
-    dcf = metrics.get("dcf_per_share")
-    graham = metrics.get("graham_number")
+    dcf     = metrics.get("dcf_per_share")
+    graham  = metrics.get("graham_number")
+    ev_ebps = metrics.get("ev_ebitda_per_share")
+    pb_tgt  = metrics.get("pb_target")
     current = metrics.get("current_price")
-    mos = metrics.get("margin_of_safety")
+    mos     = metrics.get("margin_of_safety")
+    bvps    = metrics.get("bvps")
+    wacc    = metrics.get("wacc")
+    tg      = metrics.get("terminal_growth")
 
-    # Valuation summary table
-    lines.append("### 估值指标")
+    def _mos(intrinsic, price):
+        if intrinsic and price:
+            return f"{(intrinsic - price) / intrinsic * 100:+.1f}%"
+        return "N/A"
+
+    # Valuation summary table (4 methods)
+    lines.append("### 多方法估值汇总")
     lines.append("")
-    lines.append("| 估值方法 | 内在价值 | 当前价格 | 安全边际 |")
-    lines.append("|:---------|:---------|:---------|:---------|")
-    lines.append(f"| DCF现金流折现 | ¥{dcf:.2f}/股 | ¥{current:.2f}/股 | {mos*100:+.1f}% |" if dcf else "| DCF现金流折现 | 数据不足 | - | - |")
-    lines.append(f"| Graham Number | ¥{graham:.2f}/股 | ¥{current:.2f}/股 | {((current-graham)/graham)*100:+.1f}% |" if graham else "| Graham Number | 数据不足 | - | - |")
+    lines.append("| 估值方法 | 权重 | 每股隐含价值 | 当前价格 | 安全边际 |")
+    lines.append("|:---------|:-----|:------------|:---------|:---------|")
+    lines.append(f"| EV/EBITDA（6x行业倍数）| 40% | {'¥'+f'{ev_ebps:.2f}' if ev_ebps else '数据估算中'} | ¥{current:.2f} | {_mos(ev_ebps, current)} |" if current else "| EV/EBITDA | 40% | - | - | - |")
+    lines.append(f"| P/B（1.8x BVPS={bvps:.2f}）| 30% | {'¥'+f'{pb_tgt:.2f}' if pb_tgt else 'N/A'} | ¥{current:.2f} | {_mos(pb_tgt, current)} |" if (current and bvps) else "| P/B | 30% | N/A | - | - |")
+    lines.append(f"| DCF折现现金流 | 20% | {'¥'+f'{dcf:.2f}' if dcf else '数据不足'} | {'¥'+f'{current:.2f}' if current else '-'} | {f'{mos*100:+.1f}%' if mos else 'N/A'} |")
+    lines.append(f"| Graham Number下限 | 10% | {'¥'+f'{graham:.2f}' if graham else 'N/A'} | {'¥'+f'{current:.2f}' if current else '-'} | {_mos(graham, current)} |")
     lines.append("")
 
-    # Valuation interpretation
-    if dcf and mos:
-        if mos > 0.20:
-            lines.append(f"**解读**: DCF显示 {mos*100:.0f}% 安全边际，当前价格低估。")
-        elif mos < -0.20:
-            lines.append(f"**解读**: DCF显示 {abs(mos)*100:.0f}% 溢价，当前价格高估。")
-        else:
-            lines.append(f"**解读**: DCF显示 {abs(mos)*100:.0f}% {'安全边际' if mos > 0 else '溢价'}，估值合理。")
+    # WACC assumptions box
+    if wacc:
+        lines.append(f"> **折现率假设**: WACC={wacc:.1f}% | 终值增长率={tg:.1f}% | 注：较乐观假设会高估DCF")
         lines.append("")
 
-    # Sensitivity scenarios (simple 3-scenario analysis)
+    # Upside/downside summary
+    if ev_ebps and pb_tgt and current:
+        w_tgt = ev_ebps * 0.40 + pb_tgt * 0.30 + (dcf or ev_ebps * 0.8) * 0.20 + (graham or 0) * 0.10
+        upside = (w_tgt - current) / current * 100
+        if upside < -15:
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，较当前价 ¥{current:.2f} **下行{abs(upside):.0f}%**，估值偏贵。")
+        elif upside > 15:
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，较当前价 ¥{current:.2f} **上行{upside:.0f}%**，有低估空间。")
+        else:
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，与当前价 ¥{current:.2f} 相近，估值合理。")
+        lines.append("")
+
+    # Sensitivity scenarios
     lines.append("### 敏感性分析")
     lines.append("")
-    lines.append("不同假设下的估值区间：")
-    lines.append("")
-    lines.append("| 情景 | 假设 | 估值 |")
-    lines.append("|:-----|:-----|:-----|")
-
+    lines.append("| 情景 | 假设 | DCF估值 | 加权目标价 |")
+    lines.append("|:-----|:-----|:--------|:----------|")
     if dcf:
-        # Simple sensitivity: ±20% on DCF
-        lines.append(f"| 乐观情景 | 增长率+2%或WACC-1% | ¥{dcf*1.2:.2f}/股 |")
-        lines.append(f"| 基准情景 | 当前假设 | ¥{dcf:.2f}/股 |")
-        lines.append(f"| 悲观情景 | 增长率-2%或WACC+1% | ¥{dcf*0.8:.2f}/股 |")
+        ev_b = ev_ebps or dcf * 0.8
+        pb_b = pb_tgt or dcf * 0.75
+        gn_b = graham or 0
+        w_bull = ev_b * 1.2 * 0.40 + pb_b * 1.1 * 0.30 + dcf * 1.2 * 0.20 + gn_b * 0.10
+        w_base = ev_b * 0.40 + pb_b * 0.30 + dcf * 0.20 + gn_b * 0.10
+        w_bear = ev_b * 0.7 * 0.40 + pb_b * 0.8 * 0.30 + dcf * 0.8 * 0.20 + gn_b * 0.10
+        wacc_str = f"WACC={wacc:.1f}%" if wacc else "当前假设"
+        lines.append(f"| 乐观情景 | 油价>$80/桶，Capex扩张10% | ¥{dcf*1.2:.2f} | ¥{w_bull:.2f} |")
+        lines.append(f"| 基准情景 | {wacc_str} | ¥{dcf:.2f} | ¥{w_base:.2f} |")
+        lines.append(f"| 悲观情景 | 油价<$60/桶，南海风险触发 | ¥{dcf*0.8:.2f} | ¥{w_bear:.2f} |")
     else:
-        lines.append("| - | 数据不足 | - |")
+        lines.append("| - | 数据不足 | - | - |")
 
     lines.append("")
-
-    # Add reasoning from valuation agent
-    lines.append(f"**Agent评估**: {valuation_signal.reasoning}")
+    lines.append(f"**Agent完整评估**: {valuation_signal.reasoning}")
     lines.append("")
 
     return "\n".join(lines)
 
 
+
 def _render_contrarian_chapter(contrarian_signal: AgentSignal | None) -> str:
-    """
-    Build Chapter 5: Risk Factors (Contrarian template).
+    """Build Chapter 5: Risk Factors & Dialectical Analysis."""
+    lines = ["## 5. 风险因素与辩证分析", ""]
 
-    Args:
-        contrarian_signal: Contrarian agent result
+    if not contrarian_signal:
+        lines.append("辩证分析未运行。")
+        return "\n".join(lines)
 
-    Returns:
-        Chapter 5 markdown text
-    """
-    if not contrarian_signal or not contrarian_signal.metrics:
-        return """## 5. 风险因素与辩证分析
+    mode = contrarian_signal.metrics.get("mode", "unknown") if contrarian_signal.metrics else "unknown"
+    consensus = contrarian_signal.metrics.get("consensus", {}) if contrarian_signal.metrics else {}
 
-辩证分析暂不可用。请结合其他章节自行评估风险。
-"""
+    # Format mode label
+    mode_label = {
+        "bear_case": "Bear Case (挑战多头)",
+        "bull_case": "Bull Case (挑战空头)",
+        "critical_questions": "Critical Questions (核心矛盾)"
+    }.get(mode, mode)
 
-    mode = contrarian_signal.metrics.get("mode")
-    if not mode:
-        return """## 5. 风险因素与辩证分析
+    lines.append(f"**分析模式**: {mode_label} | **共识方向**: {consensus.get('direction', 'N/A')} ({consensus.get('strength', 0):.0%})")
+    lines.append("")
 
-辩证分析数据格式错误。
-"""
+    if mode == "bear_case":
+        lines.append("### 看多论点的挑战（Devil's Advocate看空视角）")
+        lines.append("")
+        challenges = contrarian_signal.metrics.get("assumption_challenges", []) if contrarian_signal.metrics else []
+        for i, c in enumerate(challenges[:3], 1):
+            sev = c.get("severity", "medium").upper()
+            sev_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "❓")
+            lines.append(f"{i}. {sev_icon} **[{sev}] {c.get('original_claim', '')}**")
+            lines.append(f"   - 依赖假设: {c.get('assumption', '')}")
+            lines.append(f"   - 质疑理由: {c.get('challenge', '')}")
+            lines.append(f"   - 若假设错误: {c.get('impact_if_wrong', '')}")
+            lines.append("")
 
-    # Load mode-specific template
-    template_path = Path(__file__).parent.parent.parent / "templates" / "contrarian_templates" / f"{mode}.md"
+        lines.append("### 关键风险情景")
+        lines.append("")
+        lines.append("| # | 风险场景 | 触发概率 | 利润影响 | 历史先例 |")
+        lines.append("|:--|:---------|:---------|:---------|:---------|")
+        risks = contrarian_signal.metrics.get("risk_scenarios", []) if contrarian_signal.metrics else []
+        for i, r in enumerate(risks[:4], 1):
+            prob = r.get('probability', 'N/A')
+            # Normalize probability labels
+            prob_norm = prob.upper().replace('中', 'MED').replace('高', 'HIGH').replace('低', 'LOW')
+            lines.append(f"| {i} | {r.get('scenario', '')} | {prob_norm} | {r.get('impact', '')} | {r.get('precedent', '-')} |")
+        lines.append("")
 
-    if not template_path.exists():
-        logger.warning(f"[Report] Contrarian template not found: {template_path}")
-        return f"""## 5. 风险因素与辩证分析
+        bear_price = contrarian_signal.metrics.get("bear_case_target_price")
+        if bear_price:
+            lines.append(f"**辩证分析悲观目标价**: ¥{bear_price:.2f}/股")
+            lines.append("")
 
-模板文件缺失 ({mode}.md)。
+    elif mode == "bull_case":
+        lines.append("### 被忽视的上行因素（Devil's Advocate看多视角）")
+        lines.append("")
+        positives = contrarian_signal.metrics.get("overlooked_positives", []) if contrarian_signal.metrics else []
+        for i, p in enumerate(positives[:3], 1):
+            lines.append(f"{i}. **{p.get('factor', '')}**")
+            lines.append(f"   {p.get('description', '')}")
+            lines.append(f"   *潜在影响: {p.get('potential_impact', '')}*")
+            lines.append("")
 
-**辩证分析结果**: {contrarian_signal.reasoning}
-"""
+        survival = contrarian_signal.metrics.get("survival_advantage", "")
+        if survival:
+            lines.append(f"**周期生存优势**: {survival}")
+            lines.append("")
 
-    # Load and render template
-    with open(template_path, "r", encoding="utf-8") as f:
-        template = Template(f.read())
+        bull_price = contrarian_signal.metrics.get("bull_case_target_price")
+        if bull_price:
+            lines.append(f"**辩证分析乐观目标价**: ¥{bull_price:.2f}/股")
+            lines.append("")
 
-    # Prepare template context - add reasoning if not in metrics
-    context = dict(contrarian_signal.metrics)
-    if "reasoning" not in context:
-        context["reasoning"] = contrarian_signal.reasoning
+    else:  # critical_questions
+        lines.append("### 核心矛盾与关键问题")
+        lines.append("")
+        contradiction = contrarian_signal.metrics.get("core_contradiction", "") if contrarian_signal.metrics else ""
+        if contradiction:
+            lines.append(f"> ⚠️ **核心矛盾**: {contradiction}")
+            lines.append("")
 
-    return template.render(**context)
+        questions = contrarian_signal.metrics.get("questions", []) if contrarian_signal.metrics else []
+        if questions:
+            lines.append("**在形成最终结论前，必须回答以下关键问题：**")
+            lines.append("")
+            lines.append("| # | 关键问题 | 初步判断 | 需要查证 |")
+            lines.append("|:--|:---------|:---------|:---------|")
+            for i, q in enumerate(questions[:4], 1):
+                lines.append(f"| {i} | {q.get('question', '')} | {q.get('preliminary_judgment', '-')} | {q.get('evidence_needed', '-')} |")
+            lines.append("")
+
+    lines.append("### 综合辩证论述")
+    lines.append("")
+    lines.append(f"> {contrarian_signal.reasoning}")
+    lines.append("")
+
+    return "\n".join(lines)
+
 
 
 def _build_appendix(
@@ -334,6 +427,7 @@ def _generate_llm_chapter(
     signals: dict[str, AgentSignal],
     quality_report: QualityReport,
     industry_context: str,
+    company_context: dict | None = None,  # NEW
 ) -> str:
     """
     Generate a single LLM chapter with validation and retry.
@@ -371,7 +465,8 @@ def _generate_llm_chapter(
 
     # Build user prompt (chapter-specific data injection)
     user_prompt = _build_chapter_user_prompt(
-        chapter_key, user_template, ticker, market, signals, quality_report, industry_context
+        chapter_key, user_template, ticker, market, signals, quality_report, industry_context,
+        company_context=company_context,
     )
 
     # Retry loop with validation
@@ -408,6 +503,7 @@ def _build_chapter_user_prompt(
     signals: dict[str, AgentSignal],
     quality_report: QualityReport,
     industry_context: str,
+    company_context: dict | None = None,  # NEW
 ) -> str:
     """Build user prompt for LLM chapter with data injection."""
 
@@ -421,15 +517,31 @@ def _build_chapter_user_prompt(
 
     # Chapter-specific formatting
     if chapter_key == "ch1_industry":
+        from datetime import date as _date
+        ctx = company_context or {}
+        cc = ctx.get("registered_capital")
+        reg_cap_yi = f"{cc/1e8:.1f}" if cc else "未知"
+        # Extract financial metrics for Ch1
+        revenue_str = _format_yuan(fund.metrics.get("revenue")) if fund else "N/A"
+        growth_str = f"{fund.metrics.get('revenue_yoy_pct', 0):.1f}%" if fund else "N/A"
+        roe_str = f"{fund.metrics.get('roe', 0):.1f}" if fund else "N/A"
+        net_margin_str = f"{fund.metrics.get('net_margin_pct', 0):.1f}" if fund else "N/A"
+        cr = fund.metrics.get('current_ratio') if fund else None
+        cr_str = f"{cr:.2f}" if cr else "N/A"
         return user_template.format(
             ticker=ticker,
-            sector=market,  # Simplified - would need actual sector from watchlist
-            sub_industry="",
-            industry_context=industry_context or "（用户未提供，请根据财务数据推测）",
-            revenue=_format_yuan(fund.metrics.get("revenue")) if fund else "N/A",
-            growth_rate=f"{fund.metrics.get('revenue_growth', 0)*100:.1f}%" if fund else "N/A",
-            roe=f"{fund.metrics.get('roe', 0):.1f}" if fund else "N/A",
-            debt_ratio=f"{fund.metrics.get('debt_ratio', 0):.1f}" if fund else "N/A",
+            analysis_date=str(_date.today()),
+            company_name=ctx.get("company_name", ticker),
+            main_business=ctx.get("main_business", "（未获取）"),
+            main_products=ctx.get("main_products", "（未获取）"),
+            established_date=ctx.get("established_date", "未知"),
+            reg_capital_yi=reg_cap_yi,
+            concepts=ctx.get("concepts", "未获取"),
+            revenue=revenue_str,
+            growth_rate=growth_str,
+            roe=roe_str,
+            net_margin=net_margin_str,
+            current_ratio=cr_str,
         )
 
     elif chapter_key == "ch2_competitive":
@@ -453,11 +565,52 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch7_recommendation":
-        # Get DCF values
+        # ── Multi-method weighted target price calculation ─────────────────────
+        # Oil services standard: EV/EBITDA(40%) + P/B(30%) + DCF(20%) + Graham(10%)
         dcf_base = val.metrics.get("dcf_per_share", 0) if val else 0
         dcf_optimistic = dcf_base * 1.2 if dcf_base else 0
         dcf_pessimistic = dcf_base * 0.8 if dcf_base else 0
         current_price = val.metrics.get("current_price", 0) if val else 0
+        graham_number = val.metrics.get("graham_number") or 0
+
+        # Get EV/EBITDA per-share target from valuation agent (computed in P1 valuation fixes)
+        ev_ebitda_target = val.metrics.get("ev_ebitda_per_share") if val else None
+        if not ev_ebitda_target:
+            # Fallback: estimate from revenue + net margin
+            if fund and fund.metrics.get("revenue") and val:
+                rev = fund.metrics.get("revenue", 0) or 0
+                nm = (fund.metrics.get("net_margin_pct", 7) or 7) / 100
+                ebitda_est = rev * nm * 1.5
+                shares_est = val.metrics.get("shares_outstanding", 4.77e9) or 4.77e9
+                ev_ebitda_target = round((ebitda_est * 6) / shares_est, 2)
+        ev_ebitda_target = ev_ebitda_target or (dcf_base * 0.80)
+
+        # P/B target from valuation agent (bvps × sector-appropriate P/B multiple)
+        pb_target = val.metrics.get("pb_target") if val else None
+        if not pb_target:
+            bvps = val.metrics.get("bvps", 0) if val else 0
+            pb_target = round(bvps * 1.8, 2) if bvps else dcf_base * 0.75
+
+        # Weighted target price
+        dcf_3way_avg = (dcf_optimistic + dcf_base + dcf_pessimistic) / 3 if dcf_base else 0
+        w_target = (
+            ev_ebitda_target * 0.40 +
+            (pb_target or 0) * 0.30 +
+            dcf_3way_avg * 0.20 +
+            (graham_number or 0) * 0.10
+        )
+        # Target range: ±10% around weighted target
+        w_target_low = round(w_target * 0.90, 2) if w_target else dcf_pessimistic
+        w_target_high = round(w_target * 1.10, 2) if w_target else dcf_optimistic
+
+        # Upside/downside vs current price
+        upside_pct = 0
+        if current_price and w_target:
+            upside_pct = round((w_target - current_price) / current_price * 100, 1)
+
+        # Data completeness → confidence cap
+        completeness = quality_report.data_completeness * 100
+        conf_cap = 0.50 if completeness < 50 else (0.60 if completeness < 70 else 0.75)
 
         # Extract contrarian risks summary
         contrarian_risks = "（辩证分析未运行）"
@@ -465,11 +618,11 @@ def _build_chapter_user_prompt(
             mode = contr.metrics.get("mode")
             if mode == "bear_case":
                 risks = contr.metrics.get("risk_scenarios", [])
-                contrarian_risks = "\n".join([f"- {r.get('scenario', '')}" for r in risks[:3]])
+                contrarian_risks = "\n".join([f"- {r.get('scenario', '')}（触发概率: {r.get('probability', '?')}）" for r in risks[:3]])
             elif mode == "bull_case":
                 contrarian_risks = "（当前共识看空，辩证分析聚焦上行机会）"
             else:
-                contrarian_risks = contr.metrics.get("core_contradiction", "（信号分歧，关键不确定性待解决）")
+                contrarian_risks = contr.metrics.get("core_contradiction", "（信号分歧）")
 
         return user_template.format(
             fundamentals_signal=fund.signal if fund else "未运行",
@@ -484,10 +637,19 @@ def _build_chapter_user_prompt(
             sentiment_confidence=f"{sent.confidence:.0%}" if sent else "N/A",
             contrarian_signal=contr.signal if contr else "未运行",
             contrarian_confidence=f"{contr.confidence:.0%}" if contr else "N/A",
+            # Multi-method valuation fields
+            ev_ebitda_target=f"{ev_ebitda_target:.2f}",
+            pb_target=f"{pb_target:.2f}" if pb_target else "N/A",
             dcf_base=f"{dcf_base:.2f}",
             dcf_optimistic=f"{dcf_optimistic:.2f}",
             dcf_pessimistic=f"{dcf_pessimistic:.2f}",
+            graham_number=f"{graham_number:.2f}" if graham_number else "N/A",
+            weighted_target_low=f"{w_target_low:.2f}",
+            weighted_target_high=f"{w_target_high:.2f}",
             current_price=f"{current_price:.2f}",
+            upside_to_target=f"{upside_pct:+.1f}",
+            data_completeness=f"{completeness:.0f}",
+            confidence_cap=f"{conf_cap:.2f}",
             contrarian_risks=contrarian_risks,
         )
 
@@ -565,6 +727,7 @@ def run(
     quality_report: QualityReport | None = None,
     analysis_date: str | None = None,
     use_llm: bool = True,
+    company_context: dict | None = None,  # NEW: injected from registry Phase -1
 ) -> tuple[str, Path]:
     """
     Generate the final research report (restructured with chapters).
@@ -626,13 +789,15 @@ def run(
         # Ch1: Industry Background (LLM)
         logger.info("[Report] Generating Ch1: Industry Background")
         chapters["ch1_industry"] = _generate_llm_chapter(
-            "ch1_industry", ticker, market, signals, quality_report, industry_context
+            "ch1_industry", ticker, market, signals, quality_report, industry_context,
+            company_context=company_context,
         )
 
         # Ch2: Competitive Analysis (LLM)
         logger.info("[Report] Generating Ch2: Competitive Analysis")
         chapters["ch2_competitive"] = _generate_llm_chapter(
-            "ch2_competitive", ticker, market, signals, quality_report, industry_context
+            "ch2_competitive", ticker, market, signals, quality_report, industry_context,
+            company_context=company_context,
         )
 
         # Ch3: Financial Quality (Code)
@@ -652,13 +817,15 @@ def run(
         # Ch6: Market Sentiment (LLM)
         logger.info("[Report] Generating Ch6: Market Sentiment")
         chapters["ch6_sentiment"] = _generate_llm_chapter(
-            "ch6_sentiment", ticker, market, signals, quality_report, industry_context
+            "ch6_sentiment", ticker, market, signals, quality_report, industry_context,
+            company_context=company_context,
         )
 
         # Ch7: Investment Recommendation (LLM)
         logger.info("[Report] Generating Ch7: Investment Recommendation")
         chapters["ch7_recommendation"] = _generate_llm_chapter(
-            "ch7_recommendation", ticker, market, signals, quality_report, industry_context
+            "ch7_recommendation", ticker, market, signals, quality_report, industry_context,
+            company_context=company_context,
         )
 
         # Ch8: Appendix (Code)

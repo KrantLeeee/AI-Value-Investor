@@ -31,13 +31,20 @@ logger = get_logger(__name__)
 AGENT_NAME = "valuation"
 
 # Default valuation assumptions (conservative value-investor settings)
-WACC = 0.10           # 10% discount rate
-TERMINAL_GROWTH = 0.03  # 3% perpetual growth (GDP growth rate)
-FCF_GROWTH_BULL = 0.12  # 12% — optimistic scenario
-FCF_GROWTH_BASE = 0.07  # 7%  — base scenario
-FCF_GROWTH_BEAR = 0.02  # 2%  — pessimistic scenario
+WACC_DEFAULT     = 0.10   # 10% discount rate
+WACC_CYCLE_ADDON = 0.005  # +50bp for highly cyclical sectors (oil services)
+TERMINAL_GROWTH  = 0.025  # 2.5% perpetual growth — conservative (was 3%)
+FCF_GROWTH_BULL  = 0.12   # 12% — optimistic scenario
+FCF_GROWTH_BASE  = 0.07   # 7%  — base scenario
+FCF_GROWTH_BEAR  = 0.02   # 2%  — pessimistic scenario
 PROJECTION_YEARS = 10
-INDUSTRY_EV_EBITDA = 8.0  # fallback industry multiple
+INDUSTRY_EV_EBITDA_OIL = 6.0   # oil services sector multiple (3rd-party benchmark)
+INDUSTRY_EV_EBITDA      = 8.0   # generic fallback multiple
+# P/B midpoint targets by sector (industry research benchmarks)
+PB_TARGET_OIL_SERVICES = 1.8    # oil services: 1.6-2.1x midpoint
+PB_TARGET_DEFAULT      = 2.0    # generic fallback
+# WACC = 0.10 kept as alias for backward compatibility
+WACC = WACC_DEFAULT
 
 
 def _safe(x) -> float | None:
@@ -124,6 +131,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         "current_price":  current_price,
         "industry": industry,
     }
+
+    # Apply cyclical sector WACC premium
+    _is_cyclical = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "mining", "steel"])
+    if _is_cyclical:
+        wacc = wacc + WACC_CYCLE_ADDON
+        logger.info("[Valuation] %s: cyclical sector → WACC +50bp → %.2f%%", ticker, wacc * 100)
+        results["wacc"] = wacc * 100
+        results["wacc_cycle_premium"] = True
     detail_lines: list[str] = []
 
     # Add WACC breakdown to detail lines
@@ -138,10 +153,32 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     else:
         detail_lines.append(f"⚠ WACC: {wacc*100:.2f}% (使用行业默认值: {wacc_result.get('note', '')})")
 
-    # ── 1. Owner Earnings & DCF ───────────────────────────────────────────────
-    dcf_base = dcf_bull = dcf_bear = None
-    owner_earnings = None
-    shares = None
+    # ── QVeris supplement: enrich shares + balance sheet ────────────────────
+    # AKShare often lacks shares_outstanding and current_assets for A-shares.
+    if market == "a_share":
+        try:
+            from src.data.qveris_source import QVerisSource
+            qsrc = QVerisSource()
+            if qsrc.health_check():
+                # Income supplement (for shares derivation)
+                if (not income_rows or not _safe(income_rows[0].get("eps"))):
+                    qi = qsrc.get_income_statements(ticker, market, limit=1)
+                    if qi and not income_rows:
+                        income_rows = [{"revenue": qi[0].revenue, "net_income": qi[0].net_income,
+                                        "eps": qi[0].eps}]
+                # Balance supplement
+                qb = qsrc.get_balance_sheets(ticker, market, limit=1)
+                if qb:
+                    if not balance_rows:
+                        balance_rows = [{}]
+                    _b = balance_rows[0]
+                    for fld in ["total_equity", "current_assets", "current_liabilities",
+                                "total_assets", "total_liabilities", "cash_and_equivalents"]:
+                        if not _safe(_b.get(fld)) and getattr(qb[0], fld, None):
+                            _b[fld] = getattr(qb[0], fld)
+                    logger.info("[Valuation] %s: enriched from QVeris", ticker)
+        except Exception as _e:
+            logger.warning("[Valuation] QVeris enrichment failed: %s", _e)
 
     latest_ni = None
     if income_rows:
@@ -203,7 +240,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             detail_lines.append("⚠ FCF/OCF 为负或缺失，无法进行 DCF 估值")
 
     # ── 2. Graham Number ──────────────────────────────────────────────────────
-    graham_number = graham_number_per_share = None
+    graham_number_per_share = None
     eps  = _safe(income_rows[0].get("eps")) if income_rows else None
     bvps = _safe(balance_rows[0].get("book_value_per_share")) if balance_rows else None
 
@@ -213,6 +250,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if equity:
             bvps = equity / shares
 
+    if bvps:
+        results["bvps"] = round(bvps, 2)
+
     if eps and bvps and eps > 0 and bvps > 0:
         graham_number_per_share = math.sqrt(22.5 * eps * bvps)
         results["graham_number"] = graham_number_per_share
@@ -221,18 +261,45 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         results["graham_number"] = None
         detail_lines.append("- Graham Number 无法计算（缺 EPS 或 BVPS）")
 
-    # ── 3. EV/EBITDA (approximate) ────────────────────────────────────────────
+    # ── 3. EV/EBITDA (per share) ──────────────────────────────────────────────
     ev_ebitda_value = None
+    ev_ebitda_per_share = None
+
+    # Try to get EBITDA; estimate from net income if unavailable
+    ebitda = None
     if income_rows:
         ebitda = _safe(income_rows[0].get("ebitda"))
-        if ebitda and ebitda > 0:
-            ev_ebitda_total = ebitda * INDUSTRY_EV_EBITDA
-            results["ev_ebitda_value"] = ev_ebitda_total
-            detail_lines.append(f"EV/EBITDA ({INDUSTRY_EV_EBITDA}x): 总价值={ev_ebitda_total/1e8:.0f}亿元")
-            ev_ebitda_value = ev_ebitda_total
-        else:
-            results["ev_ebitda_value"] = None
-            detail_lines.append("- EBITDA 数据缺失，EV/EBITDA 无法计算")
+        if not ebitda:
+            # Estimate: EBITDA ≈ net_income / (1 - tax_rate) + D&A
+            # Rough heuristic: EBITDA ≈ net_income × 1.5 for oil services
+            ni = _safe(income_rows[0].get("net_income"))
+            if ni and ni > 0:
+                ebitda = ni * 1.5
+                logger.debug("[Valuation] %s: estimated EBITDA=%.0f亿 from NI×1.5", ticker, ebitda / 1e8)
+
+    _is_oil = industry and any(k in (industry or "").lower() for k in ["oil", "energy"])
+    _ev_multiple = INDUSTRY_EV_EBITDA_OIL if _is_oil else INDUSTRY_EV_EBITDA
+
+    if ebitda and ebitda > 0:
+        ev_ebitda_total = ebitda * _ev_multiple
+        results["ev_ebitda_value"] = ev_ebitda_total
+        detail_lines.append(f"EV/EBITDA ({_ev_multiple}x): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+        ev_ebitda_value = ev_ebitda_total
+        # Per-share estimate
+        if shares and shares > 0:
+            ev_ebitda_per_share = ev_ebitda_total / shares
+            results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
+            detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
+
+        # P/B per share target
+        if bvps:
+            _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
+            pb_target_per_share = bvps * _pb
+            results["pb_target"] = round(pb_target_per_share, 2)
+            detail_lines.append(f"P/B目标价 ({_pb}x BVPS={bvps:.2f}): ¥{pb_target_per_share:.2f}")
+    else:
+        results["ev_ebitda_value"] = None
+        detail_lines.append("- EBITDA 数据缺失（注：已尝试用净利润×1.5估算，仍失败）")
 
     # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
     net_net_ratio = None
@@ -261,6 +328,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if primary_method == "DCF":
             dcf_per_share = intrinsic_base / shares
             results["dcf_per_share"] = dcf_per_share
+        results["shares_outstanding"] = shares  # expose for Ch7 weighted calc
         if current_price and dcf_per_share:
             margin_of_safety = (dcf_per_share - current_price) / dcf_per_share
             results["margin_of_safety"] = margin_of_safety
@@ -294,7 +362,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         + "\n".join(detail_lines)
     )
 
-    # ── 6. Optional LLM interpretation ──────────────────────────────────────
+    # ── 6. Optional LLM interpretation ────────────────────────────────────────
     if use_llm:
         try:
             from src.llm.router import call_llm, LLMError
@@ -305,31 +373,46 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             user_msg = VALUATION_INTERPRET_USER_TEMPLATE.format(
                 ticker=ticker,
                 current_price=f"¥{current_price:.2f}" if current_price else "未知",
-                dcf_bull=f"¥{dcf_bull/1e8:.1f}亿" if dcf_bull else "N/A",
-                dcf_base=f"¥{dcf_base/1e8:.1f}亿" if dcf_base else "N/A",
-                dcf_bear=f"¥{dcf_bear/1e8:.1f}亿" if dcf_bear else "N/A",
+                dcf_bull=f"¥{dcf_bull/shares:.2f}/股" if dcf_bull and shares else "N/A",
+                dcf_base=f"¥{dcf_base/shares:.2f}/股" if dcf_base and shares else "N/A",
+                dcf_bear=f"¥{dcf_bear/shares:.2f}/股" if dcf_bear and shares else "N/A",
                 graham_number=f"¥{graham_number_per_share:.2f}" if graham_number_per_share else "N/A",
                 owner_earnings_value=f"¥{owner_earnings/1e8:.1f}亿" if owner_earnings else "N/A",
-                ev_ebitda_value=f"¥{ev_ebitda_value/1e8:.0f}亿" if ev_ebitda_value else "N/A",
-                wacc=wacc * 100,  # Use calculated WACC
+                ev_ebitda_value=f"¥{ev_ebitda_per_share:.2f}/股" if 'ev_ebitda_per_share' in dir() and ev_ebitda_per_share else "N/A",
+                wacc=wacc * 100,
                 terminal_growth=TERMINAL_GROWTH * 100,
                 fcf_growth=FCF_GROWTH_BASE * 100,
             )
             llm_text = call_llm("valuation_interpret", VALUATION_INTERPRET_SYSTEM_PROMPT, user_msg)
-            # Append LLM interpretation to reasoning
-            reasoning += f"\n\n**LLM解读**:\n{llm_text}"
 
-            # Parse signal override from LLM if available
+            # ── Parse JSON and convert to readable prose (fix raw-JSON output bug) ──
             import json as _json
             try:
-                parsed = _json.loads(llm_text)
+                cleaned = llm_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[1:])
+                    cleaned = cleaned.replace("```", "")
+                parsed = _json.loads(cleaned)
                 llm_sig = parsed.get("signal", "").lower()
                 if llm_sig in ("bullish", "neutral", "bearish"):
                     signal = llm_sig
                 llm_conf = float(parsed.get("confidence", confidence))
-                confidence = (confidence + llm_conf) / 2  # blend code + LLM
+                confidence = (confidence + llm_conf) / 2
+                # Render as readable prose instead of raw JSON
+                val_pos = parsed.get("valuation_position", "")
+                iv_low  = parsed.get("intrinsic_value_range_low", "")
+                iv_high = parsed.get("intrinsic_value_range_high", "")
+                method  = parsed.get("most_relevant_method", "")
+                prose   = parsed.get("reasoning", "")
+                reasoning += (
+                    f"\n\n**LLM估值解读**:\n"
+                    f"最适方法: {method} | 估值立场: {val_pos} | "
+                    f"内在价值区间: ¥{iv_low}-¥{iv_high}/股\n"
+                    f"{prose}"
+                )
             except Exception:
-                pass  # LLM returned prose not JSON — keep code signal
+                # LLM returned prose — keep as-is (no raw JSON problem)
+                reasoning += f"\n\n**LLM估值解读**:\n{llm_text}"
 
         except Exception as e:
             logger.warning("[Valuation] LLM call skipped: %s", e)
