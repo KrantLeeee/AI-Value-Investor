@@ -242,9 +242,51 @@ def _build_prompt(
     }
     user_template = user_templates[mode]
 
+    # Build macro/industry context for user prompt
+    ticker = company_context.get("ticker", "N/A") if company_context else "N/A"
+    industry = company_context.get("sector", "未知行业") if company_context else "未知行业"
+    analysis_date = company_context.get("analysis_date", "2026-03-08") if company_context else "2026-03-08"
+
+    # Construct macro/industry context block
+    macro_context_lines = [
+        f"当前时间：{analysis_date}",
+        f"标的行业：{industry}",
+        "",
+        "全球宏观环境（2024-2026）：",
+        "- 地缘政治：俄乌冲突持续，台海/南海紧张，中美科技脱钩",
+        "- 经济周期：全球增长放缓，欧美衰退风险，中国复苏乏力",
+        "- 货币政策：美联储维持高利率，资本回流美国",
+        "",
+    ]
+
+    # Add industry-specific context if available
+    if company_context and "sector" in company_context:
+        sector_lower = (company_context["sector"] or "").lower()
+        if any(kw in sector_lower for kw in ['能源', '石油', '油气']):
+            macro_context_lines += [
+                "行业特定风险（能源/油气）：",
+                "- 油价波动：Brent $70-90/桶（OPEC+减产vs需求疲软）",
+                "- 地缘风险：南海主权争端，台海局势，俄罗斯制裁",
+                "- 能源转型：新能源替代，碳中和压力，长期需求峰值",
+                "- 资本纪律：油服CAPEX过度扩张可能侵蚀ROE",
+            ]
+        elif any(kw in sector_lower for kw in ['银行', '金融']):
+            macro_context_lines += [
+                "行业特定风险（金融/银行）：",
+                "- 信用周期：房地产风险，地方债风险",
+                "- 利差压缩：降息周期，净息差收窄",
+                "- 监管强化：资本充足率，反垄断",
+            ]
+
+    macro_industry_context = "\n".join(macro_context_lines)
+
     # Fill user prompt
     if mode in ["bear_case", "bull_case"]:
         user_prompt = user_template.format(
+            ticker=ticker,
+            industry=industry,
+            analysis_date=analysis_date,
+            macro_industry_context=macro_industry_context,
             consensus_direction=consensus_direction,
             consensus_strength=consensus_strength,
             strongest_arguments=arguments_text,
@@ -252,6 +294,10 @@ def _build_prompt(
         )
     else:  # critical_questions
         user_prompt = user_template.format(
+            ticker=ticker,
+            industry=industry,
+            analysis_date=analysis_date,
+            macro_industry_context=macro_industry_context,
             consensus_direction=consensus_direction,
             consensus_strength=consensus_strength,
             all_arguments=arguments_text,
