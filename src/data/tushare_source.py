@@ -135,9 +135,10 @@ class TushareSource(BaseDataSource):
         try:
             # Tushare income API: end_date, total_revenue, revenue, operate_profit, n_income, etc.
             # Values are in CNY (元), need to check API docs for actual units
+            # Note: total_share might not be available in income API, will silently ignore if missing
             df = api.income(ts_code=ts_code, fields=[
                 'ts_code', 'end_date', 'total_revenue', 'revenue',
-                'oper_cost', 'operate_profit', 'n_income', 'basic_eps'
+                'oper_cost', 'operate_profit', 'n_income', 'basic_eps', 'total_share'
             ])
 
             if df is None or df.empty:
@@ -166,6 +167,12 @@ class TushareSource(BaseDataSource):
                 cost = float(row["oper_cost"]) if row["oper_cost"] else None
                 gross = (revenue - cost) if (revenue and cost) else None
 
+                # Extract shares outstanding if available (unit: shares, 万股 in Tushare = 10,000 shares)
+                # Tushare's total_share is in 万股 (10k shares), need to convert to shares
+                total_share = None
+                if "total_share" in row.index and row["total_share"] is not None:
+                    total_share = float(row["total_share"]) * 10000  # 万股 → 股
+
                 results.append(IncomeStatement(
                     ticker=ticker,
                     period_end_date=period_end,
@@ -176,6 +183,7 @@ class TushareSource(BaseDataSource):
                     operating_income=float(row["operate_profit"]) if row["operate_profit"] else None,
                     net_income=float(row["n_income"]) if row["n_income"] else None,
                     eps=float(row["basic_eps"]) if row["basic_eps"] else None,
+                    shares_outstanding=total_share,
                     source=self.source_name,
                 ))
 

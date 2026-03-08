@@ -226,6 +226,9 @@ class BaoStockSource(BaseDataSource):
                 except ValueError:
                     continue
 
+                # Extract shares outstanding (总股本) - unit: shares
+                total_share = _safe_float(row.get("totalShare"))
+
                 results.append(IncomeStatement(
                     ticker=ticker,
                     period_end_date=p_date,
@@ -233,6 +236,7 @@ class BaoStockSource(BaseDataSource):
                     revenue=_safe_float(row.get("MBRevenue")),     # 主营业务收入
                     net_income=_safe_float(row.get("netProfit")),   # 净利润 (yuan)
                     eps=_safe_float(row.get("epsTTM")),             # EPS TTM
+                    shares_outstanding=total_share,                 # 总股本 (shares)
                     # Margin fields as fractional ratios (0-1 scale from BaoStock)
                     # These get stored in IncomeStatement if model supports them
                     source=self.source_name,

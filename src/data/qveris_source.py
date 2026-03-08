@@ -372,9 +372,20 @@ class QVerisSource(BaseDataSource):
             for row in rows:
                 try:
                     ocf = row.get("ths_ncf_from_oa_stock")
+                    capex = row.get("ths_purchase_of_fixed_assets_stock")
                     # Skip empty placeholders
                     if ocf is None and row.get("ths_ncf_from_ia_stock") is None:
                         continue
+
+                    # Calculate FCF if both OCF and CapEx available
+                    # FCF = Operating Cash Flow - Capital Expenditure
+                    # Note: CapEx is typically negative or positive outflow in Chinese accounting
+                    fcf = None
+                    if ocf is not None and capex is not None:
+                        fcf = ocf - abs(capex)  # Ensure capex is treated as outflow
+                    elif ocf is not None:
+                        fcf = ocf  # Use OCF as proxy if no CapEx data
+
                     results.append(CashFlow(
                         ticker=ticker,
                         period_end_date=date(int(year), 12, 31),
@@ -382,8 +393,8 @@ class QVerisSource(BaseDataSource):
                         operating_cash_flow=ocf,
                         investing_cash_flow=row.get("ths_ncf_from_ia_stock"),
                         financing_cash_flow=row.get("ths_ncf_from_fa_stock"),
-                        free_cash_flow=None,
-                        capital_expenditure=row.get("ths_purchase_of_fixed_assets_stock"),
+                        free_cash_flow=fcf,
+                        capital_expenditure=capex,
                         source="qveris_ifind",
                     ))
                 except Exception as e:
