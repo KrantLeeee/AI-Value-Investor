@@ -1,0 +1,184 @@
+# Industry-specific agent weights and scoring thresholds
+# Based on PROJECT_ROADMAP.md P1-⑤
+#
+# IMPORTANT: All weights marked validated: false
+# These are "informed assumptions" pending P3 prediction tracking data
+# Requires ≥20 predictions per industry for statistical calibration
+
+industry_profiles:
+  energy:
+    weights:
+      fundamentals: 0.25
+      valuation: 0.30
+      warren_buffett: 0.15
+      ben_graham: 0.20
+      sentiment: 0.10
+    rationale: "资源股估值对油价极敏感(→高valuation权重)，护城河非差异化因素(→低buffett)，情绪主要反映油价非公司基本面"
+    validated: false
+
+    # Fundamentals scoring thresholds (adjusted for heavy asset industries)
+    scoring:
+      roe_thresholds: [15, 10, 6]  # Lower than default due to capital intensity
+      net_margin_thresholds: [12, 6, 3]
+      de_thresholds: [0.5, 0.8, 1.5]  # Resource stocks typically have higher leverage
+      growth_weight: 0.15  # Cyclical growth is unstable
+      cash_quality_weight: 0.30  # Cash flow critical for resource stocks
+
+  consumer:
+    weights:
+      fundamentals: 0.20
+      valuation: 0.15
+      warren_buffett: 0.35
+      ben_graham: 0.10
+      sentiment: 0.20
+    rationale: "消费品核心壁垒是品牌+渠道(→高buffett)，估值因稳定增长较少波动"
+    validated: false
+
+    scoring:
+      roe_thresholds: [25, 20, 15]  # Consumer goods expect higher ROE
+      net_margin_thresholds: [15, 10, 6]
+      de_thresholds: [0.3, 0.6, 1.0]
+      growth_weight: 0.30  # Growth is stable and important
+      cash_quality_weight: 0.20
+
+  tech:
+    weights:
+      fundamentals: 0.15
+      valuation: 0.25
+      warren_buffett: 0.20
+      ben_graham: 0.10
+      sentiment: 0.30
+    rationale: "科技股市场情绪影响极大，基本面变化快(YoY参考有限)"
+    validated: false
+
+    scoring:
+      roe_thresholds: [20, 15, 10]
+      net_margin_thresholds: [20, 12, 6]
+      de_thresholds: [0.2, 0.5, 0.8]  # Tech usually has low debt
+      growth_weight: 0.35  # Growth is critical for tech
+      cash_quality_weight: 0.25
+
+  banking:
+    weights:
+      fundamentals: 0.30
+      valuation: 0.20
+      warren_buffett: 0.10
+      ben_graham: 0.30
+      sentiment: 0.10
+    rationale: "银行核心看资产质量,格雷厄姆框架(低PE/PB+稳定分红)天然适用"
+    validated: false
+
+    scoring:
+      roe_thresholds: [15, 12, 9]  # Banking ROE is typically lower
+      net_margin_thresholds: [30, 20, 12]  # But margins can be high
+      de_thresholds: [8.0, 12.0, 15.0]  # Banks have much higher D/E
+      growth_weight: 0.15
+      cash_quality_weight: 0.15
+
+  manufacturing:
+    weights:
+      fundamentals: 0.28
+      valuation: 0.22
+      warren_buffett: 0.18
+      ben_graham: 0.20
+      sentiment: 0.12
+    rationale: "传统制造业看重基本面稳定性和估值合理性"
+    validated: false
+
+    scoring:
+      roe_thresholds: [18, 12, 8]
+      net_margin_thresholds: [12, 7, 4]
+      de_thresholds: [0.6, 1.0, 1.5]
+      growth_weight: 0.20
+      cash_quality_weight: 0.25
+
+  healthcare:
+    weights:
+      fundamentals: 0.22
+      valuation: 0.18
+      warren_buffett: 0.25
+      ben_graham: 0.15
+      sentiment: 0.20
+    rationale: "医药股注重品牌和研发护城河，情绪对政策敏感"
+    validated: false
+
+    scoring:
+      roe_thresholds: [22, 16, 11]
+      net_margin_thresholds: [18, 12, 7]
+      de_thresholds: [0.3, 0.6, 1.0]
+      growth_weight: 0.25
+      cash_quality_weight: 0.20
+
+  real_estate:
+    weights:
+      fundamentals: 0.25
+      valuation: 0.30
+      warren_buffett: 0.12
+      ben_graham: 0.23
+      sentiment: 0.10
+    rationale: "房地产看重估值和财务杠杆，护城河差异小"
+    validated: false
+
+    scoring:
+      roe_thresholds: [14, 10, 7]
+      net_margin_thresholds: [15, 10, 6]
+      de_thresholds: [1.0, 1.5, 2.5]  # High leverage is normal
+      growth_weight: 0.18
+      cash_quality_weight: 0.28  # Cash flow critical
+
+  default:
+    weights:
+      fundamentals: 0.25
+      valuation: 0.25
+      warren_buffett: 0.20
+      ben_graham: 0.15
+      sentiment: 0.15
+    rationale: "均等分布偏保守，适用于未分类行业"
+    validated: false
+
+    scoring:
+      roe_thresholds: [20, 15, 10]
+      net_margin_thresholds: [15, 10, 5]
+      de_thresholds: [0.5, 1.0, 1.5]
+      growth_weight: 0.25
+      cash_quality_weight: 0.25
+
+# Industry keyword mapping (for classification from sector names)
+industry_keywords:
+  energy:
+    - "能源"
+    - "石油"
+    - "天然气"
+    - "煤炭"
+    - "电力"
+  consumer:
+    - "消费"
+    - "零售"
+    - "食品"
+    - "饮料"
+    - "服装"
+    - "家电"
+  tech:
+    - "科技"
+    - "软件"
+    - "互联网"
+    - "电子"
+    - "通信"
+    - "半导体"
+  banking:
+    - "银行"
+    - "金融"
+  manufacturing:
+    - "制造"
+    - "机械"
+    - "汽车"
+    - "钢铁"
+    - "化工"
+  healthcare:
+    - "医药"
+    - "生物"
+    - "医疗"
+    - "保健"
+  real_estate:
+    - "房地产"
+    - "地产"
