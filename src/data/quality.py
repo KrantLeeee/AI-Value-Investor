@@ -728,11 +728,123 @@ def check_source_availability() -> list[QualityFlag]:
     return flags
 
 
+# ── Rule 12: Median Deviation Detection ───────────────────────────────────
+
+
+def check_median_deviation(income_data: list[IncomeStatement],
+                           balance_data: list[BalanceSheet]) -> list[QualityFlag]:
+    """
+    Check if key financial metrics deviate >50% from historical median.
+
+    Detects outliers in P/E-relevant metrics (revenue, net_income, equity)
+    that could indicate data quality issues or structural changes.
+
+    Severity: warning (may indicate data quality issue or major business change)
+    """
+    import statistics
+
+    flags: list[QualityFlag] = []
+
+    # Check revenue deviation from median
+    annual_income = [r for r in income_data if r.period_type == "annual"]
+    if len(annual_income) >= 3:
+        revenues = [r.revenue for r in annual_income if r.revenue and r.revenue > 0]
+        if len(revenues) >= 3:
+            median_rev = statistics.median(revenues)
+            latest_rev = revenues[0]
+            deviation = abs(latest_rev - median_rev) / median_rev
+            if deviation > 0.50:
+                flags.append(QualityFlag(
+                    flag="median_deviation",
+                    field="revenue",
+                    detail=f"最新营收偏离中位数 {deviation:.1%} (中位数: {median_rev/1e8:.1f}亿, 最新: {latest_rev/1e8:.1f}亿)",
+                    severity="warning"
+                ))
+
+    # Check net income deviation from median
+    if len(annual_income) >= 3:
+        net_incomes = [r.net_income for r in annual_income if r.net_income and abs(r.net_income) > 1e6]
+        if len(net_incomes) >= 3:
+            median_ni = statistics.median(net_incomes)
+            latest_ni = net_incomes[0]
+            if abs(median_ni) > 1e6:  # Avoid division by near-zero
+                deviation = abs(latest_ni - median_ni) / abs(median_ni)
+                if deviation > 0.50:
+                    flags.append(QualityFlag(
+                        flag="median_deviation",
+                        field="net_income",
+                        detail=f"最新净利润偏离中位数 {deviation:.1%} (中位数: {median_ni/1e8:.1f}亿, 最新: {latest_ni/1e8:.1f}亿)",
+                        severity="warning"
+                    ))
+
+    # Check equity deviation from median
+    annual_balance = [b for b in balance_data if b.period_type == "annual"]
+    if len(annual_balance) >= 3:
+        equities = [b.total_equity for b in annual_balance if b.total_equity and b.total_equity > 0]
+        if len(equities) >= 3:
+            median_eq = statistics.median(equities)
+            latest_eq = equities[0]
+            deviation = abs(latest_eq - median_eq) / median_eq
+            if deviation > 0.50:
+                flags.append(QualityFlag(
+                    flag="median_deviation",
+                    field="total_equity",
+                    detail=f"最新权益偏离中位数 {deviation:.1%} (中位数: {median_eq/1e8:.1f}亿, 最新: {latest_eq/1e8:.1f}亿)",
+                    severity="warning"
+                ))
+
+    return flags
+
+
+# ── Rule 13: Price Volatility Detection ───────────────────────────────────
+
+
+def check_price_volatility(price_data: list[DailyPrice]) -> list[QualityFlag]:
+    """
+    Check if stock price exhibits >80% volatility (max-min range).
+
+    High volatility may indicate:
+    - Data quality issues (erroneous extreme values)
+    - Speculative trading / manipulation
+    - Major corporate events (restructuring, M&A)
+
+    Severity: warning (requires manual review of context)
+    """
+    flags: list[QualityFlag] = []
+
+    if len(price_data) < 30:  # Need reasonable sample size
+        return []
+
+    # Sort by date descending (most recent first)
+    sorted_prices = sorted(price_data, key=lambda x: x.date, reverse=True)
+
+    # Check last 90 days of trading (roughly 1 quarter)
+    recent_prices = sorted_prices[:90]
+    closes = [p.close for p in recent_prices if p.close and p.close > 0]
+
+    if len(closes) < 20:
+        return []
+
+    max_price = max(closes)
+    min_price = min(closes)
+    volatility = (max_price - min_price) / min_price
+
+    if volatility > 0.80:
+        flags.append(QualityFlag(
+            flag="high_volatility",
+            field="price",
+            detail=f"近90日价格波幅 {volatility:.1%} (最高: ¥{max_price:.2f}, 最低: ¥{min_price:.2f})",
+            severity="warning"
+        ))
+
+    return flags
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────
 
 def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list[Any]]) -> QualityReport:
     """
-    Main orchestration function - runs all 11 quality checks.
+    Main orchestration function - runs all 13 quality checks.
 
     Guaranteed to return a QualityReport. Individual rule failures are logged
     but don't crash the pipeline.
@@ -749,7 +861,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
 
     flags: list[QualityFlag] = []
 
-    # Execute all 11 rules with error isolation
+    # Execute all 13 rules with error isolation
     # IMPORTANT: Use the correct function signatures!
     rules: list[tuple[str, Callable[[], list[QualityFlag]]]] = [
         ("financial_freshness", lambda: check_financial_freshness(
@@ -771,6 +883,11 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
         ("magnitude", lambda: check_magnitude(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("source_changes", lambda: check_source_changes(raw_data)),
         ("source_availability", check_source_availability),
+        ("median_deviation", lambda: check_median_deviation(
+            cast(list[IncomeStatement], raw_data.get('income', [])),
+            cast(list[BalanceSheet], raw_data.get('balance', []))
+        )),
+        ("price_volatility", lambda: check_price_volatility(cast(list[DailyPrice], raw_data.get('prices', [])))),
     ]
 
     for rule_name, rule_func in rules:
