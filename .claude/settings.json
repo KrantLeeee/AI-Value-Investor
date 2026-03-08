@@ -1,15 +1,52 @@
 {
   "hooks": {
-    "PostToolUse": {
-      "Edit": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true",
-      "Write": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true"
-    },
-    "PreToolUse": {
-      "Edit": {
-        "command": "bash -c 'filepath=\"{file_path}\"; if [[ \"$filepath\" == *\"llm_config.yaml\"* ]] || [[ \"$filepath\" == *\".github/workflows/\"* ]] || [[ \"$filepath\" == *\"screening_rules.yaml\"* ]]; then echo \"⚠️  Editing critical config: $filepath\"; echo \"   - llm_config.yaml: LLM task routing and model selection\"; echo \"   - GitHub workflows: Production automation\"; echo \"   - screening_rules.yaml: Factor screening logic\"; echo \"\"; echo \"Please review changes carefully before applying.\"; exit 1; fi'",
-        "requireApproval": true
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true"
+          }
+        ]
       }
-    }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": {
+          "tools": [
+            "Bash"
+          ]
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'cmd=\"{command}\"; if [[ \"$cmd\" =~ (rm\\ -rf|sudo\\ |chmod\\ -R|chown|mkfs|dd\\ |>\\ /dev/sda) ]]; then echo \"🚨 [Security Guard] Blocked destructive shell command! Review required: $cmd\"; exit 1; fi'",
+            "requireApproval": true
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tools": [
+            "Edit",
+            "Write"
+          ]
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'filepath=\"{file_path}\"; if [[ \"$filepath\" == *\"/.ssh/\"* ]] || [[ \"$filepath\" == *\"/.aws/\"* ]]; then echo \"🚨 [Security Guard] Blocked attempt to modify sensitive credential files: $filepath\"; exit 1; fi'",
+            "requireApproval": true
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'filepath=\"{file_path}\"; if [[ \"$filepath\" == *\"llm_config.yaml\"* ]] || [[ \"$filepath\" == *\".github/workflows/\"* ]] || [[ \"$filepath\" == *\"screening_rules.yaml\"* ]]; then echo \"⚠️  Editing critical project config: $filepath. Please review changes carefully before applying.\"; exit 1; fi'",
+            "requireApproval": true
+          }
+        ]
+      }
+    ]
   },
   "permissions": {
     "allow": [

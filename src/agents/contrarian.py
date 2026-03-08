@@ -126,38 +126,22 @@ def _build_industry_context_block(company_context: dict) -> str:
     company_name = company_context.get('company_name', '')
     main_business = company_context.get('main_business', '')
     concepts = company_context.get('concepts', '')
-
+    business_desc = (main_business + " " + concepts).strip()
+    
     lines = [
-        "\n\n--- 行业上下文（必须考虑，否则分析无效） ---",
-        f"公司: {company_name}",
-        f"业务: {main_business}",
+        "\n\n--- 行业与业务上下文（必须紧密结合，否则分析无效） ---",
+        f"公司名称: {company_name}",
+        f"所属行业/板块: {company_context.get('sector', '未知')}",
+        f"主营业务与概念: {business_desc}",
+        "",
+        "【行业特定风险推演指令】",
+        "作为资深魔鬼代言人，你必须基于上述[所属行业]和[主营业务]，自行推演出由于该行业的特性所带来的根本性风险、周期性陷阱和估值陷阱。例如：",
+        "- 如果是强周期行业（如能源/大宗），必须指出其资本开支周期、价格波动、地缘政治影响。且提示DCF模型可能因顶部利润被线性外推而极其不可靠。",
+        "- 如果是高杠杆行业（如金融/地产），必须围绕信用周期、资产质量、利差压缩和政策监管进行致命打击。",
+        "- 如果是科技/制造行业，必须质疑技术迭代、产能过剩、价格战和客户集中度风险。",
+        "不要给我通用的宏观废话，必须一针见血地指出**该特定行业**和**该公司具体业务**最核心的命门。",
+        "--- 以上行业背景推演必须融入你的质疑和风险场景 ---"
     ]
-
-    # Add industry-specific risk frameworks based on concepts/business
-    business_lower = (main_business + concepts).lower()
-    if any(kw in business_lower for kw in ['油', '钻井', '油田', '海上']):
-        lines += [
-            "",
-            "【行业风险框架 — 近海油田服务】",
-            "1. 油价联动风险：布伦特原油<$60/桶 → 中国海油削减Capex → 订单下滑15-25%",
-            "2. 地缘政治（MED-HIGH）：南海争端、台海紧张 → 作业区域受限",
-            "   - 注意：过去5年南海年均摩擦>50次，这是结构性高频率风险，非尾风险",
-            "3. 中国海油依赖：约70%收入来自单一客户，议价能力受限",
-            "4. 能源转型：长期碳中和政策压制上游新增投资",
-            "5. 竞争：SLB/HAL等国际巨头技术领先，价格战风险",
-            "",
-            "估值注意：DCF对石油服务周期股可靠性≤30%，应以EV/EBITDA为主要参考",
-        ]
-    elif any(kw in business_lower for kw in ['银行', '金融', '保险']):
-        lines += [
-            "",
-            "【行业风险框架 — 金融/银行】",
-            "1. 信用周期风险：经济下行 → 不良贷款率上升",
-            "2. 利差压缩：降息周期 → 净息差收窄",
-            "3. 监管风险：资本充足率要求提高",
-        ]
-
-    lines.append("--- 以上行业背景必须融入你的质疑和风险场景 ---")
     return "\n".join(lines)
 
 
@@ -250,33 +234,16 @@ def _build_prompt(
     # Construct macro/industry context block
     macro_context_lines = [
         f"当前时间：{analysis_date}",
+        f"标的代码：{ticker}",
         f"标的行业：{industry}",
         "",
-        "全球宏观环境（2024-2026）：",
-        "- 地缘政治：俄乌冲突持续，台海/南海紧张，中美科技脱钩",
-        "- 经济周期：全球增长放缓，欧美衰退风险，中国复苏乏力",
-        "- 货币政策：美联储维持高利率，资本回流美国",
+        "全球宏观环境提示（2024-2026）：",
+        "- 地缘政治：区域冲突持续，逆全球化与贸易保护主义，供应链重构",
+        "- 经济周期：全球增长放缓，需求端面临不确定性",
+        "- 货币环境：高利率周期的长尾效应与资本流动变化",
         "",
+        "**任务要求**：请根据上述行业标签，自动结合该行业当前面临的微观与中观痛点进行分析，切忌说空话。",
     ]
-
-    # Add industry-specific context if available
-    if company_context and "sector" in company_context:
-        sector_lower = (company_context["sector"] or "").lower()
-        if any(kw in sector_lower for kw in ['能源', '石油', '油气']):
-            macro_context_lines += [
-                "行业特定风险（能源/油气）：",
-                "- 油价波动：Brent $70-90/桶（OPEC+减产vs需求疲软）",
-                "- 地缘风险：南海主权争端，台海局势，俄罗斯制裁",
-                "- 能源转型：新能源替代，碳中和压力，长期需求峰值",
-                "- 资本纪律：油服CAPEX过度扩张可能侵蚀ROE",
-            ]
-        elif any(kw in sector_lower for kw in ['银行', '金融']):
-            macro_context_lines += [
-                "行业特定风险（金融/银行）：",
-                "- 信用周期：房地产风险，地方债风险",
-                "- 利差压缩：降息周期，净息差收窄",
-                "- 监管强化：资本充足率，反垄断",
-            ]
 
     macro_industry_context = "\n".join(macro_context_lines)
 
