@@ -63,7 +63,7 @@ def _ticker_with_suffix(ticker: str) -> str:
 def _parse_cn_number(val) -> float | None:
     """
     Parse Chinese financial number strings from THS API.
-    Handles unit suffixes: '亿' (×1e8), '万' (×1e4), '千' (×1e3), '百' (×1e2), plain floats, False, '--'.
+    Handles unit suffixes: '万亿' (×1e12), '亿' (×1e8), '万' (×1e4), '千' (×1e3), '百' (×1e2), plain floats, False, '--'.
 
     Note: Order matters - check longer suffixes first to handle edge cases like "万亿".
     """
@@ -73,7 +73,9 @@ def _parse_cn_number(val) -> float | None:
     if s in ("--", "-", "—", "", "None", "nan", "False"):
         return None
     try:
-        # Check in order: 亿 → 万 → 千 → 百
+        # Check in order: 万亿 → 亿 → 万 → 千 → 百 (longest first)
+        if s.endswith("万亿"):
+            return float(s[:-2]) * 1e12
         if s.endswith("亿"):
             return float(s[:-1]) * 1e8
         if s.endswith("万"):
@@ -213,6 +215,18 @@ class AKShareSource(BaseDataSource):
         indicator = "按年度" if period_type == "annual" else "按报告期"
         results: list[IncomeStatement] = []
 
+        # Try to get current shares outstanding from stock info
+        shares_outstanding = None
+        try:
+            info_df = ak.stock_individual_info_em(symbol=code)
+            if info_df is not None and not info_df.empty:
+                # info_df has columns 'item' and 'value', find '总股本'
+                shares_row = info_df[info_df['item'] == '总股本']
+                if not shares_row.empty:
+                    shares_outstanding = _safe_float(shares_row['value'].iloc[0])
+        except Exception as e:
+            logger.debug("[AKShare] Failed to get shares_outstanding for %s: %s", ticker, e)
+
         try:
             df = ak.stock_financial_benefit_ths(symbol=code, indicator=indicator)
             if df is None or df.empty:
@@ -237,6 +251,14 @@ class AKShareSource(BaseDataSource):
                     row.get("*归属于母公司所有者的净利润") or row.get("归属于母公司所有者的净利润")
                 )
 
+                # Calculate shares_outstanding from net_income / eps if not available
+                calc_shares = None
+                if shares_outstanding:
+                    calc_shares = shares_outstanding
+                elif net_income and eps and abs(eps) > 0.001:
+                    # EPS is in yuan, net_income is in yuan, so shares = net_income / eps
+                    calc_shares = net_income / eps
+
                 results.append(IncomeStatement(
                     ticker=ticker,
                     period_end_date=p_date,
@@ -247,6 +269,7 @@ class AKShareSource(BaseDataSource):
                     operating_income=op_profit,
                     net_income=net_income or net_attr,
                     eps=eps,
+                    shares_outstanding=calc_shares,
                     source=self.source_name,
                 ))
 
@@ -267,6 +290,9 @@ class AKShareSource(BaseDataSource):
         Core columns (with * prefix):
           *资产合计, *负债合计, *所有者权益（或股东权益）合计, *归属于母公司所有者权益合计
           流动资产, 流动负债, 货币资金, 短期借款, 长期借款
+
+        Note: Financial institutions (banks/insurance) have different balance sheet
+        structure and field names. They don't use "流动资产/流动负债" concepts.
         """
         if market != "a_share":
             return []
@@ -275,6 +301,14 @@ class AKShareSource(BaseDataSource):
         code = _clean_ticker(ticker, market)
         indicator = "按年度" if period_type == "annual" else "按报告期"
         results: list[BalanceSheet] = []
+
+        # Check if this is a financial institution (bank/insurance)
+        # Financial institutions have different balance sheet structures
+        is_financial = code.startswith(("601318", "601628", "601398", "601939",  # Insurance & Big banks
+                                         "601166", "600036", "601288", "601229",  # Joint-stock banks
+                                         "601988", "601328", "601818", "600016",  # More banks
+                                         "601601", "600000", "601169", "002142",  # More banks
+                                         "601128", "601838"))  # More banks
 
         try:
             df = ak.stock_financial_debt_ths(symbol=code, indicator=indicator)
@@ -287,19 +321,59 @@ class AKShareSource(BaseDataSource):
                 if p_date is None:
                     continue
 
-                total_assets = _parse_cn_number(row.get("*资产合计"))
-                total_liab = _parse_cn_number(row.get("*负债合计"))
-                total_equity = _parse_cn_number(
-                    row.get("*所有者权益（或股东权益）合计")
+                # Helper to get value from multiple possible column names
+                def _get_val(*cols):
+                    for col in cols:
+                        v = _parse_cn_number(row.get(col))
+                        if v is not None:
+                            return v
+                    return None
+
+                # Total assets - try multiple field names
+                total_assets = _get_val(
+                    "*资产合计", "资产合计", "*资产总计", "资产总计",
+                    "资产总额", "*资产总额"
                 )
-                current_assets = _parse_cn_number(row.get("流动资产"))
-                current_liab = _parse_cn_number(row.get("流动负债"))
-                cash = _parse_cn_number(row.get("货币资金"))
+                total_liab = _get_val(
+                    "*负债合计", "负债合计", "*负债总计", "负债总计",
+                    "负债总额", "*负债总额"
+                )
+                total_equity = _get_val(
+                    "*所有者权益（或股东权益）合计", "所有者权益（或股东权益）合计",
+                    "*股东权益合计", "股东权益合计",
+                    "*归属于母公司所有者权益合计", "归属于母公司所有者权益合计",
+                    "*归属于母公司股东权益合计", "归属于母公司股东权益合计"
+                )
+
+                # For financial institutions, current_assets/current_liabilities N/A
+                if is_financial:
+                    current_assets = None
+                    current_liab = None
+                else:
+                    # API returns "流动资产" as empty string, actual data is in "流动资产合计"
+                    current_assets = _get_val("流动资产合计", "流动资产", "*流动资产合计")
+                    current_liab = _get_val("流动负债合计", "流动负债", "*流动负债合计")
+
+                cash = _get_val("货币资金", "*货币资金", "现金及现金等价物")
                 st_debt = _parse_cn_number(row.get("短期借款"))
                 lt_debt = _parse_cn_number(row.get("长期借款"))
-                total_debt = (
-                    (st_debt or 0) + (lt_debt or 0)
-                ) if (st_debt or lt_debt) else None
+                # Include other debt items for more complete calculation
+                lt_payables = _parse_cn_number(row.get("长期应付款合计") or row.get("长期应付款"))
+
+                # For financial institutions, debt calculation is different
+                if is_financial:
+                    # Insurance/banks: use total liabilities as proxy for total debt
+                    total_debt = total_liab
+                else:
+                    # Calculate total_debt: if all components are None/False, company has no debt (0.0)
+                    # If any component has positive value, sum them
+                    debt_components = [st_debt, lt_debt, lt_payables]
+                    debt_values = [d for d in debt_components if d is not None and d > 0]
+                    # If we have liabilities data but no debt items, company has 0 debt
+                    if total_liab is not None:
+                        total_debt = sum(debt_values) if debt_values else 0.0
+                    else:
+                        total_debt = sum(debt_values) if debt_values else None
 
                 # Book value per share not available from THS debt table directly
                 results.append(BalanceSheet(
@@ -316,7 +390,7 @@ class AKShareSource(BaseDataSource):
                     source=self.source_name,
                 ))
 
-            logger.info("[AKShare] %s balance(%s): %d rows", ticker, indicator, len(results))
+            logger.info("[AKShare] %s balance(%s): %d rows (financial=%s)", ticker, indicator, len(results), is_financial)
         except Exception as e:
             logger.warning("[AKShare] get_balance_sheets failed for %s: %s", ticker, e)
 
@@ -403,6 +477,29 @@ class AKShareSource(BaseDataSource):
         em_symbol = ticker  # e.g. "601808.SH" — already in our standard format
         results: list[FinancialMetrics] = []
 
+        # Get current price for PE/PB calculation
+        # First try from database (most reliable), then fall back to API
+        current_price = None
+        try:
+            from src.data.database import get_latest_prices
+            prices = get_latest_prices(ticker, limit=1)
+            if prices:
+                current_price = _safe_float(prices[0].get('close'))
+        except Exception as e:
+            logger.debug("[AKShare] Failed to get price from DB for %s: %s", ticker, e)
+
+        # Fallback to API if DB has no price
+        if current_price is None:
+            try:
+                code = _clean_ticker(ticker, market)
+                info_df = ak.stock_individual_info_em(symbol=code)
+                if info_df is not None and not info_df.empty:
+                    price_row = info_df[info_df['item'] == '最新']
+                    if not price_row.empty:
+                        current_price = _safe_float(price_row['value'].iloc[0])
+            except Exception as e:
+                logger.debug("[AKShare] Failed to get current price from API for %s: %s", ticker, e)
+
         try:
             df = ak.stock_financial_analysis_indicator_em(symbol=em_symbol)
             if df is None or df.empty:
@@ -424,20 +521,38 @@ class AKShareSource(BaseDataSource):
                     continue
 
                 # Map EM column names → our model fields
+                # Actual EM API column names (confirmed via testing):
+                #   ROEJQ = ROE加权, ZZCJLL = 总资产净利率
+                #   XSJLL = 销售净利率, XSMLL = 销售毛利率
+                #   TOTALOPERATEREVETZ = 营收YoY, PARENTNETPROFITTZ = 净利YoY
+                #   EPSJB = 基本每股收益, BPS = 每股净资产
                 def _col(*names):
                     for n in names:
                         if n in df.columns:
                             return _safe_float(row.get(n))
                     return None
 
+                # Calculate PE and PB ratios
+                eps = _col("EPSJB", "EPS")
+                bps = _col("BPS")
+                pe_ratio = None
+                pb_ratio = None
+                if current_price and eps and abs(eps) > 0.001:
+                    pe_ratio = round(current_price / eps, 2)
+                if current_price and bps and abs(bps) > 0.001:
+                    pb_ratio = round(current_price / bps, 2)
+
                 results.append(FinancialMetrics(
                     ticker=ticker,
                     date=p_date,
-                    roe=_col("ROE_WEIGHTAVG", "ROE_AVG", "ROE"),
-                    roa=_col("ROAGP", "ROA"),
-                    operating_margin=_col("OPERATE_PROFIT_RATIO"),
-                    revenue_growth=_col("REVENUE_YOY", "REVENUE_GROW_RATE"),
-                    net_income_growth=_col("NETPROFIT_YOY", "NETPROFIT_GROW_RATE"),
+                    pe_ratio=pe_ratio,
+                    pb_ratio=pb_ratio,
+                    roe=_col("ROEJQ", "ROE_WEIGHTAVG", "ROE_AVG", "ROE"),
+                    roa=_col("ZZCJLL", "ROAGP", "ROA"),
+                    operating_margin=_col("XSJLL", "OPERATE_PROFIT_RATIO"),
+                    gross_margin=_col("XSMLL", "GROSS_PROFIT_MARGIN"),
+                    revenue_growth=_col("TOTALOPERATEREVETZ", "REVENUE_YOY", "REVENUE_GROW_RATE"),
+                    net_income_growth=_col("PARENTNETPROFITTZ", "NETPROFIT_YOY", "NETPROFIT_GROW_RATE"),
                     source=self.source_name,
                 ))
 

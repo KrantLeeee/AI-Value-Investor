@@ -294,18 +294,20 @@ def upsert_financial_metrics(metrics: list[FinancialMetrics]) -> int:
     sql = """
         INSERT INTO financial_metrics
             (ticker, date, pe_ratio, pb_ratio, ps_ratio, roe, roa, debt_to_equity,
-             current_ratio, dividend_yield, operating_margin, revenue_growth,
+             current_ratio, dividend_yield, operating_margin, gross_margin, revenue_growth,
              net_income_growth, fcf_per_share, market_cap, enterprise_value, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticker, date) DO UPDATE SET
             pe_ratio=excluded.pe_ratio, roe=excluded.roe, roa=excluded.roa,
+            operating_margin=excluded.operating_margin, gross_margin=excluded.gross_margin,
+            revenue_growth=excluded.revenue_growth, net_income_growth=excluded.net_income_growth,
             source=excluded.source, updated_at=datetime('now')
     """
     rows = [
         (m.ticker, str(m.date), m.pe_ratio, m.pb_ratio, m.ps_ratio, m.roe, m.roa,
          m.debt_to_equity, m.current_ratio, m.dividend_yield, m.operating_margin,
-         m.revenue_growth, m.net_income_growth, m.fcf_per_share, m.market_cap,
-         m.enterprise_value, m.source)
+         m.gross_margin, m.revenue_growth, m.net_income_growth, m.fcf_per_share,
+         m.market_cap, m.enterprise_value, m.source)
         for m in metrics
     ]
     with get_connection() as conn:

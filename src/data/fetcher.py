@@ -35,6 +35,43 @@ from src.utils.logger import get_logger, log_event
 
 logger = get_logger(__name__)
 
+# ── Company Info Fallback ──────────────────────────────────────────────────────
+# Used when QVeris credits are exhausted. Maps ticker → company name and industry.
+# This provides essential context for LLM report generation.
+_COMPANY_INFO_FALLBACK: dict[str, dict] = {
+    # Major A-share stocks - Tech
+    "002230.SZ": {"name": "科大讯飞", "industry": "人工智能/软件", "main_business": "智能语音与人工智能核心技术研发"},
+    "300124.SZ": {"name": "汇川技术", "industry": "工业自动化", "main_business": "工业自动化控制产品研发与销售"},
+    "688169.SH": {"name": "石头科技", "industry": "消费电子/智能家居", "main_business": "智能清洁机器人研发与销售"},
+    "603881.SH": {"name": "数据港", "industry": "数据中心/IDC", "main_business": "数据中心服务与运营"},
+    # Financial sector
+    "601318.SH": {"name": "中国平安", "industry": "保险/金融", "main_business": "综合金融服务（保险、银行、投资）", "is_financial": True},
+    "601166.SH": {"name": "兴业银行", "industry": "银行", "main_business": "银行业务", "is_financial": True},
+    "600036.SH": {"name": "招商银行", "industry": "银行", "main_business": "银行业务", "is_financial": True},
+    "601398.SH": {"name": "工商银行", "industry": "银行", "main_business": "银行业务", "is_financial": True},
+    "601628.SH": {"name": "中国人寿", "industry": "保险", "main_business": "人寿保险", "is_financial": True},
+    # Consumer
+    "600519.SH": {"name": "贵州茅台", "industry": "白酒", "main_business": "茅台酒及系列酒生产销售"},
+    "000858.SZ": {"name": "五粮液", "industry": "白酒", "main_business": "白酒生产与销售"},
+    "000568.SZ": {"name": "泸州老窖", "industry": "白酒", "main_business": "白酒生产与销售"},
+    # Energy
+    "600028.SH": {"name": "中国石化", "industry": "石油化工", "main_business": "石油化工生产与销售"},
+    "601857.SH": {"name": "中国石油", "industry": "石油天然气", "main_business": "石油天然气勘探开发"},
+    "601808.SH": {"name": "中海油服", "industry": "油田服务", "main_business": "海洋石油技术服务"},
+    # Manufacturing
+    "000630.SZ": {"name": "铜陵有色", "industry": "有色金属", "main_business": "铜及相关产品生产销售"},
+    "600362.SH": {"name": "江西铜业", "industry": "有色金属", "main_business": "铜采选冶炼加工"},
+    # Real Estate
+    "000002.SZ": {"name": "万科A", "industry": "房地产", "main_business": "房地产开发与物业服务"},
+    "001979.SZ": {"name": "招商蛇口", "industry": "房地产", "main_business": "房地产开发与园区运营"},
+    # Healthcare
+    "600276.SH": {"name": "恒瑞医药", "industry": "医药", "main_business": "创新药研发与销售"},
+    "300760.SZ": {"name": "迈瑞医疗", "industry": "医疗器械", "main_business": "医疗器械研发与销售"},
+    # Auto
+    "002594.SZ": {"name": "比亚迪", "industry": "新能源汽车", "main_business": "新能源汽车及电池生产"},
+    "600104.SH": {"name": "上汽集团", "industry": "汽车", "main_business": "汽车研发生产销售"},
+}
+
 # Retry configuration for network calls
 MAX_RETRIES = 3
 RETRY_DELAYS = [5, 15, 30]  # seconds
@@ -145,32 +182,66 @@ class Fetcher:
         market: MarketType,
         limit: int = 10,
         period_type: str = "annual",
+        include_quarterly: bool = True,
     ) -> dict[str, int]:
-        """Fetch all 3 financial statements + metrics. Returns row counts per type."""
-        counts: dict[str, int] = {}
+        """Fetch all 3 financial statements + metrics. Returns row counts per type.
 
-        # Income statements
+        Args:
+            ticker: Stock ticker
+            market: Market type
+            limit: Number of records per period type
+            period_type: Primary period type ("annual" or "quarterly")
+            include_quarterly: If True, also fetch quarterly data for fresher data
+        """
+        counts: dict[str, int] = {}
+        all_stmts = []
+        all_sheets = []
+        all_flows = []
+
+        # Fetch annual data
         stmts, _ = self._fetch_with_fallback(
             market, "get_income_statements", ticker,
-            period_type=period_type, limit=limit,
+            period_type="annual", limit=limit,
         )
-        counts["income"] = upsert_income_statements(stmts)
+        all_stmts.extend(stmts)
 
-        # Balance sheets
         sheets, _ = self._fetch_with_fallback(
             market, "get_balance_sheets", ticker,
-            period_type=period_type, limit=limit,
+            period_type="annual", limit=limit,
         )
-        counts["balance"] = upsert_balance_sheets(sheets)
+        all_sheets.extend(sheets)
 
-        # Cash flows
         flows, _ = self._fetch_with_fallback(
             market, "get_cash_flows", ticker,
-            period_type=period_type, limit=limit,
+            period_type="annual", limit=limit,
         )
-        counts["cashflow"] = upsert_cash_flows(flows)
+        all_flows.extend(flows)
 
-        # Key metrics
+        # Also fetch quarterly data for fresher data (A-share only)
+        if include_quarterly and market == "a_share":
+            q_stmts, _ = self._fetch_with_fallback(
+                market, "get_income_statements", ticker,
+                period_type="quarterly", limit=4,  # Last 4 quarters
+            )
+            all_stmts.extend(q_stmts)
+
+            q_sheets, _ = self._fetch_with_fallback(
+                market, "get_balance_sheets", ticker,
+                period_type="quarterly", limit=4,
+            )
+            all_sheets.extend(q_sheets)
+
+            q_flows, _ = self._fetch_with_fallback(
+                market, "get_cash_flows", ticker,
+                period_type="quarterly", limit=4,
+            )
+            all_flows.extend(q_flows)
+
+        counts["income"] = upsert_income_statements(all_stmts)
+        counts["balance"] = upsert_balance_sheets(all_sheets)
+        counts["cashflow"] = upsert_cash_flows(all_flows)
+
+        # Key metrics (always includes quarterly from EM API)
         metrics, _ = self._fetch_with_fallback(
             market, "get_financial_metrics", ticker, limit=limit,
         )
@@ -230,16 +301,38 @@ class Fetcher:
 
     def fetch_company_basics(self, ticker: str, market: MarketType) -> dict | None:
         """
-        Fetch company basic information from QVeris iFinD.
-        Returns dict with company_name, main_business, etc. or None.
+        Fetch company basic information.
+
+        Priority:
+        1. QVeris iFinD (paid source, comprehensive data)
+        2. Local fallback mapping (for common A-share stocks when QVeris exhausted)
+
+        Returns dict with company_name, main_business, industry, etc. or None.
         Only available for A-share tickers.
         """
         if market != "a_share":
             return None
+
+        # Try QVeris first
         basics = _qveris_company_basics(ticker)
         if basics:
-            logger.info("[Fetcher] %s company basics: %s", ticker, basics.get("company_name"))
-        return basics
+            logger.info("[Fetcher] %s company basics from QVeris: %s", ticker, basics.get("company_name"))
+            return basics
+
+        # Fallback to local mapping
+        fallback = _COMPANY_INFO_FALLBACK.get(ticker)
+        if fallback:
+            logger.info("[Fetcher] %s company basics from fallback: %s", ticker, fallback.get("name"))
+            return {
+                "company_name": fallback.get("name"),
+                "main_business": fallback.get("main_business"),
+                "industry": fallback.get("industry"),
+                "concepts": fallback.get("industry"),  # Use industry as concept fallback
+                "is_financial": fallback.get("is_financial", False),
+            }
+
+        logger.warning("[Fetcher] %s company basics not available (QVeris exhausted, not in fallback)", ticker)
+        return None
 
     def get_data_summary(self, ticker: str) -> dict:
         """Return a summary of locally available data for a ticker."""

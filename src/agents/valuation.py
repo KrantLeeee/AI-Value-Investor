@@ -402,8 +402,18 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             results["owner_earnings"] = owner_earnings
             detail_lines.append(f"Owner Earnings: {owner_earnings/1e8:.2f}亿元")
 
-        # Use FCF for DCF; fall back to OCF if FCF unavailable
-        base_fcf = fcf or ocf
+        # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
+        # Note: `fcf or ocf` fails when fcf is negative (truthy), so explicit check needed
+        if fcf is not None and fcf > 0:
+            base_fcf = fcf
+            fcf_source = "FCF"
+        elif ocf is not None and ocf > 0:
+            base_fcf = ocf
+            fcf_source = "OCF"
+        else:
+            base_fcf = None
+            fcf_source = None
+
         if base_fcf and base_fcf > 0:
             # Use calculated WACC instead of hardcoded value (P2-⑦)
             dcf_bull = _dcf(base_fcf, FCF_GROWTH_BULL, wacc=wacc)
@@ -418,7 +428,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 "fcf_growth_base": FCF_GROWTH_BASE * 100,
                 "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
             })
-            detail_lines.append(f"DCF (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元")
+            detail_lines.append(f"DCF基于{fcf_source} (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元")
 
             # Generate sensitivity matrix (P2-⑦)
             if shares and shares > 0:
@@ -434,7 +444,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 results["sensitivity_matrix"] = sensitivity
                 logger.debug(f"[Valuation] Generated sensitivity matrix for {ticker}")
         else:
-            detail_lines.append("⚠ FCF/OCF 为负或缺失，无法进行 DCF 估值")
+            fcf_str = f"FCF={fcf/1e8:.1f}亿" if fcf is not None else "FCF缺失"
+            ocf_str = f"OCF={ocf/1e8:.1f}亿" if ocf is not None else "OCF缺失"
+            detail_lines.append(f"⚠ {fcf_str}, {ocf_str} — 均为负或缺失，无法进行 DCF 估值")
 
     # ── 2. Graham Number ──────────────────────────────────────────────────────
     graham_number_per_share = None

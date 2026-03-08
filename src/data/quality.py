@@ -499,22 +499,51 @@ CORE_FIELDS_MAP = {
     'cashflow': ['operating_cash_flow', 'free_cash_flow'],
 }
 
+# Financial institution tickers (banks, insurance, brokers)
+# These don't use standard current_assets/current_liabilities concepts
+FINANCIAL_INSTITUTION_CODES = {
+    "601318", "601628", "601398", "601939",  # Insurance & Big banks
+    "601166", "600036", "601288", "601229",  # Joint-stock banks
+    "601988", "601328", "601818", "600016",  # More banks
+    "601601", "600000", "601169", "002142",  # More banks
+    "601128", "601838", "600030", "601688",  # Banks & brokers
+    "601211", "600837", "002736", "601881",  # Insurance & brokers
+}
 
-def _calculate_completeness(raw_data: dict[str, list[Any]]) -> float:
+
+def _is_financial_institution(ticker: str) -> bool:
+    """Check if ticker is a financial institution (bank/insurance/broker)."""
+    code = ticker.split(".")[0] if "." in ticker else ticker
+    return code in FINANCIAL_INSTITUTION_CODES
+
+
+def _get_core_fields_for_ticker(ticker: str | None = None) -> dict[str, list[str]]:
+    """Get core fields map, excluding current_assets/current_liabilities for financial institutions."""
+    if ticker and _is_financial_institution(ticker):
+        return {
+            'income': ['revenue', 'net_income', 'eps', 'shares_outstanding'],
+            'balance': ['total_assets', 'total_equity', 'total_debt'],  # No current_assets/liabilities
+            'cashflow': ['operating_cash_flow', 'free_cash_flow'],
+        }
+    return CORE_FIELDS_MAP
+
+
+def _calculate_completeness(raw_data: dict[str, list[Any]], ticker: str | None = None) -> float:
     """
     Calculate data completeness = available_core_fields / total_core_fields.
 
     Checks latest record from each statement type for presence of core fields.
-    Total: 12 core fields (4 income + 5 balance + 2 cashflow + 1 price)
+    For financial institutions, excludes current_assets/current_liabilities.
 
     Returns:
         Completeness ratio between 0.0 and 1.0
     """
+    core_fields_map = _get_core_fields_for_ticker(ticker)
     available = 0
-    total_fields = sum(len(fields) for fields in CORE_FIELDS_MAP.values()) + 1  # +1 for price
+    total_fields = sum(len(fields) for fields in core_fields_map.values()) + 1  # +1 for price
 
     # Check financial data fields
-    for data_type, fields in CORE_FIELDS_MAP.items():
+    for data_type, fields in core_fields_map.items():
         data = raw_data.get(data_type, [])
         if not data:
             continue
@@ -535,17 +564,21 @@ def _calculate_completeness(raw_data: dict[str, list[Any]]) -> float:
     return available / total_fields if total_fields > 0 else 0.0
 
 
-def check_missing_fields(raw_data: dict[str, list[Any]]) -> list[QualityFlag]:
+def check_missing_fields(raw_data: dict[str, list[Any]], ticker: str | None = None) -> list[QualityFlag]:
     """
     Check for missing core fields in latest reports.
+
+    For financial institutions (banks/insurance), excludes current_assets/current_liabilities
+    since these concepts don't apply to their balance sheet structure.
 
     Severity:
     - critical: >= 4 core fields missing
     - warning: 1-3 fields missing
     """
     missing = []
+    core_fields_map = _get_core_fields_for_ticker(ticker)
 
-    for data_type, fields in CORE_FIELDS_MAP.items():
+    for data_type, fields in core_fields_map.items():
         data = raw_data.get(data_type, [])
         if not data:
             missing.extend(fields)
@@ -876,7 +909,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
             cast(list[CashFlow], raw_data.get('cashflow', []))
         )),
         ("negative_equity", lambda: check_negative_equity(cast(list[BalanceSheet], raw_data.get('balance', [])))),
-        ("missing_fields", lambda: check_missing_fields(raw_data)),
+        ("missing_fields", lambda: check_missing_fields(raw_data, ticker)),
         ("fcf_approximation", lambda: check_fcf_approximation(cast(list[CashFlow], raw_data.get('cashflow', [])))),
         ("eps_consistency", lambda: check_eps_consistency(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("duplicate_periods", lambda: check_duplicate_periods(raw_data)),
@@ -905,7 +938,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
     # Calculate scores
     try:
         score = _calculate_quality_score(flags)
-        completeness = _calculate_completeness(raw_data)
+        completeness = _calculate_completeness(raw_data, ticker)
     except Exception as e:
         logger.error(f"[Quality] Scoring failed: {e}")
         score = 0.5

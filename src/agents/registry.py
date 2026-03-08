@@ -79,10 +79,18 @@ def run_all_agents(
                     pass
             return result
 
+        # Combine annual and quarterly data for quality checks (quarterly for freshness)
+        annual_income = database.get_income_statements(ticker, limit=10, period_type="annual")
+        quarterly_income = database.get_income_statements(ticker, limit=4, period_type="quarterly")
+        annual_balance = database.get_balance_sheets(ticker, limit=10, period_type="annual")
+        quarterly_balance = database.get_balance_sheets(ticker, limit=4, period_type="quarterly")
+        annual_cashflow = database.get_cash_flows(ticker, limit=10, period_type="annual")
+        quarterly_cashflow = database.get_cash_flows(ticker, limit=4, period_type="quarterly")
+
         raw_data = {
-            'income':   _to_models(database.get_income_statements(ticker, limit=10), IncomeStatement),
-            'balance':  _to_models(database.get_balance_sheets(ticker, limit=10), BalanceSheet),
-            'cashflow': _to_models(database.get_cash_flows(ticker, limit=10), CashFlow),
+            'income':   _to_models(annual_income + quarterly_income, IncomeStatement),
+            'balance':  _to_models(annual_balance + quarterly_balance, BalanceSheet),
+            'cashflow': _to_models(annual_cashflow + quarterly_cashflow, CashFlow),
             'prices':   _to_models(database.get_latest_prices(ticker, limit=10), DailyPrice),
         }
 
