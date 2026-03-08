@@ -257,38 +257,49 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
         lines.append(f"> **折现率假设**: WACC={wacc:.1f}% | 终值增长率={tg:.1f}% | 注：较乐观假设会高估DCF")
         lines.append("")
 
-    # Upside/downside summary
-    if ev_ebps and pb_tgt and current:
-        w_tgt = ev_ebps * 0.40 + pb_tgt * 0.30 + (dcf or ev_ebps * 0.8) * 0.20 + (graham or 0) * 0.10
+    # Upside/downside summary - use validated weighted target
+    validation = metrics.get("validation", {})
+    w_tgt = validation.get("weighted_target")
+
+    if w_tgt and current:
         upside = (w_tgt - current) / current * 100
+        excluded_methods = validation.get("excluded_methods", [])
+        exclusion_note = f"（已排除: {', '.join(excluded_methods)}）" if excluded_methods else ""
+
         if upside < -15:
-            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，较当前价 ¥{current:.2f} **下行{abs(upside):.0f}%**，估值偏贵。")
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}{exclusion_note}，较当前价 ¥{current:.2f} **下行{abs(upside):.0f}%**，估值偏贵。")
         elif upside > 15:
-            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，较当前价 ¥{current:.2f} **上行{upside:.0f}%**，有低估空间。")
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}{exclusion_note}，较当前价 ¥{current:.2f} **上行{upside:.0f}%**，有低估空间。")
         else:
-            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}，与当前价 ¥{current:.2f} 相近，估值合理。")
+            lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}{exclusion_note}，与当前价 ¥{current:.2f} 相近，估值合理。")
         lines.append("")
 
-    # Sensitivity scenarios
+    # Sensitivity scenarios - only if DCF is valid
+    excluded_methods = validation.get("excluded_methods", [])
+    dcf_excluded = "DCF" in excluded_methods
+
     lines.append("### 敏感性分析")
     lines.append("")
-    lines.append("| 情景 | 假设 | DCF估值 | 加权目标价 |")
-    lines.append("|:-----|:-----|:--------|:----------|")
-    if dcf:
-        ev_b = ev_ebps or dcf * 0.8
-        pb_b = pb_tgt or dcf * 0.75
-        gn_b = graham or 0
-        w_bull = ev_b * 1.2 * 0.40 + pb_b * 1.1 * 0.30 + dcf * 1.2 * 0.20 + gn_b * 0.10
-        w_base = ev_b * 0.40 + pb_b * 0.30 + dcf * 0.20 + gn_b * 0.10
-        w_bear = ev_b * 0.7 * 0.40 + pb_b * 0.8 * 0.30 + dcf * 0.8 * 0.20 + gn_b * 0.10
-        wacc_str = f"WACC={wacc:.1f}%" if wacc else "当前假设"
-        lines.append(f"| 乐观情景 | 油价>$80/桶，Capex扩张10% | ¥{dcf*1.2:.2f} | ¥{w_bull:.2f} |")
-        lines.append(f"| 基准情景 | {wacc_str} | ¥{dcf:.2f} | ¥{w_base:.2f} |")
-        lines.append(f"| 悲观情景 | 油价<$60/桶，南海风险触发 | ¥{dcf*0.8:.2f} | ¥{w_bear:.2f} |")
-    else:
-        lines.append("| - | 数据不足 | - | - |")
 
-    lines.append("")
+    if dcf_excluded:
+        lines.append("> ⚠ DCF模型因异常检测被排除，敏感性分析不适用。最终目标价基于有效方法的加权计算。")
+        lines.append("")
+    elif dcf and w_tgt:
+        lines.append("| 情景 | 假设 | DCF估值 | 加权目标价区间 |")
+        lines.append("|:-----|:-----|:--------|:-------------|")
+        # Use validated weighted target as base, apply ±10% for scenarios
+        wacc_str = f"WACC={wacc:.1f}%" if wacc else "当前假设"
+        lines.append(f"| 乐观情景 | 油价>$80/桶，Capex扩张10% | ¥{dcf*1.2:.2f} | ¥{w_tgt*0.90:.2f}-¥{w_tgt*1.10:.2f} |")
+        lines.append(f"| 基准情景 | {wacc_str} | ¥{dcf:.2f} | ¥{w_tgt:.2f} |")
+        lines.append(f"| 悲观情景 | 油价<$60/桶，南海风险触发 | ¥{dcf*0.8:.2f} | ¥{w_tgt*0.80:.2f}-¥{w_tgt:.2f} |")
+        lines.append("")
+        lines.append("> 注：敏感性分析仅供参考。加权目标价基于有效估值方法的归一化权重。")
+        lines.append("")
+    else:
+        lines.append("| 情景 | 假设 | DCF估值 | 加权目标价 |")
+        lines.append("|:-----|:-----|:--------|:----------|")
+        lines.append("| - | 数据不足 | - | - |")
+        lines.append("")
     lines.append(f"**估值模型完整评估**: {valuation_signal.reasoning}")
     lines.append("")
 
@@ -434,7 +445,12 @@ def _build_appendix(
             elif agent_name == "ben_graham":
                 passed = signal.metrics.get('criteria_passed', 0)
                 total = signal.metrics.get('criteria_total', 6)
-                key_metric = f"通过: {passed}/{total}标准"
+                criteria_details = signal.metrics.get('criteria_details', [])
+                missing_count = sum(1 for c in criteria_details if "数据缺失" in c)
+                if missing_count > 0:
+                    key_metric = f"通过: {passed}/{total}标准 ({missing_count}条数据缺失)"
+                else:
+                    key_metric = f"通过: {passed}/{total}标准"
             elif agent_name == "sentiment":
                 score = signal.metrics.get('sentiment_score')
                 key_metric = f"情绪: {score:.2f}" if score else "N/A"
@@ -445,6 +461,17 @@ def _build_appendix(
             lines.append(f"| {display_name} | {emoji} {signal.signal} | {signal.confidence:.0%} | {key_metric} |")
 
     lines.append("")
+
+    # Graham criteria details (if Graham agent ran)
+    graham_signal = signals.get("ben_graham")
+    if graham_signal and graham_signal.metrics.get("criteria_details"):
+        lines.append("### 防御性投资准则详情")
+        lines.append("")
+        lines.append("格雷厄姆标准检验结果（6条标准）：")
+        lines.append("")
+        for criterion in graham_signal.metrics["criteria_details"]:
+            lines.append(f"- {criterion}")
+        lines.append("")
 
     # Data quality details
     lines.append("### 数据质量详情")

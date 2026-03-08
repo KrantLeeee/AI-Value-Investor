@@ -233,6 +233,7 @@ def run(
         "pe_ratio": pe,
         "criteria_passed": len([c for c in criteria_passed if c.startswith("✓")]),
         "criteria_total": len(criteria_passed),
+        "criteria_details": criteria_passed,  # Full list of criteria with ✓/✗ markers
     }
 
     # ── Calculate data completeness ──────────────────────────────────────────
