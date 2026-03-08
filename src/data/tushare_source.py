@@ -14,6 +14,7 @@ Tushare uses different ticker format:
 - Period types: Tushare has no direct "annual" param, we filter by end_date month (Q4 = annual)
 """
 
+import os
 from datetime import date, datetime
 
 from src.data.base_source import BaseDataSource
@@ -29,7 +30,11 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Tushare Pro token (from requirements)
-TUSHARE_TOKEN = "fb807267d782ca1f32a9a907c399fed4ea0a611ff94b786239fc2021"
+# Load Tushare token from environment variable or fallback to hardcoded (for compatibility)
+TUSHARE_TOKEN = os.environ.get(
+    "TUSHARE_TOKEN",
+    "fb807267d782ca1f32a9a907c399fed4ea0a611ff94b786239fc2021"  # Fallback for existing setups
+)
 
 
 class TushareSource(BaseDataSource):
@@ -151,9 +156,12 @@ class TushareSource(BaseDataSource):
                 end_date_str = str(row["end_date"])
                 period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
 
-                revenue = float(row["total_revenue"]) if row["total_revenue"] else None
-                if revenue is None:
-                    revenue = float(row["revenue"]) if row["revenue"] else None
+                # Fix: Check for non-zero explicitly to avoid treating 0.0 as None
+                revenue = None
+                if row["total_revenue"] is not None and row["total_revenue"] != 0:
+                    revenue = float(row["total_revenue"])
+                elif row["revenue"] is not None:
+                    revenue = float(row["revenue"])
 
                 cost = float(row["oper_cost"]) if row["oper_cost"] else None
                 gross = (revenue - cost) if (revenue and cost) else None

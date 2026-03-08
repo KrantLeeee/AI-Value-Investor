@@ -399,6 +399,7 @@ class AKShareSource(BaseDataSource):
         try:
             df = ak.stock_financial_analysis_indicator_em(symbol=em_symbol)
             if df is None or df.empty:
+                logger.warning("[AKShare] EM API returned empty for %s (possibly rate-limited or delisted)", em_symbol)
                 return []
 
             # Column names are English from EM API

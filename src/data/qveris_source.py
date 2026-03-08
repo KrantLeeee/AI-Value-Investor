@@ -48,6 +48,7 @@ _KNOWN_TOOLS = {
 
 # Period mapping: year → period string for annual annual reports
 _ANNUAL_PERIOD = "1231"  # 年度报告截止日期
+_CREDITS_EXHAUSTED = False  # Circuit breaker for 402 errors
 
 
 def _get_api_key() -> str | None:
@@ -73,6 +74,11 @@ def _call_qveris(tool_id: str, params: dict, search_id: str | None = None) -> di
     Returns:
         Parsed JSON result dict, or None on failure.
     """
+    global _CREDITS_EXHAUSTED
+    if _CREDITS_EXHAUSTED:
+        logger.debug("[QVeris] Skipping call due to previous credits exhaustion")
+        return None
+
     api_key = _get_api_key()
     if not api_key:
         logger.warning("[QVeris] QVERIS_API_KEY not set, skipping")
@@ -98,7 +104,13 @@ def _call_qveris(tool_id: str, params: dict, search_id: str | None = None) -> di
             cmd, capture_output=True, text=True, timeout=30, env=env
         )
         if result.returncode != 0:
-            logger.warning("[QVeris] CLI error: %s", result.stderr[:200])
+            err_msg = result.stderr.strip()
+            if "HTTP Error: 402" in err_msg or "Insufficient credits" in err_msg:
+                if not _CREDITS_EXHAUSTED:
+                    logger.error("[QVeris] Credits exhausted (402). Disabling QVeris for this session.")
+                    _CREDITS_EXHAUSTED = True
+            else:
+                logger.warning("[QVeris] CLI error: %s", err_msg[:200])
             return None
         data = json.loads(result.stdout)
         # The --json flag returns the raw API response
@@ -240,7 +252,7 @@ class QVerisSource(BaseDataSource):
                         continue
                     results.append(IncomeStatement(
                         ticker=ticker,
-                        period_end_date=f"{year}-12-31",
+                        period_end_date=date(int(year), 12, 31),
                         period_type="annual",
                         revenue=rev,
                         gross_profit=None,
@@ -304,7 +316,7 @@ class QVerisSource(BaseDataSource):
                         continue
                     results.append(BalanceSheet(
                         ticker=ticker,
-                        period_end_date=f"{year}-12-31",
+                        period_end_date=date(int(year), 12, 31),
                         period_type="annual",
                         total_assets=total_assets,
                         total_liabilities=row.get("ths_total_liab_stock"),
@@ -365,7 +377,7 @@ class QVerisSource(BaseDataSource):
                         continue
                     results.append(CashFlow(
                         ticker=ticker,
-                        period_end_date=f"{year}-12-31",
+                        period_end_date=date(int(year), 12, 31),
                         period_type="annual",
                         operating_cash_flow=ocf,
                         investing_cash_flow=row.get("ths_ncf_from_ia_stock"),

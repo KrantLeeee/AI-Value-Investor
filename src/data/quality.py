@@ -700,6 +700,34 @@ def check_source_changes(raw_data: dict[str, list[Any]]) -> list[QualityFlag]:
     return flags
 
 
+def check_source_availability() -> list[QualityFlag]:
+    """
+    Check if external data sources (like QVeris) are unavailable due to credits or config.
+
+    Severity: info (just for user awareness)
+    """
+    from src.data.qveris_source import _CREDITS_EXHAUSTED, _get_api_key
+
+    flags: list[QualityFlag] = []
+
+    if _CREDITS_EXHAUSTED:
+        flags.append(QualityFlag(
+            flag="source_unavailable",
+            field="QVeris iFinD",
+            detail="QVeris API 余额不足 (Insufficient credits), 部分A股深度财务数据抓取受限。",
+            severity="warning"
+        ))
+    elif not _get_api_key():
+        flags.append(QualityFlag(
+            flag="source_config_missing",
+            field="QVeris iFinD",
+            detail="未配置 QVERIS_API_KEY, 无法获取高精度A股财务数据。",
+            severity="info"
+        ))
+
+    return flags
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────
 
 def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list[Any]]) -> QualityReport:
@@ -742,6 +770,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
         ("duplicate_periods", lambda: check_duplicate_periods(raw_data)),
         ("magnitude", lambda: check_magnitude(cast(list[IncomeStatement], raw_data.get('income', [])))),
         ("source_changes", lambda: check_source_changes(raw_data)),
+        ("source_availability", check_source_availability),
     ]
 
     for rule_name, rule_func in rules:

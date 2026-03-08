@@ -349,12 +349,19 @@ def get_latest_prices(ticker: str, limit: int = 252) -> list[dict]:
 
 def get_income_statements(ticker: str, limit: int = 10,
                            period_type: str = "annual") -> list[dict]:
-    # Deduplicate by year: keep latest period_end_date per year
-    sql = """
+    # Deduplicate logic depends on period_type:
+    # - annual: Keep latest period_end_date per year (handles duplicate annual reports)
+    # - quarterly: Keep latest per year-quarter (preserves Q1-Q4)
+    if period_type == "annual":
+        partition_key = "strftime('%Y', period_end_date)"
+    else:  # quarterly
+        partition_key = "strftime('%Y-%m', period_end_date)"
+
+    sql = f"""
         WITH ranked AS (
             SELECT *,
                    ROW_NUMBER() OVER (
-                       PARTITION BY strftime('%Y', period_end_date)
+                       PARTITION BY {partition_key}
                        ORDER BY period_end_date DESC
                    ) as rn
             FROM income_statements
@@ -370,12 +377,17 @@ def get_income_statements(ticker: str, limit: int = 10,
 
 def get_balance_sheets(ticker: str, limit: int = 10,
                         period_type: str = "annual") -> list[dict]:
-    # Deduplicate by year: keep latest period_end_date per year
-    sql = """
+    # Deduplicate logic depends on period_type
+    if period_type == "annual":
+        partition_key = "strftime('%Y', period_end_date)"
+    else:  # quarterly
+        partition_key = "strftime('%Y-%m', period_end_date)"
+
+    sql = f"""
         WITH ranked AS (
             SELECT *,
                    ROW_NUMBER() OVER (
-                       PARTITION BY strftime('%Y', period_end_date)
+                       PARTITION BY {partition_key}
                        ORDER BY period_end_date DESC
                    ) as rn
             FROM balance_sheets
@@ -391,12 +403,18 @@ def get_balance_sheets(ticker: str, limit: int = 10,
 
 def get_cash_flows(ticker: str, limit: int = 10,
                    period_type: str = "annual") -> list[dict]:
-    # Deduplicate by year: keep latest period_end_date per year
-    sql = """
+    # Deduplicate logic depends on period_type
+    if period_type == "annual":
+        partition_key = "strftime('%Y', period_end_date)"
+    else:  # quarterly
+        partition_key = "strftime('%Y-%m', period_end_date)"
+
+    # Deduplicate by year/quarter: keep latest period_end_date per period
+    sql = f"""
         WITH ranked AS (
             SELECT *,
                    ROW_NUMBER() OVER (
-                       PARTITION BY strftime('%Y', period_end_date)
+                       PARTITION BY {partition_key}
                        ORDER BY period_end_date DESC
                    ) as rn
             FROM cash_flows
