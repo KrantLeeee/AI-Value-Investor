@@ -175,36 +175,55 @@ def run(
     current_price = valuation_signal.metrics.get("current_price") if valuation_signal else None
 
     # Count how many Graham criteria are met
+    # CRITICAL: All 6 criteria must always be evaluated, even if data is missing.
+    # Missing data counts as "not passed" (✗) to ensure criteria_total is always 6.
     criteria_passed = []
+
+    # Criterion 1: Current Ratio >= 2.0
     if current_ratio and current_ratio >= 2.0:
         criteria_passed.append(f"✓ 流动比率={current_ratio:.2f} ≥ 2.0")
     elif current_ratio:
         criteria_passed.append(f"✗ 流动比率={current_ratio:.2f} < 2.0")
+    else:
+        criteria_passed.append(f"✗ 流动比率：数据缺失")
 
+    # Criterion 2: Debt/Equity <= 0.5
     if debt_to_equity and debt_to_equity <= 0.5:
         criteria_passed.append(f"✓ D/E={debt_to_equity:.2f} ≤ 0.5")
     elif debt_to_equity:
         criteria_passed.append(f"✗ D/E={debt_to_equity:.2f} > 0.5")
+    else:
+        criteria_passed.append(f"✗ D/E：数据缺失")
 
+    # Criterion 3: Earnings stability (profitable for 5+ years)
     if profitable_years >= 5:
         criteria_passed.append(f"✓ 连续盈利 {profitable_years} 年")
     else:
         criteria_passed.append(f"✗ 仅 {profitable_years} 年盈利")
 
+    # Criterion 4: Earnings growth >= 33%
     if eps_growth is not None and eps_growth >= 0.33:
         criteria_passed.append(f"✓ EPS增长 {eps_growth*100:.0f}% ≥ 33%")
     elif eps_growth is not None:
-        criteria_passed.append(f"△ EPS增长 {eps_growth*100:.0f}% < 33%")
+        criteria_passed.append(f"✗ EPS增长 {eps_growth*100:.0f}% < 33%")
+    else:
+        criteria_passed.append(f"✗ EPS增长：数据缺失")
 
+    # Criterion 5: P/E <= 15
     if pe and pe <= 15:
         criteria_passed.append(f"✓ P/E={pe:.1f} ≤ 15")
     elif pe:
         criteria_passed.append(f"✗ P/E={pe:.1f} > 15")
+    else:
+        criteria_passed.append(f"✗ P/E：数据缺失")
 
+    # Criterion 6: P/E × P/B <= 22.5
     if pe_pb_product and pe_pb_product <= 22.5:
         criteria_passed.append(f"✓ P/E×P/B={pe_pb_product:.1f} ≤ 22.5")
     elif pe_pb_product:
         criteria_passed.append(f"✗ P/E×P/B={pe_pb_product:.1f} > 22.5")
+    else:
+        criteria_passed.append(f"✗ P/E×P/B：数据缺失")
 
     metrics_snapshot = {
         "current_ratio": round(current_ratio, 3) if current_ratio else None,
