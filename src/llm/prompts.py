@@ -177,6 +177,17 @@ VALUATION_INTERPRET_USER_TEMPLATE = """请解读以下估值计算结果：
 - 终值增长率: {terminal_growth}%
 - FCF 增长率假设: {fcf_growth}%
 
+**代码层验证结果**:
+- 有效估值方法: {valid_methods}
+- 已排除方法: {excluded_methods}
+- 加权目标价: {weighted_target}
+- 验证模式: {validation_mode}
+
+【重要约束】
+- 你的解读必须基于"有效估值方法"，不得为"已排除方法"背书或推荐
+- 如果某方法被排除，说明其计算结果存在异常（负值、极端偏离、或与其他方法严重不一致）
+- 已排除的方法不应影响你的估值立场判断
+
 请输出JSON格式的解读结果。"""
 
 

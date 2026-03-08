@@ -619,6 +619,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 VALUATION_INTERPRET_SYSTEM_PROMPT,
                 VALUATION_INTERPRET_USER_TEMPLATE,
             )
+            # Format validation context for LLM
+            valid_methods_str = ", ".join(weighted_result["valid_methods"]) if weighted_result["valid_methods"] else "无"
+            excluded_methods_str = ", ".join(weighted_result["excluded_methods"]) if weighted_result["excluded_methods"] else "无"
+            weighted_target_str = f"¥{weighted_target:.2f}" if weighted_target else "N/A"
+            validation_mode = "降级模式（≤1个有效方法）" if weighted_result["degraded"] else "正常模式"
+
             user_msg = VALUATION_INTERPRET_USER_TEMPLATE.format(
                 ticker=ticker,
                 current_price=f"¥{current_price:.2f}" if current_price else "未知",
@@ -631,6 +637,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 wacc=wacc * 100,
                 terminal_growth=TERMINAL_GROWTH * 100,
                 fcf_growth=FCF_GROWTH_BASE * 100,
+                valid_methods=valid_methods_str,
+                excluded_methods=excluded_methods_str,
+                weighted_target=weighted_target_str,
+                validation_mode=validation_mode,
             )
             llm_text = call_llm("valuation_interpret", VALUATION_INTERPRET_SYSTEM_PROMPT, user_msg)
 
