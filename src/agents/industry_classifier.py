@@ -310,6 +310,89 @@ def get_loss_making_tech_valuation_config() -> ValuationMethodConfig:
     }
 
 
+def detect_growth_stock(
+    pe_ratio: float | None,
+    revenue_cagr_3y: float | None,
+    net_income: float | None,
+    eps: float | None,
+    industry: str | None = None,
+) -> bool:
+    """
+    BUG-03B: Detect profitable growth stocks that need PEG valuation.
+
+    Criteria (from 多行业估值能力进化方案改造 2.0):
+    - Net income > 0 AND EPS > 0 (must be profitable)
+    - Revenue 3-year CAGR >= 15%
+    - PE > 25x (market is paying for growth)
+    - Industry is growth-related (automation/semiconductor/new energy/internet/pharma R&D)
+
+    Args:
+        pe_ratio: Current P/E ratio
+        revenue_cagr_3y: Revenue 3-year CAGR as decimal (e.g., 0.20 for 20%)
+        net_income: Latest net income (absolute value)
+        eps: Latest earnings per share
+        industry: Industry classification
+
+    Returns:
+        True if stock should use growth stock PEG valuation methods
+    """
+    # Must be profitable (positive net income and EPS)
+    if net_income is None or net_income <= 0:
+        return False
+    if eps is None or eps <= 0:
+        return False
+
+    # Check for growth potential (revenue CAGR >= 15%)
+    if revenue_cagr_3y is None or revenue_cagr_3y < 0.15:
+        logger.debug(
+            f"[Industry] Profitable but low growth (CAGR={revenue_cagr_3y}), not a growth stock"
+        )
+        return False
+
+    # Check for growth premium (PE > 25x means market is paying for growth)
+    if pe_ratio is None or pe_ratio <= 25:
+        logger.debug(
+            f"[Industry] Profitable and growing but PE={pe_ratio} <= 25x, "
+            f"market not pricing as growth stock"
+        )
+        return False
+
+    # Check for growth-related industry (optional but helps confirm)
+    growth_keywords = [
+        "自动化", "automation", "半导体", "semiconductor",
+        "新能源", "new energy", "互联网", "internet",
+        "医药", "pharma", "研发", "r&d",
+        "科技", "tech", "软件", "software",
+        "人工智能", "ai", "电子", "electronic",
+        "机器人", "robot", "智能", "smart",
+    ]
+    is_growth_industry = False
+    if industry:
+        is_growth_industry = any(kw in industry.lower() for kw in growth_keywords)
+
+    # Classify as growth stock if:
+    # 1. Is profitable + has high growth + high PE
+    # 2. Industry is growth-related (strongly preferred but not mandatory)
+    if is_growth_industry:
+        logger.info(
+            f"[Industry] Detected growth stock: "
+            f"PE={pe_ratio:.1f}, CAGR={revenue_cagr_3y*100:.1f}%, "
+            f"industry={industry}"
+        )
+        return True
+
+    # Even without growth industry tag, if PE > 30 and CAGR > 20%, classify as growth
+    # (strong financial signals override industry classification)
+    if pe_ratio > 30 and revenue_cagr_3y > 0.20:
+        logger.info(
+            f"[Industry] Detected growth stock (strong financials override): "
+            f"PE={pe_ratio:.1f}, CAGR={revenue_cagr_3y*100:.1f}%"
+        )
+        return True
+
+    return False
+
+
 def get_growth_tech_valuation_config() -> ValuationMethodConfig:
     """
     BUG-03B: Get valuation method configuration for profitable growth tech stocks.

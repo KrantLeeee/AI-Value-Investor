@@ -7,6 +7,10 @@ from src.agents.valuation import (
     _validate_valuation_result,
     _calculate_weighted_target,
 )
+from src.agents.industry_classifier import (
+    detect_growth_stock,
+    get_growth_tech_valuation_config,
+)
 
 
 class TestValidateValuationResult:
@@ -332,3 +336,181 @@ class TestCalculateWeightedTarget:
         assert result["degraded"] is True
         assert "warning" in result
         assert len(result["warning"]) > 0
+
+
+class TestDetectGrowthStock:
+    """Tests for detect_growth_stock function (BUG-03B)."""
+
+    def test_growth_stock_detected_high_pe_high_cagr_tech_industry(self):
+        """
+        BUG-03B: Growth stock should be detected when:
+        - PE > 25x
+        - Revenue CAGR 3Y >= 15%
+        - Industry is tech/growth related
+        """
+        result = detect_growth_stock(
+            pe_ratio=45.0,  # High PE
+            revenue_cagr_3y=0.25,  # 25% CAGR
+            net_income=1e8,  # Profitable
+            eps=1.5,  # Positive EPS
+            industry="工业自动化",  # Automation industry
+        )
+
+        assert result is True
+
+    def test_growth_stock_not_detected_low_pe(self):
+        """
+        Growth stock should NOT be detected when PE <= 25x.
+        """
+        result = detect_growth_stock(
+            pe_ratio=20.0,  # PE not high enough
+            revenue_cagr_3y=0.30,  # 30% CAGR
+            net_income=1e8,
+            eps=1.5,
+            industry="软件",
+        )
+
+        assert result is False
+
+    def test_growth_stock_not_detected_low_cagr(self):
+        """
+        Growth stock should NOT be detected when revenue CAGR < 15%.
+        """
+        result = detect_growth_stock(
+            pe_ratio=35.0,
+            revenue_cagr_3y=0.10,  # Only 10% CAGR
+            net_income=1e8,
+            eps=1.5,
+            industry="科技",
+        )
+
+        assert result is False
+
+    def test_growth_stock_not_detected_negative_earnings(self):
+        """
+        Growth stock should NOT be detected when net income <= 0.
+        Use loss-making tech mode instead.
+        """
+        result = detect_growth_stock(
+            pe_ratio=45.0,
+            revenue_cagr_3y=0.30,
+            net_income=-1e7,  # Negative net income
+            eps=-0.5,  # Negative EPS
+            industry="科技",
+        )
+
+        assert result is False
+
+    def test_growth_stock_not_detected_zero_eps(self):
+        """
+        Growth stock should NOT be detected when EPS <= 0.
+        """
+        result = detect_growth_stock(
+            pe_ratio=45.0,
+            revenue_cagr_3y=0.30,
+            net_income=1e8,
+            eps=0,  # Zero EPS
+            industry="科技",
+        )
+
+        assert result is False
+
+    def test_growth_stock_detected_strong_financials_override(self):
+        """
+        BUG-03B: Growth stock detected with strong financials
+        even without explicit growth industry tag.
+        PE > 30 and CAGR > 20% should override.
+        """
+        result = detect_growth_stock(
+            pe_ratio=35.0,  # PE > 30
+            revenue_cagr_3y=0.25,  # CAGR > 20%
+            net_income=1e8,
+            eps=1.5,
+            industry="传统制造业",  # Not a typical growth industry
+        )
+
+        assert result is True
+
+    def test_growth_stock_huichuan_example(self):
+        """
+        BUG-03B: Test case based on 汇川技术 (300124.SZ).
+        PE ~45x, revenue growth ~20%, automation industry.
+        """
+        result = detect_growth_stock(
+            pe_ratio=45.0,
+            revenue_cagr_3y=0.20,  # 20% 3-year CAGR
+            net_income=3.5e9,  # ~35亿
+            eps=1.60,
+            industry="工业自动化",
+        )
+
+        assert result is True
+
+
+class TestGrowthStockValuationConfig:
+    """Tests for growth stock valuation configuration."""
+
+    def test_growth_stock_weights_sum_to_one(self):
+        """
+        Growth stock weights should sum to 1.0.
+        """
+        config = get_growth_tech_valuation_config()
+        weights_sum = sum(config["weights"].values())
+
+        assert abs(weights_sum - 1.0) < 0.01
+
+    def test_growth_stock_config_excludes_graham(self):
+        """
+        BUG-03B: Growth stock config should NOT include Graham Number.
+        """
+        config = get_growth_tech_valuation_config()
+
+        assert "Graham" not in config["enabled_methods"]
+        assert "Graham" not in config["weights"]
+
+    def test_growth_stock_config_includes_peg(self):
+        """
+        BUG-03B: Growth stock config should include PEG.
+        """
+        config = get_growth_tech_valuation_config()
+
+        assert "PEG" in config["enabled_methods"]
+        assert "PEG" in config["weights"]
+        assert config["weights"]["PEG"] == 0.30
+
+    def test_growth_stock_config_dcf_primary(self):
+        """
+        BUG-03B: DCF should be the primary method for growth stocks.
+        """
+        config = get_growth_tech_valuation_config()
+
+        assert config["weights"]["DCF"] == 0.35
+
+
+class TestGrowthStockWeightedCalculation:
+    """Tests for growth stock weighted target calculation."""
+
+    def test_growth_stock_weighted_with_peg(self):
+        """
+        Should calculate weighted average using growth stock methods.
+        """
+        results = [
+            {"method": "DCF", "target_price": 80, "exclude_from_weighted": False},
+            {"method": "PEG", "target_price": 90, "exclude_from_weighted": False},
+            {"method": "EV/Sales", "target_price": 100, "exclude_from_weighted": False},
+            {"method": "P/B", "target_price": 60, "exclude_from_weighted": False},
+        ]
+        weights = {
+            "DCF": 0.35,
+            "PEG": 0.30,
+            "EV/Sales": 0.20,
+            "P/B": 0.15,
+        }
+
+        result = _calculate_weighted_target(results, current_price=70, weights=weights)
+
+        # Expected: 80*0.35 + 90*0.30 + 100*0.20 + 60*0.15
+        #         = 28 + 27 + 20 + 9 = 84
+        assert result["weighted_target"] == pytest.approx(84, rel=1e-6)
+        assert len(result["valid_methods"]) == 4
+        assert result["degraded"] is False

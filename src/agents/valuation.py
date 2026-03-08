@@ -28,6 +28,8 @@ from src.agents.industry_classifier import (
     get_industry_from_watchlist,
     detect_loss_making_tech_stock,
     get_loss_making_tech_valuation_config,
+    detect_growth_stock,
+    get_growth_tech_valuation_config,
 )
 from src.utils.logger import get_logger
 
@@ -59,6 +61,14 @@ PS_MULTIPLE_DEFAULT = 4.0       # Generic tech fallback
 
 # EV/Sales multiples (for loss-making tech stocks)
 EV_SALES_TECH = 6.0             # Tech sector EV/Sales median
+
+# BUG-03B: PEG (Price/Earnings-to-Growth) parameters for growth stocks
+# PEG = PE / EPS Growth Rate
+# Fair PEG for A-share growth stocks is typically 1.0-1.5x
+# Premium quality growth stocks can justify PEG up to 2.0x
+PEG_FAIR_VALUE = 1.2            # A-share quality growth premium
+PEG_MAX_REASONABLE = 2.0        # Above this, overvalued even for growth
+PEG_BARGAIN = 0.8               # Below this, potentially undervalued
 
 
 def _safe(x) -> float | None:
@@ -474,6 +484,59 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         results["valuation_mode"] = "loss_making_tech"
         detail_lines.append("⚠ 亏损期科技股：使用PS/EV-Sales估值方法，禁用Graham Number")
 
+    # ── BUG-03B: Detect profitable growth stocks ─────────────────────────────
+    # These need PEG valuation instead of Graham Number
+    is_growth_stock = False
+    revenue_cagr_3y = None
+    pe_ratio = None
+    eps_growth = None
+
+    # Calculate 3-year revenue CAGR if we have enough historical data
+    if income_rows and len(income_rows) >= 3:
+        revenue_current = _safe(income_rows[0].get("revenue"))
+        revenue_3y_ago = _safe(income_rows[2].get("revenue"))  # 3 years ago
+        if revenue_current and revenue_3y_ago and revenue_3y_ago > 0:
+            # CAGR = (End/Start)^(1/n) - 1
+            revenue_cagr_3y = (revenue_current / revenue_3y_ago) ** (1/3) - 1
+            results["revenue_cagr_3y"] = round(revenue_cagr_3y * 100, 2)
+
+    # Get PE ratio from metrics or calculate from price/EPS
+    if metric_rows:
+        pe_ratio = _safe(metric_rows[0].get("pe_ratio"))
+
+    # Fallback: calculate PE from current price and EPS
+    eps_for_pe = _safe(income_rows[0].get("eps")) if income_rows else None
+    if pe_ratio is None and current_price and eps_for_pe and eps_for_pe > 0:
+        pe_ratio = current_price / eps_for_pe
+        logger.debug(f"[Valuation] {ticker}: calculated PE={pe_ratio:.2f} from price/EPS")
+
+    # Calculate EPS growth for PEG calculation
+    if income_rows and len(income_rows) >= 2:
+        eps_current = _safe(income_rows[0].get("eps"))
+        eps_prev = _safe(income_rows[1].get("eps"))
+        if eps_current and eps_prev and eps_prev > 0:
+            eps_growth = (eps_current - eps_prev) / abs(eps_prev)
+            results["eps_growth"] = round(eps_growth * 100, 2)
+
+    # Detect growth stock (only if NOT already classified as loss-making tech)
+    if not is_loss_making_tech:
+        is_growth_stock = detect_growth_stock(
+            pe_ratio=pe_ratio,
+            revenue_cagr_3y=revenue_cagr_3y,
+            net_income=latest_ni,
+            eps=eps_for_pe,
+            industry=industry,
+        )
+
+    if is_growth_stock:
+        results["is_growth_stock"] = True
+        results["valuation_mode"] = "growth_stock"
+        results["pe_ratio"] = round(pe_ratio, 2) if pe_ratio else None
+        detail_lines.append(
+            f"📈 盈利成长股：使用PEG/DCF估值方法，禁用Graham Number "
+            f"(PE={pe_ratio:.1f}x, CAGR={revenue_cagr_3y*100:.1f}%)"
+        )
+
     if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
         # Note: `fcf or ocf` fails when fcf is negative (truthy), so explicit check needed
@@ -624,6 +687,45 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             results["ev_sales_multiple"] = EV_SALES_TECH
             detail_lines.append(f"EV/Sales估值 ({EV_SALES_TECH}x 营收): ¥{ev_sales_per_share:.2f}/股")
 
+    # ── 3d. PEG valuation (BUG-03B: for growth stocks) ───────────────────────
+    # PEG = PE / EPS Growth Rate
+    # Fair value = Fair PEG × EPS Growth Rate × EPS
+    peg_per_share = None
+    peg_ratio = None
+
+    if eps_growth and eps_growth > 0.10 and eps_for_pe and eps_for_pe > 0:
+        # Calculate current PEG ratio
+        eps_growth_pct = eps_growth * 100  # Convert to percentage for PEG calculation
+        if pe_ratio and pe_ratio > 0:
+            peg_ratio = pe_ratio / eps_growth_pct
+            results["peg_ratio"] = round(peg_ratio, 2)
+
+        # Calculate fair value using PEG method
+        # Fair PE = Fair PEG × EPS Growth Rate (in %)
+        # E.g., if EPS growth = 25% and Fair PEG = 1.2, then Fair PE = 30x
+        fair_pe = PEG_FAIR_VALUE * eps_growth_pct
+        peg_per_share = fair_pe * eps_for_pe
+        results["peg_per_share"] = round(peg_per_share, 2)
+        results["peg_fair_pe"] = round(fair_pe, 1)
+
+        # Add detail line
+        peg_status = ""
+        if peg_ratio:
+            if peg_ratio < PEG_BARGAIN:
+                peg_status = "低估"
+            elif peg_ratio > PEG_MAX_REASONABLE:
+                peg_status = "高估"
+            else:
+                peg_status = "合理"
+
+        detail_lines.append(
+            f"PEG估值 (EPS增速{eps_growth_pct:.1f}%, 合理PEG={PEG_FAIR_VALUE}): "
+            f"¥{peg_per_share:.2f}/股 (当前PEG={peg_ratio:.2f}x {peg_status})"
+        )
+    elif is_growth_stock:
+        # Growth stock but missing EPS growth data
+        detail_lines.append("⚠ PEG估值无法计算（缺少EPS增速数据或EPS为负）")
+
     # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
     net_net_ratio = None
     if balance_rows:
@@ -669,15 +771,44 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # NOTE: Graham Number and EV/EBITDA are DISABLED for loss-making tech
         # (Graham requires positive EPS, EV/EBITDA requires positive EBITDA)
 
+    elif is_growth_stock:
+        # BUG-03B: Growth stock valuation methods
+        # Uses PEG instead of Graham Number, disables Graham Number
+
+        # DCF base case (per share) - primary method with growth assumptions
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
+
+        # PEG valuation - core method for growth stocks
+        if peg_per_share:
+            valuation_methods.append(("PEG", peg_per_share))
+
+        # EV/Sales valuation - industry comparison
+        if ev_sales_per_share:
+            valuation_methods.append(("EV/Sales", ev_sales_per_share))
+
+        # P/B target per share - growth ROE adjusted
+        if bvps:
+            _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
+            pb_target_per_share = bvps * _pb
+            if "pb_target" not in results:
+                results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
+
+        # NOTE: Graham Number is DISABLED for growth stocks
+        # (Graham Number is designed for defensive undervalued stocks, not growth)
+
     else:
-        # Standard valuation methods for profitable companies
+        # Standard valuation methods for traditional value stocks
         # DCF base case (per share)
         if dcf_base and shares and shares > 0:
             dcf_per_share = dcf_base / shares
             results["dcf_per_share"] = dcf_per_share
             valuation_methods.append(("DCF", dcf_per_share))
 
-        # Graham Number - only for profitable companies
+        # Graham Number - only for traditional value stocks
         if graham_number_per_share:
             valuation_methods.append(("Graham", graham_number_per_share))
 
@@ -712,13 +843,19 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             logger.warning("[Valuation] %s: %s", ticker, warning)
             detail_lines.append(f"⚠ {warning}")
 
-    # BUG-03A: Use loss-making tech weights if applicable
+    # Select appropriate valuation weights based on stock type
     if is_loss_making_tech:
+        # BUG-03A: Use loss-making tech weights
         valuation_config = get_loss_making_tech_valuation_config()
         default_weights = valuation_config["weights"]
         logger.info("[Valuation] %s: Using loss-making tech weights: %s", ticker, default_weights)
+    elif is_growth_stock:
+        # BUG-03B: Use growth stock weights (PEG-focused)
+        valuation_config = get_growth_tech_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using growth stock weights: %s", ticker, default_weights)
     else:
-        # Calculate weighted target price with default weights
+        # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
         default_weights = {
             "DCF": 0.40,
