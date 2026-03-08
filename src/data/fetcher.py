@@ -14,6 +14,7 @@ from src.data.akshare_source import AKShareSource
 from src.data.baostock_source import BaoStockSource
 from src.data.base_source import BaseDataSource
 from src.data.qveris_source import QVerisSource, fetch_company_basics as _qveris_company_basics
+from src.data.tushare_source import TushareSource
 from src.data.database import (
     get_balance_sheets,
     get_cash_flows,
@@ -41,8 +42,9 @@ RETRY_DELAYS = [5, 15, 30]  # seconds
 # NOTE: FMP is excluded from a_share — their free/starter tier does not support
 # Chinese A-share financial statements (returns 403). FMP only for HK/US.
 # QVeris iFinD is added as tertiary A-share fallback for missing fields.
+# Tushare added as secondary priority for A-share (enterprise-grade data quality).
 _SOURCE_PRIORITY: dict[MarketType, list[str]] = {
-    "a_share": ["akshare", "baostock", "qveris"],  # qveris as tertiary fallback
+    "a_share": ["akshare", "tushare", "baostock", "qveris"],  # tushare as secondary fallback
     "hk":      ["akshare", "yfinance", "fmp"],
     "us":      ["yfinance", "fmp"],
 }
@@ -51,6 +53,7 @@ _SOURCE_PRIORITY: dict[MarketType, list[str]] = {
 def _get_source(name: str) -> BaseDataSource:
     sources = {
         "akshare":  AKShareSource,
+        "tushare":  TushareSource,
         "baostock": BaoStockSource,
         "yfinance": YFinanceSource,
         "fmp":      FMPSource,

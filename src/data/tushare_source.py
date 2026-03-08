@@ -1,0 +1,291 @@
+"""Tushare Pro data source adapter — enterprise-grade China financial data.
+
+Tushare Pro API: https://tushare.pro/document/2
+Requires token authentication (free tier: 2000 pts/day, 1pt per call)
+
+Key APIs:
+- daily: daily OHLCV price data (trade_date, open, high, low, close, vol)
+- income: income statement (end_date, total_revenue, n_income, etc.)
+- balancesheet: balance sheet (end_date, total_assets, total_liab, total_equity)
+- cashflow: cash flow (end_date, n_cashflow_act, etc.)
+
+Tushare uses different ticker format:
+- A-share: "601808.SH", "000002.SZ" (same as our format)
+- Period types: Tushare has no direct "annual" param, we filter by end_date month (Q4 = annual)
+"""
+
+from datetime import date, datetime
+
+from src.data.base_source import BaseDataSource
+from src.data.models import (
+    BalanceSheet,
+    CashFlow,
+    DailyPrice,
+    IncomeStatement,
+    MarketType,
+)
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Tushare Pro token (from requirements)
+TUSHARE_TOKEN = "fb807267d782ca1f32a9a907c399fed4ea0a611ff94b786239fc2021"
+
+
+class TushareSource(BaseDataSource):
+    """Tushare Pro data source (A-share only, premium quality)."""
+
+    source_name = "tushare"
+
+    def __init__(self):
+        self._api = None
+
+    def _get_api(self):
+        """Lazy init Tushare API connection."""
+        if self._api is None:
+            try:
+                import tushare as ts
+                ts.set_token(TUSHARE_TOKEN)
+                self._api = ts.pro_api()
+            except Exception as e:
+                logger.error("[Tushare] Failed to initialize API: %s", e)
+                raise
+        return self._api
+
+    def supports_market(self, market: MarketType) -> bool:
+        """Only supports A-share market."""
+        return market == "a_share"
+
+    def health_check(self) -> bool:
+        """Test API connectivity with a lightweight call."""
+        try:
+            api = self._get_api()
+            # Test with a simple query (1pt)
+            df = api.trade_cal(exchange='SSE', start_date='20240101', end_date='20240102')
+            return df is not None and not df.empty
+        except Exception as e:
+            logger.warning("[Tushare] health_check failed: %s", e)
+            return False
+
+    def get_daily_prices(
+        self, ticker: str, market: MarketType,
+        start_date: date, end_date: date,
+    ) -> list[DailyPrice]:
+        """Fetch daily OHLCV price data from Tushare Pro."""
+        if market != "a_share":
+            return []
+
+        api = self._get_api()
+        ts_code = ticker  # e.g. "601808.SH" (already in Tushare format)
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+        results: list[DailyPrice] = []
+
+        try:
+            df = api.daily(
+                ts_code=ts_code,
+                start_date=start_str,
+                end_date=end_str,
+            )
+
+            if df is None or df.empty:
+                logger.warning("[Tushare] No price data for %s", ticker)
+                return []
+
+            # Tushare columns: trade_date, open, high, low, close, vol (volume in shares)
+            for _, row in df.iterrows():
+                trade_date_str = str(row["trade_date"])
+                trade_date = datetime.strptime(trade_date_str, "%Y%m%d").date()
+
+                results.append(DailyPrice(
+                    ticker=ticker,
+                    market=market,
+                    date=trade_date,
+                    open=float(row["open"]) if row["open"] else None,
+                    high=float(row["high"]) if row["high"] else None,
+                    low=float(row["low"]) if row["low"] else None,
+                    close=float(row["close"]),
+                    volume=int(row["vol"]) if row["vol"] else 0,
+                    source=self.source_name,
+                ))
+
+            logger.info("[Tushare] %s: fetched %d price rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[Tushare] get_daily_prices failed for %s: %s", ticker, e)
+
+        return results
+
+    def get_income_statements(
+        self, ticker: str, market: MarketType,
+        period_type: str = "annual", limit: int = 10,
+    ) -> list[IncomeStatement]:
+        """Fetch income statements from Tushare Pro."""
+        if market != "a_share":
+            return []
+
+        api = self._get_api()
+        ts_code = ticker
+        results: list[IncomeStatement] = []
+
+        try:
+            # Tushare income API: end_date, total_revenue, revenue, operate_profit, n_income, etc.
+            # Values are in CNY (元), need to check API docs for actual units
+            df = api.income(ts_code=ts_code, fields=[
+                'ts_code', 'end_date', 'total_revenue', 'revenue',
+                'oper_cost', 'operate_profit', 'n_income', 'basic_eps'
+            ])
+
+            if df is None or df.empty:
+                return []
+
+            # Sort by end_date descending
+            df = df.sort_values("end_date", ascending=False)
+
+            # Filter for annual reports if requested (end_date ends with 1231)
+            if period_type == "annual":
+                df = df[df["end_date"].astype(str).str.endswith("1231")]
+
+            df = df.iloc[:limit]
+
+            for _, row in df.iterrows():
+                end_date_str = str(row["end_date"])
+                period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
+
+                revenue = float(row["total_revenue"]) if row["total_revenue"] else None
+                if revenue is None:
+                    revenue = float(row["revenue"]) if row["revenue"] else None
+
+                cost = float(row["oper_cost"]) if row["oper_cost"] else None
+                gross = (revenue - cost) if (revenue and cost) else None
+
+                results.append(IncomeStatement(
+                    ticker=ticker,
+                    period_end_date=period_end,
+                    period_type=period_type,
+                    revenue=revenue,
+                    cost_of_revenue=cost,
+                    gross_profit=gross,
+                    operating_income=float(row["operate_profit"]) if row["operate_profit"] else None,
+                    net_income=float(row["n_income"]) if row["n_income"] else None,
+                    eps=float(row["basic_eps"]) if row["basic_eps"] else None,
+                    source=self.source_name,
+                ))
+
+            logger.info("[Tushare] %s income: %d rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[Tushare] get_income_statements failed for %s: %s", ticker, e)
+
+        return results
+
+    def get_balance_sheets(
+        self, ticker: str, market: MarketType,
+        period_type: str = "annual", limit: int = 10,
+    ) -> list[BalanceSheet]:
+        """Fetch balance sheets from Tushare Pro."""
+        if market != "a_share":
+            return []
+
+        api = self._get_api()
+        ts_code = ticker
+        results: list[BalanceSheet] = []
+
+        try:
+            df = api.balancesheet(ts_code=ts_code, fields=[
+                'ts_code', 'end_date', 'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int',
+                'total_cur_assets', 'total_cur_liab', 'money_cap', 'total_share',
+                'st_borr', 'lt_borr'
+            ])
+
+            if df is None or df.empty:
+                return []
+
+            df = df.sort_values("end_date", ascending=False)
+
+            if period_type == "annual":
+                df = df[df["end_date"].astype(str).str.endswith("1231")]
+
+            df = df.iloc[:limit]
+
+            for _, row in df.iterrows():
+                end_date_str = str(row["end_date"])
+                period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
+
+                st_debt = float(row["st_borr"]) if row["st_borr"] else 0
+                lt_debt = float(row["lt_borr"]) if row["lt_borr"] else 0
+                total_debt = (st_debt + lt_debt) if (st_debt or lt_debt) else None
+
+                results.append(BalanceSheet(
+                    ticker=ticker,
+                    period_end_date=period_end,
+                    period_type=period_type,
+                    total_assets=float(row["total_assets"]) if row["total_assets"] else None,
+                    total_liabilities=float(row["total_liab"]) if row["total_liab"] else None,
+                    total_equity=float(row["total_hldr_eqy_exc_min_int"]) if row["total_hldr_eqy_exc_min_int"] else None,
+                    current_assets=float(row["total_cur_assets"]) if row["total_cur_assets"] else None,
+                    current_liabilities=float(row["total_cur_liab"]) if row["total_cur_liab"] else None,
+                    cash_and_equivalents=float(row["money_cap"]) if row["money_cap"] else None,
+                    total_debt=total_debt,
+                    source=self.source_name,
+                ))
+
+            logger.info("[Tushare] %s balance: %d rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[Tushare] get_balance_sheets failed for %s: %s", ticker, e)
+
+        return results
+
+    def get_cash_flows(
+        self, ticker: str, market: MarketType,
+        period_type: str = "annual", limit: int = 10,
+    ) -> list[CashFlow]:
+        """Fetch cash flow statements from Tushare Pro."""
+        if market != "a_share":
+            return []
+
+        api = self._get_api()
+        ts_code = ticker
+        results: list[CashFlow] = []
+
+        try:
+            df = api.cashflow(ts_code=ts_code, fields=[
+                'ts_code', 'end_date', 'n_cashflow_act', 'n_cashflow_inv_act'
+            ])
+
+            if df is None or df.empty:
+                return []
+
+            df = df.sort_values("end_date", ascending=False)
+
+            if period_type == "annual":
+                df = df[df["end_date"].astype(str).str.endswith("1231")]
+
+            df = df.iloc[:limit]
+
+            for _, row in df.iterrows():
+                end_date_str = str(row["end_date"])
+                period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
+
+                op_cf = float(row["n_cashflow_act"]) if row["n_cashflow_act"] else None
+                inv_cf = float(row["n_cashflow_inv_act"]) if row["n_cashflow_inv_act"] else None
+
+                # FCF = operating CF + investing CF (investing is usually negative)
+                fcf = None
+                if op_cf is not None and inv_cf is not None:
+                    fcf = op_cf + inv_cf
+                elif op_cf is not None:
+                    fcf = op_cf
+
+                results.append(CashFlow(
+                    ticker=ticker,
+                    period_end_date=period_end,
+                    period_type=period_type,
+                    operating_cash_flow=op_cf,
+                    free_cash_flow=fcf,
+                    source=self.source_name,
+                ))
+
+            logger.info("[Tushare] %s cashflow: %d rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[Tushare] get_cash_flows failed for %s: %s", ticker, e)
+
+        return results
