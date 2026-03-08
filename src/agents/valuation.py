@@ -30,6 +30,10 @@ from src.agents.industry_classifier import (
     get_loss_making_tech_valuation_config,
     detect_growth_stock,
     get_growth_tech_valuation_config,
+    detect_financial_stock,
+    get_financial_stock_valuation_config,
+    detect_cyclical_stock,
+    get_cyclical_stock_valuation_config,
 )
 from src.utils.logger import get_logger
 
@@ -69,6 +73,21 @@ EV_SALES_TECH = 6.0             # Tech sector EV/Sales median
 PEG_FAIR_VALUE = 1.2            # A-share quality growth premium
 PEG_MAX_REASONABLE = 2.0        # Above this, overvalued even for growth
 PEG_BARGAIN = 0.8               # Below this, potentially undervalued
+
+# Phase 2: Financial stock (bank/insurance) valuation parameters
+# P/B valuation: Fair PB = ROE / Ke (cost of equity)
+# Insurance embedded value typically trades at 0.6-1.2x EV
+FINANCIAL_COST_OF_EQUITY = 0.08    # 8% cost of equity assumption
+FINANCIAL_DDM_GROWTH = 0.03        # 3% long-term dividend growth
+PB_MIN_FINANCIAL = 0.5             # Minimum reasonable P/B for banks
+PB_MAX_FINANCIAL = 3.0             # Maximum reasonable P/B
+
+# Phase 2: Cyclical stock valuation parameters
+# Use cycle-bottom multiples, not current period
+EV_EBITDA_CYCLE_BOTTOM = 5.0       # Cycle trough EV/EBITDA for oil services
+EV_EBITDA_CYCLE_NORMAL = 7.0       # Mid-cycle EV/EBITDA
+EV_EBITDA_CYCLE_PEAK = 10.0        # Cycle peak EV/EBITDA
+PB_CYCLE_BOTTOM = 0.7              # Cycle trough P/B for resources
 
 
 def _safe(x) -> float | None:
@@ -537,6 +556,50 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             f"(PE={pe_ratio:.1f}x, CAGR={revenue_cagr_3y*100:.1f}%)"
         )
 
+    # ── Phase 2: Detect financial stocks (banks/insurance) ─────────────────────
+    is_financial_stock = False
+    roe = None
+    dividend_yield = None
+
+    if metric_rows:
+        roe = _safe(metric_rows[0].get("roe"))
+        dividend_yield = _safe(metric_rows[0].get("dividend_yield"))
+
+    # Only check financial if not already classified
+    if not is_loss_making_tech and not is_growth_stock:
+        is_financial_stock = detect_financial_stock(
+            industry=industry,
+            roe=roe,
+            dividend_yield=dividend_yield,
+        )
+
+    if is_financial_stock:
+        results["is_financial_stock"] = True
+        results["valuation_mode"] = "financial"
+        results["roe"] = round(roe * 100, 2) if roe else None
+        results["dividend_yield"] = round(dividend_yield * 100, 2) if dividend_yield else None
+        detail_lines.append(
+            f"🏦 金融股：使用P/B-ROE模型+DDM估值方法，禁用EV/EBITDA "
+            f"(ROE={roe*100:.1f}%)" if roe else "🏦 金融股：使用P/B-ROE模型+DDM估值方法"
+        )
+
+    # ── Phase 2: Detect cyclical stocks (resources/commodities) ────────────────
+    is_cyclical_stock = False
+
+    # Only check cyclical if not already classified
+    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock:
+        is_cyclical_stock = detect_cyclical_stock(
+            industry=industry,
+        )
+
+    if is_cyclical_stock:
+        results["is_cyclical_stock"] = True
+        results["valuation_mode"] = "cyclical"
+        detail_lines.append(
+            "🔄 周期股：使用正常化DCF+周期底部EV/EBITDA估值方法，"
+            "禁用成长性DCF（避免高估周期顶部）"
+        )
+
     if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
         # Note: `fcf or ocf` fails when fcf is negative (truthy), so explicit check needed
@@ -726,6 +789,81 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # Growth stock but missing EPS growth data
         detail_lines.append("⚠ PEG估值无法计算（缺少EPS增速数据或EPS为负）")
 
+    # ── 3e. P/B-ROE valuation (Phase 2: for financial stocks) ────────────────
+    # Fair P/B = ROE / Cost of Equity (Ke)
+    # For banks/insurance, P/B is the primary valuation method
+    pb_roe_per_share = None
+
+    if is_financial_stock and bvps and bvps > 0:
+        if roe and roe > 0:
+            # Fair P/B = ROE / Ke (cost of equity)
+            # Ke is typically 8-10% for financial stocks
+            fair_pb = roe / FINANCIAL_COST_OF_EQUITY
+            # Cap fair P/B within reasonable range
+            fair_pb = max(PB_MIN_FINANCIAL, min(fair_pb, PB_MAX_FINANCIAL))
+            pb_roe_per_share = bvps * fair_pb
+            results["pb_roe_per_share"] = round(pb_roe_per_share, 2)
+            results["fair_pb_roe"] = round(fair_pb, 2)
+            detail_lines.append(
+                f"P/B-ROE估值 (ROE={roe*100:.1f}%, Ke={FINANCIAL_COST_OF_EQUITY*100:.0f}%): "
+                f"合理PB={fair_pb:.2f}x → ¥{pb_roe_per_share:.2f}/股"
+            )
+        else:
+            detail_lines.append("⚠ P/B-ROE估值无法计算（缺少ROE数据）")
+
+    # ── 3f. DDM valuation (Phase 2: for financial stocks) ────────────────────
+    # DDM = D1 / (Ke - g), where D1 is next year's dividend
+    ddm_per_share = None
+
+    if is_financial_stock:
+        # Try to get dividend per share
+        dps = _safe(metric_rows[0].get("dividend_per_share")) if metric_rows else None
+
+        # Fallback: estimate DPS from dividend yield and current price
+        if dps is None and dividend_yield and current_price:
+            dps = dividend_yield * current_price
+
+        if dps and dps > 0:
+            # DDM formula: P = D1 / (Ke - g)
+            # D1 = DPS × (1 + g)
+            d1 = dps * (1 + FINANCIAL_DDM_GROWTH)
+            if FINANCIAL_COST_OF_EQUITY > FINANCIAL_DDM_GROWTH:
+                ddm_per_share = d1 / (FINANCIAL_COST_OF_EQUITY - FINANCIAL_DDM_GROWTH)
+                results["ddm_per_share"] = round(ddm_per_share, 2)
+                results["dps"] = round(dps, 2)
+                detail_lines.append(
+                    f"DDM股息折现 (DPS=¥{dps:.2f}, g={FINANCIAL_DDM_GROWTH*100:.0f}%, "
+                    f"Ke={FINANCIAL_COST_OF_EQUITY*100:.0f}%): ¥{ddm_per_share:.2f}/股"
+                )
+        else:
+            detail_lines.append("⚠ DDM估值无法计算（缺少股息数据）")
+
+    # ── 3g. Cycle-adjusted EV/EBITDA (Phase 2: for cyclical stocks) ──────────
+    # Use cycle-bottom multiples instead of current period
+    ev_ebitda_cycle_per_share = None
+
+    if is_cyclical_stock and ebitda and ebitda > 0 and shares and shares > 0:
+        # Use cycle-bottom EV/EBITDA multiple
+        ev_ebitda_cycle_total = ebitda * EV_EBITDA_CYCLE_BOTTOM
+        ev_ebitda_cycle_per_share = ev_ebitda_cycle_total / shares
+        results["ev_ebitda_cycle_per_share"] = round(ev_ebitda_cycle_per_share, 2)
+        results["ev_ebitda_cycle_multiple"] = EV_EBITDA_CYCLE_BOTTOM
+        detail_lines.append(
+            f"周期底部EV/EBITDA ({EV_EBITDA_CYCLE_BOTTOM}x): "
+            f"¥{ev_ebitda_cycle_per_share:.2f}/股 (vs 正常{EV_EBITDA_CYCLE_NORMAL}x, 顶部{EV_EBITDA_CYCLE_PEAK}x)"
+        )
+
+    # ── 3h. Cycle-bottom P/B (Phase 2: for cyclical stocks) ──────────────────
+    pb_cycle_per_share = None
+
+    if is_cyclical_stock and bvps and bvps > 0:
+        pb_cycle_per_share = bvps * PB_CYCLE_BOTTOM
+        results["pb_cycle_per_share"] = round(pb_cycle_per_share, 2)
+        results["pb_cycle_multiple"] = PB_CYCLE_BOTTOM
+        detail_lines.append(
+            f"周期底部P/B ({PB_CYCLE_BOTTOM}x BVPS=¥{bvps:.2f}): ¥{pb_cycle_per_share:.2f}/股"
+        )
+
     # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
     net_net_ratio = None
     if balance_rows:
@@ -800,6 +938,50 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # NOTE: Graham Number is DISABLED for growth stocks
         # (Graham Number is designed for defensive undervalued stocks, not growth)
 
+    elif is_financial_stock:
+        # Phase 2: Financial stock valuation methods
+        # Uses P/B-ROE and DDM, disables EV/EBITDA and standard DCF
+
+        # P/B-ROE valuation - primary method for financial stocks
+        if pb_roe_per_share:
+            valuation_methods.append(("P/B_ROE", pb_roe_per_share))
+
+        # DDM valuation - dividend-based for stable dividend payers
+        if ddm_per_share:
+            valuation_methods.append(("DDM", ddm_per_share))
+
+        # P/E using operational profit (if available)
+        if pe_ratio and pe_ratio > 0 and eps_for_pe and eps_for_pe > 0:
+            # Use a reasonable PE multiple for financial stocks (typically 8-12x)
+            fair_pe_financial = 10.0
+            pe_target = fair_pe_financial * eps_for_pe
+            results["pe_financial_per_share"] = round(pe_target, 2)
+            valuation_methods.append(("P/E", pe_target))
+
+        # NOTE: EV/EBITDA and standard DCF are DISABLED for financial stocks
+        # (Financial company "debt" is the business itself, FCF definition differs)
+
+    elif is_cyclical_stock:
+        # Phase 2: Cyclical stock valuation methods
+        # Uses normalized DCF and cycle-bottom multiples
+
+        # DCF base case (per share) - use as normalized DCF
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF_Normalized", dcf_per_share))
+
+        # Cycle-adjusted EV/EBITDA
+        if ev_ebitda_cycle_per_share:
+            valuation_methods.append(("EV/EBITDA_Cycle", ev_ebitda_cycle_per_share))
+
+        # Cycle-bottom P/B
+        if pb_cycle_per_share:
+            valuation_methods.append(("P/B_Cycle", pb_cycle_per_share))
+
+        # NOTE: Growth-oriented DCF is DISABLED for cyclical stocks
+        # (Would overestimate value at cycle peak)
+
     else:
         # Standard valuation methods for traditional value stocks
         # DCF base case (per share)
@@ -854,6 +1036,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         valuation_config = get_growth_tech_valuation_config()
         default_weights = valuation_config["weights"]
         logger.info("[Valuation] %s: Using growth stock weights: %s", ticker, default_weights)
+    elif is_financial_stock:
+        # Phase 2: Use financial stock weights (P/B-ROE + DDM focused)
+        valuation_config = get_financial_stock_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using financial stock weights: %s", ticker, default_weights)
+    elif is_cyclical_stock:
+        # Phase 2: Use cyclical stock weights (normalized DCF + cycle-bottom multiples)
+        valuation_config = get_cyclical_stock_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using cyclical stock weights: %s", ticker, default_weights)
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)

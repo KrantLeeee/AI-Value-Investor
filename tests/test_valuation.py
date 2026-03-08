@@ -10,6 +10,10 @@ from src.agents.valuation import (
 from src.agents.industry_classifier import (
     detect_growth_stock,
     get_growth_tech_valuation_config,
+    detect_financial_stock,
+    get_financial_stock_valuation_config,
+    detect_cyclical_stock,
+    get_cyclical_stock_valuation_config,
 )
 
 
@@ -514,3 +518,163 @@ class TestGrowthStockWeightedCalculation:
         assert result["weighted_target"] == pytest.approx(84, rel=1e-6)
         assert len(result["valid_methods"]) == 4
         assert result["degraded"] is False
+
+
+class TestDetectFinancialStock:
+    """Tests for detect_financial_stock function (Phase 2)."""
+
+    def test_financial_stock_detected_banking(self):
+        """Financial stock should be detected for banking industry."""
+        result = detect_financial_stock(
+            industry="银行",
+            roe=0.14,
+            dividend_yield=0.05,
+        )
+
+        assert result is True
+
+    def test_financial_stock_detected_insurance(self):
+        """Financial stock should be detected for insurance industry."""
+        result = detect_financial_stock(
+            industry="保险",
+            roe=0.12,
+            dividend_yield=0.04,
+        )
+
+        assert result is True
+
+    def test_financial_stock_detected_pingan_example(self):
+        """
+        Phase 2: Test case based on 中国平安 (601318.SH).
+        """
+        result = detect_financial_stock(
+            industry="金融",
+            roe=0.14,
+            dividend_yield=0.05,
+        )
+
+        assert result is True
+
+    def test_financial_stock_not_detected_tech(self):
+        """Non-financial industry should not be detected."""
+        result = detect_financial_stock(
+            industry="科技",
+            roe=0.20,
+            dividend_yield=0.01,
+        )
+
+        assert result is False
+
+    def test_financial_stock_not_detected_no_industry(self):
+        """No industry should return False."""
+        result = detect_financial_stock(
+            industry=None,
+            roe=0.14,
+        )
+
+        assert result is False
+
+
+class TestFinancialStockValuationConfig:
+    """Tests for financial stock valuation configuration."""
+
+    def test_financial_stock_weights_sum_to_one(self):
+        """Financial stock weights should sum to 1.0."""
+        config = get_financial_stock_valuation_config()
+        weights_sum = sum(config["weights"].values())
+
+        assert abs(weights_sum - 1.0) < 0.01
+
+    def test_financial_stock_config_excludes_ev_ebitda(self):
+        """Financial stock config should NOT include EV/EBITDA."""
+        config = get_financial_stock_valuation_config()
+
+        assert "EV/EBITDA" not in config["enabled_methods"]
+        assert "EV/EBITDA" not in config["weights"]
+
+    def test_financial_stock_config_includes_pb_roe(self):
+        """Financial stock config should include P/B_ROE."""
+        config = get_financial_stock_valuation_config()
+
+        assert "P/B_ROE" in config["enabled_methods"]
+        assert "P/B_ROE" in config["weights"]
+        assert config["weights"]["P/B_ROE"] == 0.40
+
+    def test_financial_stock_config_includes_ddm(self):
+        """Financial stock config should include DDM."""
+        config = get_financial_stock_valuation_config()
+
+        assert "DDM" in config["enabled_methods"]
+        assert "DDM" in config["weights"]
+
+
+class TestDetectCyclicalStock:
+    """Tests for detect_cyclical_stock function (Phase 2)."""
+
+    def test_cyclical_stock_detected_oil(self):
+        """Cyclical stock should be detected for oil industry."""
+        result = detect_cyclical_stock(
+            industry="石油服务",
+        )
+
+        assert result is True
+
+    def test_cyclical_stock_detected_steel(self):
+        """Cyclical stock should be detected for steel industry."""
+        result = detect_cyclical_stock(
+            industry="钢铁",
+        )
+
+        assert result is True
+
+    def test_cyclical_stock_detected_cosl_example(self):
+        """
+        Phase 2: Test case based on 中海油服 (601808.SH).
+        """
+        result = detect_cyclical_stock(
+            industry="石油",
+        )
+
+        assert result is True
+
+    def test_cyclical_stock_not_detected_tech(self):
+        """Non-cyclical industry should not be detected."""
+        result = detect_cyclical_stock(
+            industry="科技",
+        )
+
+        assert result is False
+
+    def test_cyclical_stock_not_detected_no_industry(self):
+        """No industry should return False."""
+        result = detect_cyclical_stock(
+            industry=None,
+        )
+
+        assert result is False
+
+
+class TestCyclicalStockValuationConfig:
+    """Tests for cyclical stock valuation configuration."""
+
+    def test_cyclical_stock_weights_sum_to_one(self):
+        """Cyclical stock weights should sum to 1.0."""
+        config = get_cyclical_stock_valuation_config()
+        weights_sum = sum(config["weights"].values())
+
+        assert abs(weights_sum - 1.0) < 0.01
+
+    def test_cyclical_stock_config_includes_normalized_dcf(self):
+        """Cyclical stock config should include DCF_Normalized."""
+        config = get_cyclical_stock_valuation_config()
+
+        assert "DCF_Normalized" in config["enabled_methods"]
+        assert "DCF_Normalized" in config["weights"]
+        assert config["weights"]["DCF_Normalized"] == 0.35
+
+    def test_cyclical_stock_config_includes_cycle_ebitda(self):
+        """Cyclical stock config should include EV/EBITDA_Cycle."""
+        config = get_cyclical_stock_valuation_config()
+
+        assert "EV/EBITDA_Cycle" in config["enabled_methods"]
+        assert "EV/EBITDA_Cycle" in config["weights"]

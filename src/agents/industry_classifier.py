@@ -412,3 +412,139 @@ def get_growth_tech_valuation_config() -> ValuationMethodConfig:
             "禁用Graham Number（专为防御型低估股设计）"
         ),
     }
+
+
+def detect_financial_stock(
+    industry: str | None,
+    roe: float | None = None,
+    dividend_yield: float | None = None,
+) -> bool:
+    """
+    Phase 2: Detect financial stocks (banks/insurance) that need P/B-ROE valuation.
+
+    Criteria:
+    - Industry is banking/insurance/financial services related
+    - Typically high dividend yield (>2%)
+    - ROE is the key profitability metric
+
+    Args:
+        industry: Industry classification
+        roe: Return on equity as decimal (e.g., 0.14 for 14%)
+        dividend_yield: Dividend yield as decimal (e.g., 0.05 for 5%)
+
+    Returns:
+        True if stock should use financial stock valuation methods
+    """
+    if not industry:
+        return False
+
+    financial_keywords = [
+        "银行", "bank", "banking",
+        "保险", "insurance", "寿险", "财险",
+        "金融", "financial", "finance",
+        "证券", "securities", "券商",
+    ]
+
+    is_financial = any(kw in industry.lower() for kw in financial_keywords)
+
+    if is_financial:
+        logger.info(
+            f"[Industry] Detected financial stock: "
+            f"industry={industry}, ROE={roe}, div_yield={dividend_yield}"
+        )
+        return True
+
+    return False
+
+
+def get_financial_stock_valuation_config() -> ValuationMethodConfig:
+    """
+    Phase 2: Get valuation method configuration for financial stocks.
+
+    Returns P/B-ROE focused weights, disables EV/EBITDA and standard DCF.
+    """
+    return {
+        "enabled_methods": ["P/B_ROE", "DDM", "P/E"],
+        "weights": {
+            "P/B_ROE": 0.40,   # P/B driven by ROE/Ke
+            "DDM": 0.35,       # Dividend discount model
+            "P/E": 0.25,       # Operational profit PE
+        },
+        "rationale": (
+            "金融股估值方法: P/B-ROE模型为主力（ROE是核心指标），"
+            "DDM股息折现（金融股分红稳定），"
+            "禁用EV/EBITDA（金融公司债务是业务本身）和标准DCF（FCF定义不同）"
+        ),
+    }
+
+
+def detect_cyclical_stock(
+    industry: str | None,
+    revenue_volatility: float | None = None,
+    operating_margin_volatility: float | None = None,
+) -> bool:
+    """
+    Phase 2: Detect cyclical stocks (resources/commodities) that need normalized DCF.
+
+    Criteria:
+    - Industry is oil/gas/mining/steel/chemical related
+    - High revenue or margin volatility across business cycles
+    - Earnings tied to commodity prices
+
+    Args:
+        industry: Industry classification
+        revenue_volatility: Standard deviation of revenue growth
+        operating_margin_volatility: Standard deviation of operating margin
+
+    Returns:
+        True if stock should use cyclical stock valuation methods
+    """
+    if not industry:
+        return False
+
+    cyclical_keywords = [
+        "石油", "oil", "petroleum",
+        "天然气", "gas", "lng",
+        "矿业", "mining", "矿产",
+        "钢铁", "steel", "铝", "aluminum",
+        "化工", "chemical", "petrochemical",
+        "有色金属", "metal",
+        "煤炭", "coal",
+        "航运", "shipping",
+        "能源", "energy",  # Added to catch energy sector
+        "油田", "oilfield", "油服",
+    ]
+
+    is_cyclical = any(kw in industry.lower() for kw in cyclical_keywords)
+
+    if is_cyclical:
+        logger.info(
+            f"[Industry] Detected cyclical stock: "
+            f"industry={industry}, rev_vol={revenue_volatility}"
+        )
+        return True
+
+    return False
+
+
+def get_cyclical_stock_valuation_config() -> ValuationMethodConfig:
+    """
+    Phase 2: Get valuation method configuration for cyclical stocks.
+
+    Returns normalized DCF + NAV focused weights.
+    """
+    return {
+        "enabled_methods": ["DCF_Normalized", "EV/EBITDA_Cycle", "NAV", "P/B_Cycle"],
+        "weights": {
+            "DCF_Normalized": 0.35,   # DCF with cycle-bottom FCF
+            "EV/EBITDA_Cycle": 0.30,  # Cycle-adjusted EV/EBITDA
+            "NAV": 0.20,              # Asset replacement value
+            "P/B_Cycle": 0.15,        # Cycle-bottom P/B
+        },
+        "rationale": (
+            "周期股估值方法: 正常化DCF（周期底部FCF为基准），"
+            "EV/EBITDA使用周期底部倍数，"
+            "资产重置价值（NAV）作为安全边际参考，"
+            "禁用成长性DCF（会高估周期顶部增长）"
+        ),
+    }
