@@ -219,13 +219,13 @@ def _calculate_weighted_target(
     normalized_weights = {m: w / total_weight for m, w in valid_weights.items()}
 
     # ── DEBUG: Log weighted calculation inputs ────────────────────────────────
-    logger.debug("[Weighted Calc] Valid methods entering weighted calculation:")
+    logger.info("[Weighted Calc] Valid methods entering weighted calculation:")
     for r in valid_results:
         method_name = r["method"]
         price = r["target_price"]
         orig_weight = weights.get(method_name, 0)
         norm_weight = normalized_weights.get(method_name, 0)
-        logger.debug(
+        logger.info(
             f"  [{method_name}] price=¥{price:.2f}, "
             f"original_weight={orig_weight:.4f}, "
             f"normalized_weight={norm_weight:.4f}"
@@ -242,9 +242,9 @@ def _calculate_weighted_target(
         r["target_price"] * normalized_weights.get(r["method"], 0)
         for r in valid_results
     )
-    logger.debug(f"[Weighted Calc] Final weighted price: ¥{weighted_target:.2f}")
-    logger.debug(f"[Weighted Calc] Manual verification: ¥{manual_calc:.2f}")
-    logger.debug(
+    logger.info(f"[Weighted Calc] Final weighted price: ¥{weighted_target:.2f}")
+    logger.info(f"[Weighted Calc] Manual verification: ¥{manual_calc:.2f}")
+    logger.info(
         f"[Weighted Calc] Detailed calculation: "
         + " + ".join([
             f"¥{r['target_price']:.2f}×{normalized_weights.get(r['method'], 0):.4f}"
