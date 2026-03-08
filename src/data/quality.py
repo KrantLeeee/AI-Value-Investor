@@ -4,6 +4,7 @@ Provides infrastructure for validating data completeness, freshness,
 and logical consistency across all data sources.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable, Literal, cast
 
@@ -11,6 +12,151 @@ from src.data.models import BalanceSheet, CashFlow, DailyPrice, IncomeStatement,
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Task 3: Disclosure-Cycle-Aware Staleness ──────────────────────────────
+
+
+@dataclass
+class ExpectedReport:
+    period: str  # "年报", "半年报", "一季报", "三季报"
+    deadline: date
+
+
+@dataclass
+class StalenessResult:
+    level: Literal["OK", "WARNING", "CRITICAL"]
+    reason: str = ""
+    expected_report: ExpectedReport | None = None
+
+
+def get_next_expected_report(last_report_date: date) -> ExpectedReport:
+    """Determine the next expected report based on A-share disclosure schedule.
+
+    A-share disclosure deadlines:
+    - Q1 (一季报): April 30
+    - H1 (半年报): August 31
+    - Q3 (三季报): October 31
+    - Annual (年报): April 30 (next year)
+
+    Period end dates:
+    - Annual: December 31
+    - Q1: March 31
+    - H1: June 30
+    - Q3: September 30
+
+    Args:
+        last_report_date: Period end date of the most recent report
+
+    Returns:
+        ExpectedReport with period name and deadline date
+    """
+    month = last_report_date.month
+    year = last_report_date.year
+
+    # Determine which report period this is based on period end date
+    if month == 3:  # Q1 report (period ends March 31)
+        # Next is H1 (半年报)
+        return ExpectedReport(
+            period="半年报",
+            deadline=date(year, 8, 31)
+        )
+    elif month == 6:  # H1 report (period ends June 30)
+        # Next is Q3 (三季报)
+        return ExpectedReport(
+            period="三季报",
+            deadline=date(year, 10, 31)
+        )
+    elif month == 9:  # Q3 report (period ends September 30)
+        # Next is Annual (年报)
+        return ExpectedReport(
+            period="年报",
+            deadline=date(year + 1, 4, 30)
+        )
+    elif month == 12:  # Annual report (period ends December 31)
+        # Next is Q1 (一季报)
+        return ExpectedReport(
+            period="一季报",
+            deadline=date(year + 1, 4, 30)
+        )
+    else:
+        # Fallback for non-standard dates - treat based on quarter
+        if month <= 3:
+            # Treat as annual from previous year, next is Q1
+            return ExpectedReport(
+                period="一季报",
+                deadline=date(year, 4, 30)
+            )
+        elif month <= 6:
+            # Treat as Q1, next is H1
+            return ExpectedReport(
+                period="半年报",
+                deadline=date(year, 8, 31)
+            )
+        elif month <= 9:
+            # Treat as H1, next is Q3
+            return ExpectedReport(
+                period="三季报",
+                deadline=date(year, 10, 31)
+            )
+        else:
+            # Treat as Q3, next is Annual
+            return ExpectedReport(
+                period="年报",
+                deadline=date(year + 1, 4, 30)
+            )
+
+
+def check_data_staleness(
+    last_report_date: date,
+    reference_date: date | None = None
+) -> StalenessResult:
+    """Check if financial data is stale based on A-share disclosure cycle.
+
+    This function distinguishes between:
+    - CRITICAL: Expected report deadline has passed (missing report)
+    - WARNING: Data > 180 days old but within normal disclosure cycle
+    - OK: Data is current and within normal cycle
+
+    Args:
+        last_report_date: Period end date of most recent financial report
+        reference_date: Date to check against (default: today)
+
+    Returns:
+        StalenessResult with severity level, reason, and expected report info
+    """
+    if reference_date is None:
+        reference_date = date.today()
+
+    # Calculate next expected report
+    expected = get_next_expected_report(last_report_date)
+
+    # Calculate days since last report
+    days_old = (reference_date - last_report_date).days
+
+    # Check if deadline has passed (CRITICAL)
+    if reference_date > expected.deadline:
+        return StalenessResult(
+            level="CRITICAL",
+            reason=f"Missing expected {expected.period} (deadline {expected.deadline} has passed)",
+            expected_report=expected
+        )
+
+    # Check if data is old but within normal cycle (WARNING)
+    if days_old > 180:
+        return StalenessResult(
+            level="WARNING",
+            reason=f"Data is {days_old} days old but within normal disclosure cycle (next {expected.period} due {expected.deadline})",
+            expected_report=expected
+        )
+
+    # Data is current (OK)
+    return StalenessResult(
+        level="OK",
+        reason=f"Data is current ({days_old} days old, next {expected.period} due {expected.deadline})",
+        expected_report=expected
+    )
+
 
 # Quality score threshold for low quality warning
 LOW_QUALITY_THRESHOLD = 0.5

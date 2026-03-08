@@ -1,7 +1,7 @@
 """Tests for data quality models."""
 
 import pytest
-from datetime import date
+from datetime import date, timedelta
 
 from src.data.models import QualityFlag, QualityReport
 from src.data.quality import _calculate_quality_score
@@ -848,3 +848,144 @@ def test_full_pipeline_with_quality_layer(tmp_path):
 
     except Exception as e:
         pytest.skip(f"Integration test requires database setup: {e}")
+
+
+# ── Task 3: Disclosure-Cycle-Aware Staleness Tests ───────────────────────
+
+
+def test_get_next_expected_report_after_annual():
+    """After annual report (Dec 31), next is Q1 by Apr 30"""
+    from src.data.quality import get_next_expected_report
+
+    last_report = date(2023, 12, 31)  # Annual report end date
+    expected = get_next_expected_report(last_report)
+
+    assert expected.period == "一季报"
+    assert expected.deadline == date(2024, 4, 30)
+
+
+def test_get_next_expected_report_after_q1():
+    """After Q1 report (Mar 31), next is H1 by Aug 31"""
+    from src.data.quality import get_next_expected_report
+
+    last_report = date(2024, 3, 31)  # Q1 report end date
+    expected = get_next_expected_report(last_report)
+
+    assert expected.period == "半年报"
+    assert expected.deadline == date(2024, 8, 31)
+
+
+def test_get_next_expected_report_after_h1():
+    """After H1 report (Jun 30), next is Q3 by Oct 31"""
+    from src.data.quality import get_next_expected_report
+
+    last_report = date(2024, 6, 30)  # H1 report end date
+    expected = get_next_expected_report(last_report)
+
+    assert expected.period == "三季报"
+    assert expected.deadline == date(2024, 10, 31)
+
+
+def test_get_next_expected_report_after_q3():
+    """After Q3 report (Sep 30), next is Annual by Apr 30 next year"""
+    from src.data.quality import get_next_expected_report
+
+    last_report = date(2024, 9, 30)  # Q3 report end date
+    expected = get_next_expected_report(last_report)
+
+    assert expected.period == "年报"
+    assert expected.deadline == date(2025, 4, 30)
+
+
+def test_check_data_staleness_ok():
+    """Data within normal cycle should return OK"""
+    from src.data.quality import check_data_staleness
+
+    # Last report was 100 days ago, but next deadline hasn't passed
+    last_report = date(2024, 9, 30)  # Q3 report
+    reference = date(2025, 1, 15)    # Still before Apr 30 deadline
+
+    result = check_data_staleness(last_report, reference)
+
+    assert result.level == "OK"
+    assert result.expected_report.period == "年报"
+    assert result.expected_report.deadline == date(2025, 4, 30)
+
+
+def test_check_data_staleness_warning():
+    """Data > 180 days but within cycle should return WARNING"""
+    from src.data.quality import check_data_staleness
+
+    # Last report was 200 days ago, but deadline hasn't passed
+    # Use annual report (Dec 31) so next deadline is Apr 30
+    last_report = date(2024, 12, 31)  # Annual report
+    reference = date(2025, 7, 18)     # ~200 days later, well after Apr 30
+    # Actually this would be CRITICAL since Apr 30 passed
+    # Let me use a different scenario: Q3 report with long cycle
+    last_report = date(2024, 9, 30)   # Q3 report
+    reference = date(2025, 3, 18)     # ~170 days later, before Apr 30 deadline
+
+    # This is actually < 180 days, so it should be OK, not WARNING
+    # Let me recalculate: Sep 30 to Mar 18 = about 169 days
+    # Need exactly > 180 days but before deadline (Apr 30)
+    reference = date(2025, 4, 15)     # ~197 days later, before Apr 30 deadline
+
+    result = check_data_staleness(last_report, reference)
+
+    assert result.level == "WARNING"
+    assert "within normal disclosure cycle" in result.reason.lower()
+
+
+def test_check_data_staleness_critical():
+    """Data past deadline should return CRITICAL"""
+    from src.data.quality import check_data_staleness
+
+    # Last report was Q3, annual deadline has passed
+    last_report = date(2024, 9, 30)  # Q3 report
+    reference = date(2025, 5, 1)     # Past Apr 30 deadline
+
+    result = check_data_staleness(last_report, reference)
+
+    assert result.level == "CRITICAL"
+    assert "missing" in result.reason.lower() or "overdue" in result.reason.lower()
+    assert result.expected_report.period == "年报"
+    assert result.expected_report.deadline == date(2025, 4, 30)
+
+
+def test_check_data_staleness_uses_today_by_default():
+    """When reference_date is None, should use today()"""
+    from src.data.quality import check_data_staleness
+
+    # Use a recent date to ensure OK status
+    last_report = date.today() - timedelta(days=30)
+
+    result = check_data_staleness(last_report)
+
+    # Should not crash and should return a valid result
+    assert result.level in ["OK", "WARNING", "CRITICAL"]
+    assert result.expected_report is not None
+
+
+def test_check_data_staleness_edge_case_on_deadline():
+    """On the deadline day itself should still be OK"""
+    from src.data.quality import check_data_staleness
+
+    last_report = date(2024, 9, 30)  # Q3 report
+    reference = date(2025, 4, 30)    # Exactly on deadline
+
+    result = check_data_staleness(last_report, reference)
+
+    # On deadline day should still be OK (not yet overdue)
+    assert result.level == "OK" or result.level == "WARNING"
+
+
+def test_check_data_staleness_one_day_after_deadline():
+    """One day after deadline should be CRITICAL"""
+    from src.data.quality import check_data_staleness
+
+    last_report = date(2024, 9, 30)  # Q3 report
+    reference = date(2025, 5, 1)     # One day after Apr 30 deadline
+
+    result = check_data_staleness(last_report, reference)
+
+    assert result.level == "CRITICAL"
