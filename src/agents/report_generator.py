@@ -481,6 +481,12 @@ def _build_appendix(
     lines.append(f"- **过期字段数**: {len(quality_report.stale_fields)}")
     lines.append("")
 
+    # QVeris status (premium data source)
+    from src.data.qveris_source import _CREDITS_EXHAUSTED
+    if _CREDITS_EXHAUSTED:
+        lines.append("> ⚠ **付费数据源状态**: QVeris iFinD 额度耗尽，部分深度财务数据（如流动比率、资产负债表细项）可能缺失。建议充值或接受数据完整度下降。")
+        lines.append("")
+
     if quality_report.flags:
         lines.append(f"**质量标记 ({len(quality_report.flags)} 个):**")
         lines.append("")
