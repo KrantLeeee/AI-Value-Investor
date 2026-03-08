@@ -24,7 +24,11 @@ from src.data.database import (
 )
 from src.data.models import AgentSignal
 from src.agents.wacc import calculate_wacc, generate_sensitivity_matrix
-from src.agents.industry_classifier import get_industry_from_watchlist
+from src.agents.industry_classifier import (
+    get_industry_from_watchlist,
+    detect_loss_making_tech_stock,
+    get_loss_making_tech_valuation_config,
+)
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +50,15 @@ PB_TARGET_OIL_SERVICES = 1.8    # oil services: 1.6-2.1x midpoint
 PB_TARGET_DEFAULT      = 2.0    # generic fallback
 # WACC = 0.10 kept as alias for backward compatibility
 WACC = WACC_DEFAULT
+
+# BUG-03A: PS (Price-to-Sales) multiples for loss-making tech stocks
+# Based on A-share tech sector medians (2023-2025 data)
+PS_MULTIPLE_TECH_AI = 8.0       # AI/Voice tech: 6-10x median
+PS_MULTIPLE_TECH_SOFTWARE = 6.0 # Software/SaaS: 4-8x median
+PS_MULTIPLE_DEFAULT = 4.0       # Generic tech fallback
+
+# EV/Sales multiples (for loss-making tech stocks)
+EV_SALES_TECH = 6.0             # Tech sector EV/Sales median
 
 
 def _safe(x) -> float | None:
@@ -304,7 +317,19 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     current_price = _get_current_price(ticker)
 
     # Get industry classification for WACC calculation
+    # Try watchlist first, then fallback to company info
     industry = get_industry_from_watchlist(ticker)
+
+    # BUG-03A: Use company info fallback for industry detection if watchlist doesn't have it
+    if industry == "default":
+        try:
+            from src.data.fetcher import _COMPANY_INFO_FALLBACK
+            fallback_info = _COMPANY_INFO_FALLBACK.get(ticker, {})
+            if fallback_info.get("industry"):
+                industry = fallback_info["industry"]
+                logger.info(f"[Valuation] {ticker}: Using fallback industry: {industry}")
+        except ImportError:
+            pass
 
     # Calculate industry-adapted WACC (P2-⑦)
     wacc_result = calculate_wacc(ticker, market, industry, current_price)
@@ -411,6 +436,45 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             results["owner_earnings"] = owner_earnings
             detail_lines.append(f"Owner Earnings: {owner_earnings/1e8:.2f}亿元")
 
+    # ── BUG-03A: Detect loss-making tech stocks ───────────────────────────────
+    # These need PS/EV-Sales valuation instead of Graham Number/EV-EBITDA
+    is_loss_making_tech = False
+    net_margin = None
+    revenue_growth = None
+
+    if income_rows and len(income_rows) >= 1:
+        revenue = _safe(income_rows[0].get("revenue"))
+        net_income = _safe(income_rows[0].get("net_income"))
+
+        if revenue and revenue > 0 and net_income is not None:
+            net_margin = net_income / revenue
+
+        # Calculate revenue growth if we have historical data
+        if len(income_rows) >= 2:
+            revenue_prev = _safe(income_rows[1].get("revenue"))
+            if revenue and revenue_prev and revenue_prev > 0:
+                revenue_growth = (revenue - revenue_prev) / revenue_prev
+
+    # R&D ratio (optional, may not be available)
+    rd_ratio = None
+    if metric_rows:
+        rd_ratio = _safe(metric_rows[0].get("rd_expense_ratio"))
+
+    # Detect loss-making tech
+    is_loss_making_tech = detect_loss_making_tech_stock(
+        net_income=latest_ni,
+        net_margin=net_margin,
+        revenue_growth=revenue_growth,
+        rd_ratio=rd_ratio,
+        industry=industry,
+    )
+
+    if is_loss_making_tech:
+        results["is_loss_making_tech"] = True
+        results["valuation_mode"] = "loss_making_tech"
+        detail_lines.append("⚠ 亏损期科技股：使用PS/EV-Sales估值方法，禁用Graham Number")
+
+    if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
         # Note: `fcf or ocf` fails when fcf is negative (truthy), so explicit check needed
         if fcf is not None and fcf > 0:
@@ -519,6 +583,47 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         results["ev_ebitda_value"] = None
         detail_lines.append("- EBITDA 数据缺失（注：已尝试用净利润×1.5估算，仍失败）")
 
+    # ── 3b. PS (Price-to-Sales) valuation (BUG-03A: for loss-making tech stocks) ──
+    ps_per_share = None
+    revenue = _safe(income_rows[0].get("revenue")) if income_rows else None
+
+    if revenue and revenue > 0 and shares and shares > 0:
+        # Determine PS multiple based on industry
+        _is_ai = industry and any(k in (industry or "").lower() for k in ["ai", "人工智能", "语音"])
+        _is_software = industry and any(k in (industry or "").lower() for k in ["软件", "software", "saas"])
+
+        if _is_ai:
+            ps_multiple = PS_MULTIPLE_TECH_AI
+        elif _is_software:
+            ps_multiple = PS_MULTIPLE_TECH_SOFTWARE
+        else:
+            ps_multiple = PS_MULTIPLE_DEFAULT
+
+        ps_value = revenue * ps_multiple
+        ps_per_share = ps_value / shares
+        results["ps_per_share"] = round(ps_per_share, 2)
+        results["ps_multiple"] = ps_multiple
+        detail_lines.append(f"PS估值 ({ps_multiple}x 营收): ¥{ps_per_share:.2f}/股")
+
+    # ── 3c. EV/Sales valuation (BUG-03A: for loss-making tech stocks) ─────────
+    ev_sales_per_share = None
+
+    if revenue and revenue > 0 and shares and shares > 0:
+        # Calculate Enterprise Value: Market Cap + Debt - Cash
+        total_debt = _safe(balance_rows[0].get("total_debt")) if balance_rows else None
+        cash = _safe(balance_rows[0].get("cash_and_equivalents")) if balance_rows else None
+
+        # Estimate market cap from current price
+        market_cap = current_price * shares if current_price else None
+
+        if market_cap:
+            ev = market_cap + (total_debt or 0) - (cash or 0)
+            implied_ev = revenue * EV_SALES_TECH
+            ev_sales_per_share = implied_ev / shares
+            results["ev_sales_per_share"] = round(ev_sales_per_share, 2)
+            results["ev_sales_multiple"] = EV_SALES_TECH
+            detail_lines.append(f"EV/Sales估值 ({EV_SALES_TECH}x 营收): ¥{ev_sales_per_share:.2f}/股")
+
     # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
     net_net_ratio = None
     if balance_rows:
@@ -537,28 +642,57 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     dcf_per_share = None
     pb_target_per_share = None
 
-    # DCF base case (per share)
-    if dcf_base and shares and shares > 0:
-        dcf_per_share = dcf_base / shares
-        results["dcf_per_share"] = dcf_per_share
-        valuation_methods.append(("DCF", dcf_per_share))
+    # BUG-03A: For loss-making tech stocks, use PS/EV-Sales as primary methods
+    if is_loss_making_tech:
+        # PS valuation (primary for loss-making tech)
+        if ps_per_share:
+            valuation_methods.append(("PS", ps_per_share))
 
-    # Graham Number
-    if graham_number_per_share:
-        valuation_methods.append(("Graham", graham_number_per_share))
+        # EV/Sales valuation (secondary for loss-making tech)
+        if ev_sales_per_share:
+            valuation_methods.append(("EV/Sales", ev_sales_per_share))
 
-    # EV/EBITDA per share
-    if ev_ebitda_per_share:
-        valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+        # DCF base case (per share) - still useful with turnaround assumptions
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
 
-    # P/B target per share
-    if bvps:
-        _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
-        pb_target_per_share = bvps * _pb
-        # Only add to results if not already added in EV/EBITDA section
-        if "pb_target" not in results:
-            results["pb_target"] = round(pb_target_per_share, 2)
-        valuation_methods.append(("P/B", pb_target_per_share))
+        # P/B target per share - floor value only
+        if bvps:
+            _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
+            pb_target_per_share = bvps * _pb
+            if "pb_target" not in results:
+                results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
+
+        # NOTE: Graham Number and EV/EBITDA are DISABLED for loss-making tech
+        # (Graham requires positive EPS, EV/EBITDA requires positive EBITDA)
+
+    else:
+        # Standard valuation methods for profitable companies
+        # DCF base case (per share)
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
+
+        # Graham Number - only for profitable companies
+        if graham_number_per_share:
+            valuation_methods.append(("Graham", graham_number_per_share))
+
+        # EV/EBITDA per share - only for profitable companies
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+
+        # P/B target per share
+        if bvps:
+            _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
+            pb_target_per_share = bvps * _pb
+            # Only add to results if not already added in EV/EBITDA section
+            if "pb_target" not in results:
+                results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
 
     # Validate each method and calculate weighted target
     validated_results = []
@@ -578,14 +712,20 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             logger.warning("[Valuation] %s: %s", ticker, warning)
             detail_lines.append(f"⚠ {warning}")
 
-    # Calculate weighted target price with default weights
-    # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
-    default_weights = {
-        "DCF": 0.40,
-        "Graham": 0.25,
-        "EV/EBITDA": 0.20,
-        "P/B": 0.15,
-    }
+    # BUG-03A: Use loss-making tech weights if applicable
+    if is_loss_making_tech:
+        valuation_config = get_loss_making_tech_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using loss-making tech weights: %s", ticker, default_weights)
+    else:
+        # Calculate weighted target price with default weights
+        # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
+        default_weights = {
+            "DCF": 0.40,
+            "Graham": 0.25,
+            "EV/EBITDA": 0.20,
+            "P/B": 0.15,
+        }
 
     weighted_result = _calculate_weighted_target(
         results=validated_results,
