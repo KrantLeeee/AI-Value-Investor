@@ -548,3 +548,148 @@ def get_cyclical_stock_valuation_config() -> ValuationMethodConfig:
             "禁用成长性DCF（会高估周期顶部增长）"
         ),
     }
+
+
+def detect_healthcare_stock(
+    industry: str | None,
+) -> bool:
+    """
+    Phase 2: Detect healthcare/pharma stocks.
+
+    Criteria:
+    - Industry is pharma/biotech/medical/healthcare related
+
+    Args:
+        industry: Industry classification
+
+    Returns:
+        True if stock is in healthcare sector
+    """
+    if not industry:
+        return False
+
+    healthcare_keywords = [
+        "医药", "pharma", "pharmaceutical",
+        "生物", "biotech", "bio",
+        "医疗", "medical", "healthcare",
+        "制药", "drug",
+        "保健", "health",
+        "疫苗", "vaccine",
+        "诊断", "diagnostic",
+        "器械", "device",
+        "cro", "cxo", "cmo", "cdmo",  # lowercase for case-insensitive matching
+    ]
+
+    is_healthcare = any(kw in industry.lower() for kw in healthcare_keywords)
+
+    if is_healthcare:
+        logger.info(f"[Industry] Detected healthcare stock: industry={industry}")
+        return True
+
+    return False
+
+
+def detect_healthcare_rd_stage(
+    net_income: float | None,
+    net_margin: float | None,
+    rd_ratio: float | None = None,
+    revenue_growth: float | None = None,
+) -> bool:
+    """
+    Phase 2: Detect if healthcare stock is in R&D stage (vs mature stage).
+
+    R&D stage criteria (from 多行业估值能力进化方案改造 2.0):
+    - Net income <= 0 OR net margin < 5% (loss-making or marginal)
+    - High R&D expense ratio (>= 15%, typical for biotech)
+    - Often high revenue growth despite losses
+
+    Mature stage:
+    - Stable profitability (net margin >= 10%)
+    - Lower R&D ratio as % of revenue
+
+    Args:
+        net_income: Latest net income (absolute value)
+        net_margin: Net profit margin as decimal (e.g., -0.10 for -10%)
+        rd_ratio: R&D expense ratio as decimal (e.g., 0.20 for 20%)
+        revenue_growth: Revenue growth rate as decimal
+
+    Returns:
+        True if stock is in R&D stage, False if mature stage
+    """
+    # Check for loss-making OR marginal profitability
+    is_loss_making = False
+    if net_income is not None and net_income <= 0:
+        is_loss_making = True
+    elif net_margin is not None and net_margin < 0.05:
+        is_loss_making = True
+
+    # High R&D ratio is a strong indicator of R&D stage
+    has_high_rd = rd_ratio is not None and rd_ratio >= 0.15
+
+    # R&D stage if loss-making OR high R&D ratio
+    if is_loss_making:
+        logger.info(
+            f"[Industry] Healthcare R&D stage detected: "
+            f"net_margin={net_margin}, rd_ratio={rd_ratio}"
+        )
+        return True
+
+    if has_high_rd:
+        logger.info(
+            f"[Industry] Healthcare R&D stage detected (high R&D): "
+            f"rd_ratio={rd_ratio}"
+        )
+        return True
+
+    logger.debug(
+        f"[Industry] Healthcare mature stage: "
+        f"net_margin={net_margin}, rd_ratio={rd_ratio}"
+    )
+    return False
+
+
+def get_healthcare_rd_valuation_config() -> ValuationMethodConfig:
+    """
+    Phase 2: Get valuation method configuration for R&D stage healthcare stocks.
+
+    Returns PS-focused weights, similar to loss-making tech.
+    R&D stage pharma/biotech should use revenue-based metrics as profits
+    don't reflect value of pipeline.
+    """
+    return {
+        "enabled_methods": ["PS", "EV/Sales", "Pipeline_DCF", "P/B"],
+        "weights": {
+            "PS": 0.40,           # Primary - revenue-based
+            "EV/Sales": 0.30,     # Enterprise value approach
+            "Pipeline_DCF": 0.20, # DCF with pipeline probability adjustments
+            "P/B": 0.10,          # Floor value only
+        },
+        "rationale": (
+            "研发期医药股估值方法: PS和EV/Sales为主力（营收反映管线商业化进展），"
+            "管线折现DCF（考虑研发成功概率），"
+            "禁用PE类方法（亏损期PE无意义）"
+        ),
+    }
+
+
+def get_healthcare_mature_valuation_config() -> ValuationMethodConfig:
+    """
+    Phase 2: Get valuation method configuration for mature healthcare stocks.
+
+    Returns PE-focused weights for profitable pharma companies with established products.
+    """
+    return {
+        "enabled_methods": ["P/E", "DCF", "EV/EBITDA", "PS"],
+        "weights": {
+            "P/E": 0.35,          # Primary - stable earnings
+            "DCF": 0.30,          # Cash flow based
+            "EV/EBITDA": 0.20,    # Industry comparison
+            "PS": 0.15,           # Revenue multiple as secondary
+        },
+        "rationale": (
+            "成熟期医药股估值方法: PE为主力（盈利稳定可比较），"
+            "DCF折现现金流（现金流可预测），"
+            "EV/EBITDA行业对标，"
+            "PS作为辅助参考"
+        ),
+    }

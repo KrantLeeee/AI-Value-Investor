@@ -34,6 +34,10 @@ from src.agents.industry_classifier import (
     get_financial_stock_valuation_config,
     detect_cyclical_stock,
     get_cyclical_stock_valuation_config,
+    detect_healthcare_stock,
+    detect_healthcare_rd_stage,
+    get_healthcare_rd_valuation_config,
+    get_healthcare_mature_valuation_config,
 )
 from src.utils.logger import get_logger
 
@@ -88,6 +92,13 @@ EV_EBITDA_CYCLE_BOTTOM = 5.0       # Cycle trough EV/EBITDA for oil services
 EV_EBITDA_CYCLE_NORMAL = 7.0       # Mid-cycle EV/EBITDA
 EV_EBITDA_CYCLE_PEAK = 10.0        # Cycle peak EV/EBITDA
 PB_CYCLE_BOTTOM = 0.7              # Cycle trough P/B for resources
+
+# Phase 2: Healthcare stock valuation parameters
+# R&D stage uses PS (like loss-making tech), mature uses PE
+PS_MULTIPLE_HEALTHCARE_RD = 8.0    # R&D stage biotech/pharma PS multiple
+PS_MULTIPLE_HEALTHCARE_MATURE = 4.0  # Mature pharma PS multiple
+PE_MULTIPLE_HEALTHCARE = 30.0      # Mature healthcare PE multiple (higher than general)
+EV_EBITDA_HEALTHCARE = 18.0        # Healthcare EV/EBITDA (higher than general)
 
 
 def _safe(x) -> float | None:
@@ -600,6 +611,42 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             "禁用成长性DCF（避免高估周期顶部）"
         )
 
+    # ── Phase 2: Detect healthcare stocks ──────────────────────────────────────
+    # Healthcare stocks need different valuation methods based on development stage:
+    # - R&D stage (loss-making/low profit): PS/EV-Sales (like loss-making tech)
+    # - Mature stage (profitable): PE/DCF/EV-EBITDA
+    is_healthcare_stock = False
+    is_healthcare_rd = False
+
+    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock:
+        is_healthcare_stock = detect_healthcare_stock(industry=industry)
+
+    if is_healthcare_stock:
+        # Determine development stage
+        is_healthcare_rd = detect_healthcare_rd_stage(
+            net_income=net_income,
+            net_margin=net_margin,
+            rd_ratio=None,  # TODO: Get R&D ratio from income statement if available
+            revenue_growth=revenue_yoy,
+        )
+
+        results["is_healthcare_stock"] = True
+        if is_healthcare_rd:
+            results["valuation_mode"] = "healthcare_rd"
+            results["healthcare_stage"] = "R&D"
+            detail_lines.append(
+                "💊 研发期医药股：使用PS/EV-Sales估值方法（管线价值难以用盈利反映），"
+                "禁用PE类方法（亏损期PE无意义）"
+            )
+        else:
+            results["valuation_mode"] = "healthcare_mature"
+            results["healthcare_stage"] = "mature"
+            net_margin_pct = net_margin * 100 if net_margin else None
+            detail_lines.append(
+                f"💊 成熟期医药股：使用PE/DCF估值方法（盈利稳定可比较）"
+                + (f" (净利率={net_margin_pct:.1f}%)" if net_margin_pct else "")
+            )
+
     if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
         # Note: `fcf or ocf` fails when fcf is negative (truthy), so explicit check needed
@@ -982,6 +1029,61 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # NOTE: Growth-oriented DCF is DISABLED for cyclical stocks
         # (Would overestimate value at cycle peak)
 
+    elif is_healthcare_stock:
+        # Phase 2: Healthcare stock valuation methods
+        # R&D stage uses PS/EV-Sales (like loss-making tech)
+        # Mature stage uses PE/DCF/EV-EBITDA
+
+        if is_healthcare_rd:
+            # R&D stage healthcare - similar to loss-making tech
+            # PS valuation - primary for R&D stage
+            if ps_per_share:
+                valuation_methods.append(("PS", ps_per_share))
+
+            # EV/Sales valuation
+            if ev_sales_per_share:
+                valuation_methods.append(("EV/Sales", ev_sales_per_share))
+
+            # DCF with pipeline adjustments (use base case as proxy)
+            if dcf_base and shares and shares > 0:
+                dcf_per_share = dcf_base / shares
+                results["dcf_per_share"] = dcf_per_share
+                valuation_methods.append(("Pipeline_DCF", dcf_per_share))
+
+            # P/B as floor value
+            if bvps:
+                pb_target_per_share = bvps * 1.5  # Conservative multiple for R&D stage
+                valuation_methods.append(("P/B", pb_target_per_share))
+
+            # NOTE: PE methods are DISABLED for R&D stage (unprofitable)
+        else:
+            # Mature healthcare - PE/DCF based
+            # PE valuation - primary for mature healthcare
+            if eps and eps > 0 and current_price and current_price > 0:
+                pe_ratio = current_price / eps
+                # Use healthcare-specific PE multiple
+                pe_target = eps * PE_MULTIPLE_HEALTHCARE
+                results["pe_target"] = round(pe_target, 2)
+                results["pe_ratio"] = round(pe_ratio, 2)
+                valuation_methods.append(("P/E", pe_target))
+
+            # DCF base case (per share)
+            if dcf_base and shares and shares > 0:
+                dcf_per_share = dcf_base / shares
+                results["dcf_per_share"] = dcf_per_share
+                valuation_methods.append(("DCF", dcf_per_share))
+
+            # EV/EBITDA with healthcare multiple
+            if ebitda and ebitda > 0 and shares and shares > 0:
+                healthcare_ev = ebitda * EV_EBITDA_HEALTHCARE
+                healthcare_ev_per_share = healthcare_ev / shares
+                results["ev_ebitda_healthcare_per_share"] = round(healthcare_ev_per_share, 2)
+                valuation_methods.append(("EV/EBITDA", healthcare_ev_per_share))
+
+            # PS as secondary
+            if ps_per_share:
+                valuation_methods.append(("PS", ps_per_share))
+
     else:
         # Standard valuation methods for traditional value stocks
         # DCF base case (per share)
@@ -1046,6 +1148,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         valuation_config = get_cyclical_stock_valuation_config()
         default_weights = valuation_config["weights"]
         logger.info("[Valuation] %s: Using cyclical stock weights: %s", ticker, default_weights)
+    elif is_healthcare_stock:
+        # Phase 2: Use healthcare stock weights based on development stage
+        if is_healthcare_rd:
+            valuation_config = get_healthcare_rd_valuation_config()
+            default_weights = valuation_config["weights"]
+            logger.info("[Valuation] %s: Using healthcare R&D stage weights: %s", ticker, default_weights)
+        else:
+            valuation_config = get_healthcare_mature_valuation_config()
+            default_weights = valuation_config["weights"]
+            logger.info("[Valuation] %s: Using healthcare mature stage weights: %s", ticker, default_weights)
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)

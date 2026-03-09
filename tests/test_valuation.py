@@ -678,3 +678,192 @@ class TestCyclicalStockValuationConfig:
 
         assert "EV/EBITDA_Cycle" in config["enabled_methods"]
         assert "EV/EBITDA_Cycle" in config["weights"]
+
+
+# ── Phase 2: Healthcare stock tests ─────────────────────────────────────────
+
+
+class TestDetectHealthcareStock:
+    """Tests for detect_healthcare_stock function (Phase 2)."""
+
+    def test_healthcare_stock_detected_pharma(self):
+        """Healthcare stock should be detected for pharma industry."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="医药")
+
+        assert result is True
+
+    def test_healthcare_stock_detected_biotech(self):
+        """Healthcare stock should be detected for biotech industry."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="生物制药")
+
+        assert result is True
+
+    def test_healthcare_stock_detected_medical_device(self):
+        """Healthcare stock should be detected for medical device industry."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="医疗器械")
+
+        assert result is True
+
+    def test_healthcare_stock_detected_cxo(self):
+        """Healthcare stock should be detected for CXO industry."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="CRO/CDMO")
+
+        assert result is True
+
+    def test_healthcare_stock_detected_hengrui_example(self):
+        """
+        Phase 2: Test case based on 恒瑞医药 (600276.SH).
+        """
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="制药")
+
+        assert result is True
+
+    def test_healthcare_stock_not_detected_tech(self):
+        """Non-healthcare industry should not be detected."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry="科技")
+
+        assert result is False
+
+    def test_healthcare_stock_not_detected_no_industry(self):
+        """No industry should return False."""
+        from src.agents.industry_classifier import detect_healthcare_stock
+
+        result = detect_healthcare_stock(industry=None)
+
+        assert result is False
+
+
+class TestDetectHealthcareRdStage:
+    """Tests for detect_healthcare_rd_stage function (Phase 2)."""
+
+    def test_rd_stage_loss_making(self):
+        """Loss-making should be classified as R&D stage."""
+        from src.agents.industry_classifier import detect_healthcare_rd_stage
+
+        result = detect_healthcare_rd_stage(
+            net_income=-1e8,
+            net_margin=-0.10,
+            rd_ratio=0.20,
+        )
+
+        assert result is True
+
+    def test_rd_stage_marginal_profit(self):
+        """Marginal profit (< 5%) should be classified as R&D stage."""
+        from src.agents.industry_classifier import detect_healthcare_rd_stage
+
+        result = detect_healthcare_rd_stage(
+            net_income=1e7,
+            net_margin=0.03,
+            rd_ratio=0.15,
+        )
+
+        assert result is True
+
+    def test_rd_stage_high_rd_ratio(self):
+        """High R&D ratio should indicate R&D stage even if profitable."""
+        from src.agents.industry_classifier import detect_healthcare_rd_stage
+
+        result = detect_healthcare_rd_stage(
+            net_income=1e8,
+            net_margin=0.08,
+            rd_ratio=0.18,
+        )
+
+        assert result is True
+
+    def test_mature_stage_profitable(self):
+        """Stable profit with normal R&D should be mature stage."""
+        from src.agents.industry_classifier import detect_healthcare_rd_stage
+
+        result = detect_healthcare_rd_stage(
+            net_income=5e8,
+            net_margin=0.15,
+            rd_ratio=0.10,
+        )
+
+        assert result is False
+
+    def test_mature_stage_hengrui_example(self):
+        """
+        Phase 2: Test case based on 恒瑞医药 (600276.SH) - mature pharma.
+        Net margin ~15%, stable earnings.
+        """
+        from src.agents.industry_classifier import detect_healthcare_rd_stage
+
+        result = detect_healthcare_rd_stage(
+            net_income=4.3e9,  # ~43亿净利润
+            net_margin=0.16,
+            rd_ratio=0.12,
+        )
+
+        assert result is False
+
+
+class TestHealthcareValuationConfig:
+    """Tests for healthcare valuation configuration."""
+
+    def test_healthcare_rd_weights_sum_to_one(self):
+        """Healthcare R&D weights should sum to 1.0."""
+        from src.agents.industry_classifier import get_healthcare_rd_valuation_config
+
+        config = get_healthcare_rd_valuation_config()
+        total = sum(config["weights"].values())
+
+        assert abs(total - 1.0) < 0.01
+
+    def test_healthcare_rd_config_includes_ps(self):
+        """Healthcare R&D config should include PS as primary method."""
+        from src.agents.industry_classifier import get_healthcare_rd_valuation_config
+
+        config = get_healthcare_rd_valuation_config()
+
+        assert "PS" in config["enabled_methods"]
+        assert config["weights"]["PS"] >= 0.35  # Should be primary
+
+    def test_healthcare_rd_config_excludes_pe(self):
+        """Healthcare R&D config should NOT include P/E (unprofitable)."""
+        from src.agents.industry_classifier import get_healthcare_rd_valuation_config
+
+        config = get_healthcare_rd_valuation_config()
+
+        assert "P/E" not in config["enabled_methods"]
+
+    def test_healthcare_mature_weights_sum_to_one(self):
+        """Healthcare mature weights should sum to 1.0."""
+        from src.agents.industry_classifier import get_healthcare_mature_valuation_config
+
+        config = get_healthcare_mature_valuation_config()
+        total = sum(config["weights"].values())
+
+        assert abs(total - 1.0) < 0.01
+
+    def test_healthcare_mature_config_includes_pe(self):
+        """Healthcare mature config should include P/E as primary method."""
+        from src.agents.industry_classifier import get_healthcare_mature_valuation_config
+
+        config = get_healthcare_mature_valuation_config()
+
+        assert "P/E" in config["enabled_methods"]
+        assert config["weights"]["P/E"] >= 0.30  # Should be primary
+
+    def test_healthcare_mature_config_includes_dcf(self):
+        """Healthcare mature config should include DCF."""
+        from src.agents.industry_classifier import get_healthcare_mature_valuation_config
+
+        config = get_healthcare_mature_valuation_config()
+
+        assert "DCF" in config["enabled_methods"]
+        assert "DCF" in config["weights"]
