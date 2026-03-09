@@ -293,3 +293,160 @@ def test_run_comparable_analysis_roe_percentile_no_inversion():
         # ROE=0.12 is middle value among [0.10, 0.12, 0.14]
         # Raw percentile: 1/3 = 33.3% (no inversion for ROE)
         assert 30 <= result["percentiles"]["roe"] <= 40
+
+
+# ── Phase 2: Dynamic AKShare Selection Tests ──────────────────────────────────
+
+from src.agents.comparables import (
+    _select_by_market_cap_similarity,
+    _fetch_sector_stocks_via_akshare,
+    _get_target_market_cap,
+)
+
+
+def test_select_by_market_cap_similarity_within_range():
+    """Should select stocks within 0.3x-3x market cap range."""
+    stocks = [
+        {"ticker": "601398.SH", "market_cap": 1e12},   # 1万亿
+        {"ticker": "601939.SH", "market_cap": 8e11},   # 8000亿
+        {"ticker": "601288.SH", "market_cap": 5e11},   # 5000亿
+        {"ticker": "601166.SH", "market_cap": 2e11},   # 2000亿 - out of range (0.2x)
+        {"ticker": "601328.SH", "market_cap": 6e11},   # 6000亿
+    ]
+
+    # Target market cap: 1万亿
+    # 0.3x = 3000亿, 3x = 3万亿
+    # In range: 601398, 601939, 601288 (borderline), 601328
+    selected = _select_by_market_cap_similarity(stocks, 1e12, limit=3)
+
+    assert len(selected) == 3
+    # 601398 is closest (same cap), then 601939, then 601328
+    assert "601398.SH" in selected
+
+
+def test_select_by_market_cap_similarity_no_target_cap():
+    """Should return by descending market cap if no target cap."""
+    stocks = [
+        {"ticker": "601398.SH", "market_cap": 1e12},
+        {"ticker": "601939.SH", "market_cap": 8e11},
+        {"ticker": "601288.SH", "market_cap": 5e11},
+    ]
+
+    selected = _select_by_market_cap_similarity(stocks, None, limit=2)
+
+    assert len(selected) == 2
+    # Should return largest by market cap
+    assert selected[0] == "601398.SH"
+    assert selected[1] == "601939.SH"
+
+
+def test_select_by_market_cap_similarity_empty_stocks():
+    """Should return empty list if no stocks provided."""
+    selected = _select_by_market_cap_similarity([], 1e12, limit=3)
+    assert selected == []
+
+
+def test_select_by_market_cap_similarity_respects_limit():
+    """Should respect the limit parameter."""
+    stocks = [
+        {"ticker": "601398.SH", "market_cap": 1e12},
+        {"ticker": "601939.SH", "market_cap": 9e11},
+        {"ticker": "601288.SH", "market_cap": 8e11},
+        {"ticker": "601166.SH", "market_cap": 7e11},
+        {"ticker": "601328.SH", "market_cap": 6e11},
+    ]
+
+    selected = _select_by_market_cap_similarity(stocks, 1e12, limit=2)
+    assert len(selected) == 2
+
+
+@patch("src.agents.comparables.get_financial_metrics")
+def test_get_target_market_cap(mock_metrics):
+    """Should return market cap from database."""
+    mock_metrics.return_value = [{"market_cap": 5e11}]
+
+    cap = _get_target_market_cap("600000.SH")
+
+    assert cap == 5e11
+
+
+@patch("src.agents.comparables.get_financial_metrics")
+def test_get_target_market_cap_no_data(mock_metrics):
+    """Should return None if no data."""
+    mock_metrics.return_value = []
+
+    cap = _get_target_market_cap("600000.SH")
+
+    assert cap is None
+
+
+def test_fetch_sector_stocks_akshare_not_installed():
+    """Should return empty list if AKShare not installed."""
+    # This test runs without AKShare installed
+    with patch.dict("sys.modules", {"akshare": None}):
+        result = _fetch_sector_stocks_via_akshare("银行", "600000.SH")
+        # Should gracefully handle missing AKShare
+        assert isinstance(result, list)
+
+
+@patch("src.agents.comparables._fetch_sector_stocks_via_akshare")
+@patch("src.agents.comparables._get_target_market_cap")
+@patch("src.agents.comparables.get_industry_comparables")
+@patch("src.agents.comparables.classify_industry")
+def test_auto_select_comparables_akshare_fallback(
+    mock_classify, mock_get_industry, mock_get_cap, mock_fetch
+):
+    """Should use AKShare fallback when no industry profile comparables."""
+    mock_classify.return_value = "default"
+    mock_get_industry.return_value = []  # No industry profile comparables
+    mock_get_cap.return_value = 5e11
+
+    mock_fetch.return_value = [
+        {"ticker": "601398.SH", "market_cap": 6e11},
+        {"ticker": "601939.SH", "market_cap": 4e11},
+        {"ticker": "601288.SH", "market_cap": 3e11},
+    ]
+
+    result = auto_select_comparables("600000.SH", "银行", limit=2)
+
+    assert len(result) == 2
+    mock_fetch.assert_called_once_with("银行", "600000.SH")
+
+
+@patch("src.agents.comparables._fetch_sector_stocks_via_akshare")
+@patch("src.agents.comparables.get_industry_comparables")
+@patch("src.agents.comparables.classify_industry")
+def test_auto_select_comparables_industry_profile_priority(
+    mock_classify, mock_get_industry, mock_fetch
+):
+    """Should use industry profile comparables over AKShare when available."""
+    mock_classify.return_value = "banking"
+    mock_get_industry.return_value = [
+        {"ticker": "601398.SH", "name": "工商银行"},
+        {"ticker": "601939.SH", "name": "建设银行"},
+    ]
+
+    result = auto_select_comparables("600000.SH", "银行", limit=5)
+
+    # Should use industry profile, not AKShare
+    assert len(result) == 2
+    assert "601398.SH" in result
+    mock_fetch.assert_not_called()
+
+
+@patch("src.agents.comparables._fetch_sector_stocks_via_akshare")
+@patch("src.agents.comparables._get_target_market_cap")
+@patch("src.agents.comparables.get_industry_comparables")
+@patch("src.agents.comparables.classify_industry")
+def test_auto_select_comparables_akshare_empty_returns_empty(
+    mock_classify, mock_get_industry, mock_get_cap, mock_fetch
+):
+    """Should return empty list if both industry profile and AKShare fail."""
+    mock_classify.return_value = "default"
+    mock_get_industry.return_value = []
+    mock_get_cap.return_value = 5e11
+    mock_fetch.return_value = []  # AKShare returns nothing
+
+    result = auto_select_comparables("600000.SH", "未知行业", limit=5)
+
+    assert result == []

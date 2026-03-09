@@ -73,13 +73,185 @@ def get_comparables_from_watchlist(ticker: str) -> list[str]:
         return []
 
 
+def _fetch_sector_stocks_via_akshare(sector: str, target_ticker: str) -> list[dict]:
+    """
+    Fetch stocks in the same sector via AKShare API.
+
+    Uses ak.stock_board_industry_cons_em() to get constituents of an industry board.
+
+    Args:
+        sector: Industry sector name (e.g., "银行", "石油服务")
+        target_ticker: Target ticker to exclude from results
+
+    Returns:
+        List of dicts with {ticker, name, market_cap, pe, pb} for each stock
+    """
+    try:
+        import akshare as ak
+
+        # Map common sector names to AKShare industry board names
+        sector_mapping = {
+            "银行": "银行",
+            "保险": "保险",
+            "石油服务": "油服工程",
+            "石油": "石油开采",
+            "能源": "油气开采",
+            "消费": "食品饮料",
+            "食品饮料": "食品饮料",
+            "白酒": "白酒",
+            "医药": "医药商业",
+            "生物制药": "生物制品",
+            "科技": "软件开发",
+            "软件": "软件开发",
+            "半导体": "半导体及元件",
+            "自动化": "工业自动化",
+            "机械": "通用机械",
+        }
+
+        board_name = sector_mapping.get(sector, sector)
+
+        # Get all industry boards first
+        try:
+            boards_df = ak.stock_board_industry_name_em()
+            if boards_df is None or boards_df.empty:
+                logger.warning("[Comparables] Failed to get industry boards from AKShare")
+                return []
+
+            # Find best matching board
+            board_match = None
+            for _, row in boards_df.iterrows():
+                if board_name in row.get("板块名称", ""):
+                    board_match = row.get("板块名称")
+                    break
+
+            if not board_match:
+                # Try partial match
+                for _, row in boards_df.iterrows():
+                    if any(kw in row.get("板块名称", "") for kw in board_name[:2]):
+                        board_match = row.get("板块名称")
+                        break
+
+            if not board_match:
+                logger.debug(f"[Comparables] No matching board found for sector: {sector}")
+                return []
+
+            # Get constituents of the matched board
+            cons_df = ak.stock_board_industry_cons_em(symbol=board_match)
+            if cons_df is None or cons_df.empty:
+                return []
+
+            # Parse results
+            results = []
+            target_code = target_ticker.split(".")[0]
+
+            for _, row in cons_df.iterrows():
+                code = str(row.get("代码", ""))
+                if code == target_code:
+                    continue  # Skip target
+
+                # Determine market suffix
+                if code.startswith("6"):
+                    full_ticker = f"{code}.SH"
+                elif code.startswith(("0", "3")):
+                    full_ticker = f"{code}.SZ"
+                else:
+                    continue
+
+                results.append({
+                    "ticker": full_ticker,
+                    "name": row.get("名称", ""),
+                    "market_cap": _safe(row.get("总市值")),
+                    "pe": _safe(row.get("市盈率-动态")),
+                    "pb": _safe(row.get("市净率")),
+                })
+
+            logger.info(
+                f"[Comparables] Found {len(results)} stocks in {board_match} via AKShare"
+            )
+            return results
+
+        except Exception as e:
+            logger.warning(f"[Comparables] AKShare industry board query failed: {e}")
+            return []
+
+    except ImportError:
+        logger.debug("[Comparables] AKShare not installed, skipping dynamic selection")
+        return []
+    except Exception as e:
+        logger.warning(f"[Comparables] AKShare API error: {e}")
+        return []
+
+
+def _select_by_market_cap_similarity(
+    stocks: list[dict],
+    target_market_cap: Optional[float],
+    limit: int = 5,
+) -> list[str]:
+    """
+    Select comparable stocks by market cap similarity.
+
+    Selects stocks with market cap within 0.3x-3x of target.
+    Falls back to closest by market cap if not enough matches.
+
+    Args:
+        stocks: List of stock dicts with market_cap field
+        target_market_cap: Target company's market cap
+        limit: Number of comparables to return
+
+    Returns:
+        List of ticker strings
+    """
+    if not stocks:
+        return []
+
+    if not target_market_cap or target_market_cap <= 0:
+        # Fallback: just return first N stocks by market cap descending
+        sorted_stocks = sorted(
+            stocks,
+            key=lambda x: x.get("market_cap") or 0,
+            reverse=True,
+        )
+        return [s["ticker"] for s in sorted_stocks[:limit]]
+
+    # Filter stocks within 0.3x-3x of target market cap
+    min_cap = target_market_cap * 0.3
+    max_cap = target_market_cap * 3.0
+
+    similar_stocks = [
+        s for s in stocks
+        if s.get("market_cap") and min_cap <= s["market_cap"] <= max_cap
+    ]
+
+    if len(similar_stocks) >= limit:
+        # Sort by closeness to target market cap
+        similar_stocks.sort(
+            key=lambda x: abs(x["market_cap"] - target_market_cap)
+        )
+        return [s["ticker"] for s in similar_stocks[:limit]]
+
+    # Not enough in range, fall back to closest by market cap
+    stocks_with_cap = [s for s in stocks if s.get("market_cap")]
+    stocks_with_cap.sort(
+        key=lambda x: abs(x["market_cap"] - target_market_cap)
+    )
+    return [s["ticker"] for s in stocks_with_cap[:limit]]
+
+
+def _get_target_market_cap(ticker: str) -> Optional[float]:
+    """Get target company's market cap from database."""
+    metric_rows = get_financial_metrics(ticker, limit=1)
+    if metric_rows:
+        return _safe(metric_rows[0].get("market_cap"))
+    return None
+
+
 def auto_select_comparables(ticker: str, sector: str, limit: int = 5) -> list[str]:
     """
     Auto-select comparable companies using industry profile or AKShare API.
 
     Fallback order:
     1. Industry profile comparables from industry_profiles.yaml
-    2. TODO: AKShare API integration for dynamic selection
+    2. AKShare API dynamic selection (same sector, similar market cap)
 
     Args:
         ticker: Target stock ticker
@@ -107,12 +279,28 @@ def auto_select_comparables(ticker: str, sector: str, limit: int = 5) -> list[st
             )
             return comp_tickers
 
-    # TODO: Implement AKShare auto-selection
-    # - Use ak.stock_zh_a_spot_em() to get all A-share stocks
-    # - Filter by same sector/industry
-    # - Select top N by market cap similarity
+    # Fallback: AKShare dynamic selection
+    # Fetch all stocks in the same sector
+    sector_stocks = _fetch_sector_stocks_via_akshare(sector, ticker)
+
+    if sector_stocks:
+        # Get target's market cap for similarity matching
+        target_market_cap = _get_target_market_cap(ticker)
+
+        # Select by market cap similarity
+        selected = _select_by_market_cap_similarity(
+            sector_stocks, target_market_cap, limit
+        )
+
+        if selected:
+            logger.info(
+                f"[Comparables] Selected {len(selected)} comparables via AKShare "
+                f"(sector={sector}, market_cap_similarity)"
+            )
+            return selected
+
     logger.debug(
-        f"[Comparables] No industry comparables found for {ticker}, "
+        f"[Comparables] No comparables found for {ticker}, "
         f"returning empty list"
     )
     return []
