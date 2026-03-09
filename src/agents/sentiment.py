@@ -189,8 +189,32 @@ def run(
                 signal     = parsed.get("signal", "neutral").lower()
                 confidence = float(parsed.get("confidence", 0.5))
                 reasoning  = parsed.get("reasoning", llm_text)
+                sentiment_score = float(parsed.get("sentiment_score", 0.0))
+
+                # BUG-FIX: Validate signal against sentiment_score threshold
+                # sentiment_score > 0.3 → bullish allowed
+                # sentiment_score < -0.3 → bearish allowed
+                # Otherwise → force neutral (prevent false bullish/bearish on weak scores)
+                BULLISH_THRESHOLD = 0.3
+                BEARISH_THRESHOLD = -0.3
+
+                if signal == "bullish" and sentiment_score < BULLISH_THRESHOLD:
+                    logger.warning(
+                        "[Sentiment] %s: signal=%s but score=%.2f < %.2f threshold, forcing neutral",
+                        ticker, signal, sentiment_score, BULLISH_THRESHOLD
+                    )
+                    signal = "neutral"
+                    reasoning += f" (原始信号bullish，但情绪得分{sentiment_score:.2f}低于阈值{BULLISH_THRESHOLD}，降级为neutral)"
+                elif signal == "bearish" and sentiment_score > BEARISH_THRESHOLD:
+                    logger.warning(
+                        "[Sentiment] %s: signal=%s but score=%.2f > %.2f threshold, forcing neutral",
+                        ticker, signal, sentiment_score, BEARISH_THRESHOLD
+                    )
+                    signal = "neutral"
+                    reasoning += f" (原始信号bearish，但情绪得分{sentiment_score:.2f}高于阈值{BEARISH_THRESHOLD}，降级为neutral)"
+
                 metrics_snapshot.update({
-                    "sentiment_score":  parsed.get("sentiment_score", 0.0),
+                    "sentiment_score":  sentiment_score,
                     "positive_count":   parsed.get("positive_count", 0),
                     "negative_count":   parsed.get("negative_count", 0),
                     "neutral_count":    parsed.get("neutral_count", 0),
@@ -198,17 +222,22 @@ def run(
                     "risks":            parsed.get("risks", []),
                 })
             except Exception:
-                # Parse signal from prose
+                # Parse signal from prose - but force neutral since we can't reliably
+                # determine sentiment_score from prose alone (BUG-FIX: prevent false bullish)
                 text_lower = llm_text.lower()
-                if any(w in text_lower for w in ["positive", "看多", "正面", "bullish"]):
-                    signal = "bullish"
-                elif any(w in text_lower for w in ["negative", "看空", "负面", "bearish"]):
-                    signal = "bearish"
-                else:
-                    signal = "neutral"
-                confidence = 0.50
-                reasoning = llm_text
-                metrics_snapshot["sentiment_score"] = 0.1 if signal == "bullish" else -0.1 if signal == "bearish" else 0.0
+                has_positive = any(w in text_lower for w in ["positive", "看多", "正面", "bullish"])
+                has_negative = any(w in text_lower for w in ["negative", "看空", "负面", "bearish"])
+
+                # Without proper sentiment_score, we cannot meet threshold requirements
+                # Force neutral signal with weak confidence
+                signal = "neutral"
+                confidence = 0.35
+                reasoning = llm_text + " (JSON解析失败，无法获取可靠情绪得分，信号降级为neutral)"
+
+                # Record detected keywords for debugging but don't use for signal
+                metrics_snapshot["sentiment_score"] = 0.0
+                metrics_snapshot["prose_detected_positive"] = has_positive
+                metrics_snapshot["prose_detected_negative"] = has_negative
 
         except Exception as e:
             logger.warning("[Sentiment] LLM call failed: %s", e)

@@ -261,7 +261,31 @@ def run(ticker: str, market: str) -> AgentSignal:
 
     # ── Signal determination ──────────────────────────────────────────────────
     score = min(score, 100)
-    if score >= 70:
+
+    # Count how many core metrics have data
+    # Required for meaningful assessment: ROE, net_margin, revenue_yoy, net_income_yoy
+    data_fields_available = sum([
+        roe is not None,
+        net_margin is not None,
+        rev_yoy is not None,
+        ni_yoy is not None,
+        de is not None or cr is not None,  # at least one safety metric
+        len(cashflow_rows) > 0,  # any cashflow data
+    ])
+
+    # BUG-FIX: If insufficient data fields, force INSUFFICIENT_DATA signal
+    # This prevents misleading BEARISH with 90% confidence on zero data
+    MIN_REQUIRED_FIELDS = 3  # Need at least 3 of 6 core metrics for meaningful signal
+
+    if data_fields_available < MIN_REQUIRED_FIELDS:
+        signal = "insufficient_data"
+        confidence = 0.0
+        logger.warning(
+            "[Fundamentals] %s: Only %d/%d data fields available, forcing insufficient_data signal",
+            ticker, data_fields_available, 6
+        )
+        detail_lines.insert(0, f"⚠️ 数据不足：仅有 {data_fields_available}/6 项核心指标，无法进行可靠评估")
+    elif score >= 70:
         signal, confidence = "bullish", min(0.9, 0.5 + (score - 70) / 100)
     elif score >= 45:
         signal, confidence = "neutral", 0.5
@@ -270,6 +294,7 @@ def run(ticker: str, market: str) -> AgentSignal:
 
     metrics_snapshot["total_score"] = score
     metrics_snapshot["available_periods"] = len(income_rows)
+    metrics_snapshot["data_fields_available"] = data_fields_available
 
     # Expose raw revenue for Ch1 template (format_yuan needs absolute value)
     if income_rows and _safe(income_rows[0].get("revenue")):

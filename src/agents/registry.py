@@ -26,6 +26,14 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Minimum data completeness threshold to generate a meaningful report
+MIN_DATA_COMPLETENESS = 0.20  # 20%
+
+
+class InsufficientDataError(Exception):
+    """Raised when data completeness is below minimum threshold for meaningful analysis."""
+    pass
+
 
 def run_all_agents(
     ticker: str,
@@ -108,6 +116,23 @@ def run_all_agents(
             data_completeness=0.0,
             stale_fields=[],
             records_checked={}
+        )
+
+    # ── Data Completeness Gate ─────────────────────────────────────────────────
+    # Block report generation if data is insufficient - prevents valueless reports
+    if quality_report.data_completeness < MIN_DATA_COMPLETENESS:
+        logger.error(
+            "[Registry] %s: Data completeness %.0f%% < minimum %.0f%%. "
+            "Run 'invest fetch --ticker %s' to fetch data first.",
+            ticker,
+            quality_report.data_completeness * 100,
+            MIN_DATA_COMPLETENESS * 100,
+            ticker,
+        )
+        raise InsufficientDataError(
+            f"{ticker} 数据完整度 {quality_report.data_completeness:.0%} 低于最低要求 {MIN_DATA_COMPLETENESS:.0%}。\n"
+            f"请先运行 `invest fetch --ticker {ticker}` 获取数据后重试。\n"
+            f"生成无数据的报告会产生误导性结论，系统已拒绝生成。"
         )
 
     # ── Phase -1: Company Context (runs BEFORE all agents) ───────────────────

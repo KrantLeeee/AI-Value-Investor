@@ -70,6 +70,9 @@ _COMPANY_INFO_FALLBACK: dict[str, dict] = {
     # Auto
     "002594.SZ": {"name": "比亚迪", "industry": "新能源汽车", "main_business": "新能源汽车及电池生产"},
     "600104.SH": {"name": "上汽集团", "industry": "汽车", "main_business": "汽车研发生产销售"},
+    # Utilities
+    "600900.SH": {"name": "长江电力", "industry": "电力/公用事业", "main_business": "水力发电及电力销售"},
+    "601985.SH": {"name": "中国核电", "industry": "电力/公用事业", "main_business": "核电发电及销售"},
 }
 
 # Retry configuration for network calls
@@ -331,7 +334,31 @@ class Fetcher:
                 "is_financial": fallback.get("is_financial", False),
             }
 
-        logger.warning("[Fetcher] %s company basics not available (QVeris exhausted, not in fallback)", ticker)
+        # Fallback to AKShare stock_individual_info_em (free, always available)
+        try:
+            import akshare as ak
+            code = ticker.split(".")[0]
+            df = ak.stock_individual_info_em(symbol=code)
+            if df is not None and not df.empty:
+                # Convert DataFrame to dict {item: value}
+                info_dict = dict(zip(df["item"], df["value"]))
+                company_name = info_dict.get("股票简称") or info_dict.get("公司名称")
+                industry = info_dict.get("行业") or info_dict.get("所属行业")
+                main_business = info_dict.get("经营范围", "")[:100] if info_dict.get("经营范围") else None
+
+                if company_name:
+                    logger.info("[Fetcher] %s company basics from AKShare: %s", ticker, company_name)
+                    return {
+                        "company_name": company_name,
+                        "main_business": main_business,
+                        "industry": industry,
+                        "concepts": industry,
+                        "is_financial": industry and any(k in industry for k in ["银行", "保险", "证券", "金融"]),
+                    }
+        except Exception as e:
+            logger.debug("[Fetcher] AKShare stock_individual_info_em failed for %s: %s", ticker, e)
+
+        logger.warning("[Fetcher] %s company basics not available (all sources exhausted)", ticker)
         return None
 
     def get_data_summary(self, ticker: str) -> dict:
