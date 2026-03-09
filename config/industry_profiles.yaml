@@ -26,6 +26,39 @@ industry_profiles:
       wacc_range: [0.08, 0.10]  # Energy/resources: higher β + cyclical volatility
       default_beta: 1.1  # Slightly higher than market for cyclical sectors
 
+    # Phase 3: Industry valuation multiples (replace fixed 6x/8x parameters)
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 4.5    # Trough valuation (2020 oil crash)
+        cycle_normal: 6.5    # Mid-cycle average
+        cycle_peak: 10.0     # Peak valuation (2022 energy boom)
+      pb:
+        cycle_bottom: 0.6
+        cycle_normal: 1.0
+        cycle_peak: 1.8
+      ps:
+        cycle_bottom: 0.5
+        cycle_normal: 1.0
+        cycle_peak: 2.0
+
+    # Phase 3: Industry comparable companies (top 5 A-share)
+    comparable_companies:
+      - ticker: "601808.SH"
+        name: "中海油服"
+        note: "油田服务龙头"
+      - ticker: "600028.SH"
+        name: "中国石化"
+        note: "综合油气巨头"
+      - ticker: "601857.SH"
+        name: "中国石油"
+        note: "上游开采龙头"
+      - ticker: "600583.SH"
+        name: "海油工程"
+        note: "海洋工程服务"
+      - ticker: "002353.SZ"
+        name: "杰瑞股份"
+        note: "油服设备"
+
   consumer:
     weights:
       fundamentals: 0.20
@@ -44,6 +77,37 @@ industry_profiles:
       cash_quality_weight: 0.20
       wacc_range: [0.07, 0.09]  # Consumer: stable cash flow, defensive
       default_beta: 0.85  # Lower β for defensive consumer stocks
+
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 12.0
+        cycle_normal: 18.0
+        cycle_peak: 28.0
+      pe:
+        cycle_bottom: 20.0
+        cycle_normal: 30.0
+        cycle_peak: 45.0
+      ps:
+        cycle_bottom: 4.0
+        cycle_normal: 8.0
+        cycle_peak: 15.0
+
+    comparable_companies:
+      - ticker: "600519.SH"
+        name: "贵州茅台"
+        note: "白酒龙头"
+      - ticker: "000858.SZ"
+        name: "五粮液"
+        note: "白酒第二"
+      - ticker: "600887.SH"
+        name: "伊利股份"
+        note: "乳制品龙头"
+      - ticker: "603288.SH"
+        name: "海天味业"
+        note: "调味品龙头"
+      - ticker: "000568.SZ"
+        name: "泸州老窖"
+        note: "白酒第三"
 
   tech:
     weights:
@@ -64,6 +128,37 @@ industry_profiles:
       wacc_range: [0.06, 0.08]  # Tech/New Energy: low debt + market optimism
       default_beta: 1.2  # Higher volatility in tech sector
 
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 8.0
+        cycle_normal: 15.0
+        cycle_peak: 30.0
+      ps:
+        loss_making: 6.0      # For unprofitable tech (AI, etc.)
+        growth_stage: 8.0     # High growth profitable
+        mature_stage: 4.0
+      peg:
+        bargain: 0.8
+        fair_value: 1.2
+        expensive: 2.0
+
+    comparable_companies:
+      - ticker: "002230.SZ"
+        name: "科大讯飞"
+        note: "AI语音龙头"
+      - ticker: "300124.SZ"
+        name: "汇川技术"
+        note: "工业自动化"
+      - ticker: "688169.SH"
+        name: "石头科技"
+        note: "智能硬件"
+      - ticker: "002415.SZ"
+        name: "海康威视"
+        note: "安防龙头"
+      - ticker: "300059.SZ"
+        name: "东方财富"
+        note: "互联网券商"
+
   banking:
     weights:
       fundamentals: 0.30
@@ -82,6 +177,37 @@ industry_profiles:
       cash_quality_weight: 0.15
       wacc_range: [0.07, 0.09]  # Banking: special treatment, equity cost dominates
       default_beta: 0.95  # Moderate volatility, regulated sector
+
+    valuation_multiples:
+      pb:
+        undervalued: 0.6
+        fair_value: 1.0
+        overvalued: 1.5
+      pe:
+        undervalued: 5.0
+        fair_value: 8.0
+        overvalued: 12.0
+      dividend_yield:
+        attractive: 0.05
+        fair: 0.04
+        low: 0.03
+
+    comparable_companies:
+      - ticker: "600036.SH"
+        name: "招商银行"
+        note: "零售银行龙头"
+      - ticker: "601398.SH"
+        name: "工商银行"
+        note: "四大行龙头"
+      - ticker: "601318.SH"
+        name: "中国平安"
+        note: "综合金融"
+      - ticker: "601166.SH"
+        name: "兴业银行"
+        note: "股份制银行"
+      - ticker: "000001.SZ"
+        name: "平安银行"
+        note: "零售转型"
 
   manufacturing:
     weights:
@@ -102,6 +228,37 @@ industry_profiles:
       wacc_range: [0.09, 0.11]  # Steel/Manufacturing: high β + leverage
       default_beta: 1.15  # Higher cyclicality
 
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 5.0
+        cycle_normal: 8.0
+        cycle_peak: 12.0
+      pe:
+        cycle_bottom: 8.0
+        cycle_normal: 15.0
+        cycle_peak: 25.0
+      pb:
+        cycle_bottom: 0.8
+        cycle_normal: 1.5
+        cycle_peak: 2.5
+
+    comparable_companies:
+      - ticker: "000651.SZ"
+        name: "格力电器"
+        note: "白电龙头"
+      - ticker: "000333.SZ"
+        name: "美的集团"
+        note: "家电综合"
+      - ticker: "600690.SH"
+        name: "海尔智家"
+        note: "智能家电"
+      - ticker: "601012.SH"
+        name: "隆基绿能"
+        note: "光伏龙头"
+      - ticker: "300750.SZ"
+        name: "宁德时代"
+        note: "动力电池"
+
   healthcare:
     weights:
       fundamentals: 0.22
@@ -120,6 +277,37 @@ industry_profiles:
       cash_quality_weight: 0.20
       wacc_range: [0.07, 0.09]  # Healthcare: moderate, policy-sensitive
       default_beta: 0.90  # Lower volatility, defensive characteristics
+
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 10.0
+        cycle_normal: 18.0
+        cycle_peak: 30.0
+      pe:
+        rd_stage: null        # Use PS for R&D stage companies
+        growth_stage: 35.0
+        mature_stage: 25.0
+      ps:
+        rd_stage: 8.0         # For pre-profit biotech
+        growth_stage: 6.0
+        mature_stage: 3.0
+
+    comparable_companies:
+      - ticker: "600276.SH"
+        name: "恒瑞医药"
+        note: "创新药龙头"
+      - ticker: "603259.SH"
+        name: "药明康德"
+        note: "CXO龙头"
+      - ticker: "000538.SZ"
+        name: "云南白药"
+        note: "中药龙头"
+      - ticker: "300015.SZ"
+        name: "爱尔眼科"
+        note: "眼科连锁"
+      - ticker: "300760.SZ"
+        name: "迈瑞医疗"
+        note: "医疗器械"
 
   real_estate:
     weights:
@@ -140,6 +328,37 @@ industry_profiles:
       wacc_range: [0.08, 0.10]  # Real estate: high leverage + policy risk
       default_beta: 1.05  # Moderate-high cyclicality
 
+    valuation_multiples:
+      nav:
+        discount: 0.70       # NAV discount in downturn
+        fair_value: 1.0
+        premium: 1.20
+      pb:
+        cycle_bottom: 0.5
+        cycle_normal: 0.8
+        cycle_peak: 1.5
+      pe:
+        cycle_bottom: 4.0
+        cycle_normal: 8.0
+        cycle_peak: 15.0
+
+    comparable_companies:
+      - ticker: "001979.SZ"
+        name: "招商蛇口"
+        note: "央企地产"
+      - ticker: "000002.SZ"
+        name: "万科A"
+        note: "龙头房企"
+      - ticker: "600048.SH"
+        name: "保利发展"
+        note: "央企地产"
+      - ticker: "601155.SH"
+        name: "新城控股"
+        note: "商业地产"
+      - ticker: "000656.SZ"
+        name: "金科股份"
+        note: "民营房企"
+
   default:
     weights:
       fundamentals: 0.25
@@ -158,6 +377,22 @@ industry_profiles:
       cash_quality_weight: 0.25
       wacc_range: [0.08, 0.10]  # Default: conservative middle range
       default_beta: 1.0  # Market average beta
+
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 6.0
+        cycle_normal: 8.0
+        cycle_peak: 12.0
+      pe:
+        cycle_bottom: 10.0
+        cycle_normal: 15.0
+        cycle_peak: 25.0
+      pb:
+        cycle_bottom: 1.0
+        cycle_normal: 2.0
+        cycle_peak: 3.0
+
+    comparable_companies: []  # No default comparables
 
 # Industry keyword mapping (for classification from sector names)
 industry_keywords:

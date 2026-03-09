@@ -22,6 +22,7 @@ from src.data.models import AgentSignal, QualityReport
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
 from src.agents.report_config import CHAPTERS, validate_chapter
+from src.agents.chapter_context import ChapterContext
 
 logger = get_logger(__name__)
 
@@ -722,6 +723,9 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch7_recommendation":
+        # ── Phase 3: Build ChapterContext for cross-chapter information sharing ──
+        chapter_context = ChapterContext.from_agent_signals(signals, quality_report)
+
         # ── Handle valuation agent failure ────────────────────────────────────
         if not val:
             # Valuation failed - cannot generate recommendation without target price
@@ -820,6 +824,9 @@ def _build_chapter_user_prompt(
             sentiment_confidence=f"{sent.confidence:.0%}" if sent else "N/A",
             contrarian_signal=contr.signal if contr else "未运行",
             contrarian_confidence=f"{contr.confidence:.0%}" if contr else "N/A",
+            # Phase 3: Cross-chapter information sharing
+            chapter_context=chapter_context.get_ch7_context_block(),
+            consistency_requirements=chapter_context.get_consistency_requirements(),
             # BUG-04 FIX: Sentiment direction and key events for consistency check
             sentiment_direction=sentiment_direction,
             sentiment_key_events=sentiment_key_events,

@@ -572,6 +572,12 @@ REPORT_CH7_USER = """**综合信号汇总:**
 - 市场情绪监测: {sentiment_signal} ({sentiment_confidence})
 - 辩证分析: {contrarian_signal} ({contrarian_confidence})
 
+**[Phase 3] 章节上下文汇总（跨章节信息共享）:**
+{chapter_context}
+
+**[Phase 3] 一致性要求（必须遵守）:**
+{consistency_requirements}
+
 **[重要] 情绪章节核心结论（BUG-04修复 - 必须与此保持一致或解释原因）:**
 - 情绪方向: {sentiment_direction}
 - 关键事件: {sentiment_key_events}
