@@ -147,15 +147,17 @@ VALUATION_INTERPRET_SYSTEM_PROMPT = """你是一个专业的股票估值解读 A
 
 重要约束：
 - 不做任何数学计算，直接引用已给出的数值
+- **你的解读必须基于"有效估值方法"列表中的方法**
+- 不要提及或推荐未参与计算的方法（如金融股不使用DCF/Graham Number）
 - 以JSON格式输出：
 {
   "signal": "bullish",
   "confidence": 0.70,
-  "most_relevant_method": "DCF",
+  "most_relevant_method": "从有效方法中选择最适合该公司的方法",
   "intrinsic_value_range_low": 18.0,
   "intrinsic_value_range_high": 25.0,
   "valuation_position": "低估",
-  "reasoning": "DCF估值更可靠，因为该公司现金流稳定…（100字）"
+  "reasoning": "选择[实际有效方法名]估值更可靠，因为…（100字）"
 }"""
 
 
@@ -163,19 +165,17 @@ VALUATION_INTERPRET_USER_TEMPLATE = """请解读以下估值计算结果：
 
 **标的**: {ticker}
 **当前价格（近似）**: {current_price}
+**估值模式**: {valuation_mode}
 
-**估值结果**:
-- DCF 内在价值（乐观）: {dcf_bull}
-- DCF 内在价值（基准）: {dcf_base}
-- DCF 内在价值（悲观）: {dcf_bear}
-- Graham Number: {graham_number}
-- Owner Earnings 估值: {owner_earnings_value}
-- EV/EBITDA 隐含价值: {ev_ebitda_value}
+**有效估值方法及目标价**:
+{valid_methods_details}
+
+**已排除或不适用的方法**:
+{excluded_methods_details}
 
 **关键假设**:
 - 折现率 (WACC): {wacc}%
 - 终值增长率: {terminal_growth}%
-- FCF 增长率假设: {fcf_growth}%
 
 **代码层验证结果**:
 - 有效估值方法: {valid_methods}
@@ -184,9 +184,12 @@ VALUATION_INTERPRET_USER_TEMPLATE = """请解读以下估值计算结果：
 - 验证模式: {validation_mode}
 
 【重要约束】
-- 你的解读必须基于"有效估值方法"，不得为"已排除方法"背书或推荐
-- 如果某方法被排除，说明其计算结果存在异常（负值、极端偏离、或与其他方法严重不一致）
-- 已排除的方法不应影响你的估值立场判断
+- 你的解读必须**仅基于**"有效估值方法"列表中的方法
+- **不要提及DCF/Graham Number等不在有效方法列表中的方法**
+- 如果是金融股(P/B_ROE/DDM/P/E)，不要说"DCF更可靠"
+- 如果是公用事业股(DDM为主)，请强调DDM对稳定股息股的适用性
+- 已排除方法不应影响你的估值立场判断
+- "most_relevant_method"必须从有效估值方法中选择
 
 请输出JSON格式的解读结果。"""
 

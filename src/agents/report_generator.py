@@ -26,6 +26,66 @@ from src.data.industry_macro_mapping import (
     INDUSTRY_PROFILES,
 )
 from src.utils.config import get_project_root
+
+# ─── Industry-specific valuation parameters ───────────────────────────────────
+# EV/EBITDA multiples by industry (median from comparable transactions)
+INDUSTRY_EV_EBITDA_MULTIPLES: dict[str, tuple[float, str]] = {
+    "energy_services": (6.0, "能源服务"),
+    "pharma_biotech": (18.0, "医药生物"),
+    "utility_infrastructure": (12.0, "公用事业"),
+    "financial_insurance": (8.0, "金融保险"),  # Not typically used, but for completeness
+    "consumer_brand": (15.0, "消费品牌"),
+    "industrial_automation": (12.0, "工业自动化"),
+    "ai_tech_profitable": (20.0, "科技盈利期"),
+    "ai_tech_loss": (25.0, "科技亏损期"),  # Higher multiple for growth
+    "cyclical_materials": (6.0, "周期性材料"),
+}
+DEFAULT_EV_EBITDA_MULTIPLE = (10.0, "综合")
+
+# Industry-specific sensitivity scenarios (optimistic, pessimistic)
+# Format: (optimistic_scenario, pessimistic_scenario)
+INDUSTRY_SENSITIVITY_SCENARIOS: dict[str, tuple[str, str]] = {
+    "energy_services": (
+        "油价>$80/桶，Capex扩张10%",
+        "油价<$60/桶，南海风险触发",
+    ),
+    "pharma_biotech": (
+        "核心管线III期成功，纳入医保",
+        "医保谈判降价30%，仿制药竞争加剧",
+    ),
+    "utility_infrastructure": (
+        "电价上调5%，来水量增加10%",
+        "煤电价差扩大，来水量减少15%",
+    ),
+    "financial_insurance": (
+        "息差扩大20bp，不良率下降",
+        "息差收窄30bp，地产风险暴露",
+    ),
+    "consumer_brand": (
+        "提价成功，市占率扩张",
+        "消费降级，渠道库存高企",
+    ),
+    "industrial_automation": (
+        "制造业PMI>52，下游扩产",
+        "PMI持续<50，订单延期",
+    ),
+    "ai_tech_profitable": (
+        "AI订单超预期，毛利率提升",
+        "竞争加剧，价格战侵蚀利润",
+    ),
+    "ai_tech_loss": (
+        "大客户签约，商业化加速",
+        "融资困难，研发投入被迫削减",
+    ),
+    "cyclical_materials": (
+        "大宗商品涨价，量价齐升",
+        "需求萎缩，库存减值风险",
+    ),
+}
+DEFAULT_SENSITIVITY_SCENARIOS = (
+    "WACC-1%，增长率+1%",
+    "WACC+1%，增长率-1%",
+)
 from src.utils.logger import get_logger
 from src.agents.report_config import CHAPTERS, validate_chapter
 from src.agents.chapter_context import ChapterContext
@@ -175,16 +235,29 @@ def _build_financial_quality_table(
 
 
 
-def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
+def _build_valuation_analysis(valuation_signal: AgentSignal | None, ticker: str = "") -> str:
     """
     Build Chapter 4: Valuation Analysis (code-based).
     Shows all 4 methods: DCF, Graham, EV/EBITDA, P/B.
+
+    Args:
+        valuation_signal: Valuation agent output
+        ticker: Stock ticker for industry-specific parameters
     """
     lines = ["## 4. 估值分析与敏感性测试", ""]
 
     if not valuation_signal:
         lines.append("估值模型未运行，数据不可用。")
         return "\n".join(lines)
+
+    # Get industry-specific parameters
+    industry_type = get_industry_type(ticker) if ticker else "unknown"
+    ev_multiple, ev_industry_name = INDUSTRY_EV_EBITDA_MULTIPLES.get(
+        industry_type, DEFAULT_EV_EBITDA_MULTIPLE
+    )
+    optimistic_scenario, pessimistic_scenario = INDUSTRY_SENSITIVITY_SCENARIOS.get(
+        industry_type, DEFAULT_SENSITIVITY_SCENARIOS
+    )
 
     metrics = valuation_signal.metrics
     dcf     = metrics.get("dcf_per_share")
@@ -212,10 +285,11 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
     method_lookup = {m["method"]: m for m in validated_methods}
 
     # Define display order and original weights
+    # Use industry-specific EV/EBITDA multiple for display
     method_display = [
         ("DCF", 0.40, dcf, "DCF折现现金流"),
         ("Graham", 0.25, graham, "Graham Number下限"),
-        ("EV/EBITDA", 0.20, ev_ebps, "EV/EBITDA（6x行业倍数）"),
+        ("EV/EBITDA", 0.20, ev_ebps, f"EV/EBITDA（{ev_multiple:.0f}x {ev_industry_name}倍数）"),
         ("P/B", 0.15, pb_tgt, f"P/B（1.8x BVPS={bvps:.2f}）" if bvps else "P/B"),
     ]
 
@@ -294,13 +368,14 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
     elif dcf and w_tgt:
         lines.append("| 情景 | 假设 | DCF估值 | 加权目标价区间 |")
         lines.append("|:-----|:-----|:--------|:-------------|")
-        # Use validated weighted target as base, apply ±10% for scenarios
+        # Use validated weighted target as base, apply ±10%/±20% for scenarios
+        # Use industry-specific scenarios instead of hardcoded oil price scenarios
         wacc_str = f"WACC={wacc:.1f}%" if wacc else "当前假设"
-        lines.append(f"| 乐观情景 | 油价>$80/桶，Capex扩张10% | ¥{dcf*1.2:.2f} | ¥{w_tgt*0.90:.2f}-¥{w_tgt*1.10:.2f} |")
+        lines.append(f"| 乐观情景 | {optimistic_scenario} | ¥{dcf*1.2:.2f} | ¥{w_tgt*0.90:.2f}-¥{w_tgt*1.10:.2f} |")
         lines.append(f"| 基准情景 | {wacc_str} | ¥{dcf:.2f} | ¥{w_tgt:.2f} |")
-        lines.append(f"| 悲观情景 | 油价<$60/桶，南海风险触发 | ¥{dcf*0.8:.2f} | ¥{w_tgt*0.80:.2f}-¥{w_tgt:.2f} |")
+        lines.append(f"| 悲观情景 | {pessimistic_scenario} | ¥{dcf*0.8:.2f} | ¥{w_tgt*0.80:.2f}-¥{w_tgt:.2f} |")
         lines.append("")
-        lines.append("> 注：敏感性分析仅供参考。加权目标价基于有效估值方法的归一化权重。")
+        lines.append(f"> 注：敏感性分析仅供参考（{ev_industry_name}行业）。加权目标价基于有效估值方法的归一化权重。")
         lines.append("")
     else:
         lines.append("| 情景 | 假设 | DCF估值 | 加权目标价 |")
@@ -1051,9 +1126,9 @@ def run(
             ticker, signals.get("fundamentals"), quality_report
         )
 
-        # Ch4: Valuation Analysis (Code)
+        # Ch4: Valuation Analysis (Code) - with industry-specific parameters
         logger.info("[Report] Generating Ch4: Valuation Analysis")
-        chapters["ch4_valuation"] = _build_valuation_analysis(signals.get("valuation"))
+        chapters["ch4_valuation"] = _build_valuation_analysis(signals.get("valuation"), ticker=ticker)
 
         # Ch5: Risk Factors (Contrarian Template) - with macro risk factors
         logger.info("[Report] Generating Ch5: Risk Factors (Contrarian)")

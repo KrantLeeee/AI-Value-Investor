@@ -10,6 +10,9 @@ Signal thresholds:
   score >= 70  → bullish
   score >= 45  → neutral
   score <  45  → bearish
+
+NOTE: Financial stocks (banks/insurance) and utility stocks have different
+      safety metric standards - high D/E is normal for these industries.
 """
 
 from datetime import date
@@ -28,6 +31,26 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 AGENT_NAME = "fundamentals"
+
+# Financial stock tickers - high D/E is normal for banks/insurance
+_FINANCIAL_TICKERS = {
+    "601318.SH", "600036.SH", "601398.SH", "601166.SH", "601628.SH",
+    "601288.SH", "601988.SH", "601939.SH", "601328.SH", "600000.SH",
+    "000001.SZ", "002142.SZ", "600016.SH", "601229.SH", "601818.SH",
+}
+
+# Utility/infrastructure tickers - high D/E and low current ratio is normal
+_UTILITY_TICKERS = {
+    "600900.SH", "601985.SH", "600023.SH", "600025.SH", "000027.SZ",
+    "600011.SH", "600795.SH", "601991.SH", "600886.SH",
+}
+
+
+def _is_financial_or_utility(ticker: str) -> tuple[bool, bool]:
+    """Check if ticker is financial or utility stock (high leverage is normal)."""
+    is_financial = ticker in _FINANCIAL_TICKERS
+    is_utility = ticker in _UTILITY_TICKERS
+    return is_financial, is_utility
 
 
 def _safe(x) -> float | None:
@@ -108,6 +131,13 @@ def run(ticker: str, market: str) -> AgentSignal:
     score = 0
     detail_lines: list[str] = []
     metrics_snapshot: dict = {}
+
+    # Check if this is a financial or utility stock (different safety standards)
+    is_financial, is_utility = _is_financial_or_utility(ticker)
+    if is_financial:
+        detail_lines.append("🏦 金融股：高杠杆是银行/保险商业模式本身，D/E和流动比率不适用常规标准")
+    elif is_utility:
+        detail_lines.append("⚡ 公用事业股：资本密集型行业，高D/E和低流动比率是行业常态")
 
     # ── 1. Profitability (30 pts) ──────────────────────────────────────────────
     roe = _safe(metric_rows[0]["roe"]) if metric_rows else None
@@ -207,7 +237,11 @@ def run(ticker: str, market: str) -> AgentSignal:
         cr = (ca / cl) if (ca and cl and cl != 0) else None
 
     if de is not None:
-        if de <= 0.3:
+        # BUG-FIX: Financial/utility stocks have high D/E by design - don't penalize
+        if is_financial or is_utility:
+            score += 10  # Full points - high leverage is expected
+            detail_lines.append(f"✓ D/E={de:.2f} (行业特性，满分+10)")
+        elif de <= 0.3:
             score += 10; detail_lines.append(f"✓ D/E={de:.2f} (≤0.3, +10)")
         elif de <= 0.5:
             score += 7;  detail_lines.append(f"△ D/E={de:.2f} (≤0.5, +7)")
@@ -220,7 +254,11 @@ def run(ticker: str, market: str) -> AgentSignal:
         detail_lines.append("- 负债/权益数据缺失")
 
     if cr is not None:
-        if cr >= 2.0:
+        # BUG-FIX: Financial/utility stocks have low current ratio by design - don't penalize
+        if is_financial or is_utility:
+            score += 10  # Full points - low liquidity ratio is expected
+            detail_lines.append(f"✓ 流动比率={cr:.2f} (行业特性，满分+10)")
+        elif cr >= 2.0:
             score += 10; detail_lines.append(f"✓ 流动比率={cr:.2f} (≥2.0, +10)")
         elif cr >= 1.5:
             score += 7;  detail_lines.append(f"△ 流动比率={cr:.2f} (≥1.5, +7)")
@@ -230,7 +268,12 @@ def run(ticker: str, market: str) -> AgentSignal:
             detail_lines.append(f"✗ 流动比率={cr:.2f} (<1.0, +0)")
         metrics_snapshot["current_ratio"] = round(cr, 3)
     else:
-        detail_lines.append("- 流动比率数据缺失")
+        # For financial/utility stocks, missing current ratio is still ok
+        if is_financial or is_utility:
+            score += 10
+            detail_lines.append("✓ 流动比率数据缺失（行业特性，不扣分）")
+        else:
+            detail_lines.append("- 流动比率数据缺失")
 
     # ── 4. Cash Quality (20 pts) ──────────────────────────────────────────────
     if cashflow_rows:

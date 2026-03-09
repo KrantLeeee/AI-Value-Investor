@@ -164,17 +164,53 @@ def fetch_nbs_manufacturing_pmi(n: int = 3) -> Optional[PmiPoint]:
     """
     国家统计局制造业PMI
     AKShare: ak.macro_china_pmi_yearly()
-    返回最新一期
+
+    Task #20: AKShare changed to "tall" format with columns:
+    ['商品', '日期', '今值', '预测值', '前值']
     """
     try:
         import akshare as ak
         df = ak.macro_china_pmi_yearly()
-        # 列名：月份, 制造业-指数, 制造业-同比增长, 非制造业-指数, ...
-        # 取最近 n 行
+
+        # Handle new "tall" format: filter by 商品, sort by 日期
+        if "商品" in df.columns and "今值" in df.columns:
+            # New tall format
+            df = df.sort_values("日期", ascending=True)
+            df = df.tail(n).reset_index(drop=True)
+
+            values = df["今值"].astype(float).tolist()
+            latest = values[-1]
+
+            # Format date to YYYY-MM
+            date_val = df.iloc[-1]["日期"]
+            if hasattr(date_val, 'strftime'):
+                period = date_val.strftime("%Y-%m")
+            else:
+                period = str(date_val)[:7]
+
+            mom = _compute_mom(values)
+            return PmiPoint(period=period, value=latest, mom_change=mom, above_50=latest >= 50.0)
+
+        # Fallback: old wide format with "制造业-指数"
+        mfg_col = next(
+            (c for c in df.columns if "制造业" in c and
+             any(k in c for k in ["指数", "PMI", "今值"])),
+            None
+        )
+        if not mfg_col:
+            mfg_col = df.columns[1] if len(df.columns) > 1 else None
+        if not mfg_col:
+            raise KeyError(f"找不到制造业PMI列，现有列: {df.columns.tolist()}")
+
+        period_col = next(
+            (c for c in df.columns if any(k in c for k in ["月份", "日期", "时间"])),
+            df.columns[0]
+        )
+
         df = df.tail(n).reset_index(drop=True)
-        values = df["制造业-指数"].astype(float).tolist()
+        values = df[mfg_col].astype(float).tolist()
         latest = values[-1]
-        period = str(df.iloc[-1]["月份"])[:7]  # "YYYY-MM"
+        period = str(df.iloc[-1][period_col])[:7]
         mom = _compute_mom(values)
         return PmiPoint(period=period, value=latest, mom_change=mom, above_50=latest >= 50.0)
     except Exception as e:
@@ -183,14 +219,57 @@ def fetch_nbs_manufacturing_pmi(n: int = 3) -> Optional[PmiPoint]:
 
 
 def fetch_nbs_services_pmi(n: int = 3) -> Optional[PmiPoint]:
-    """国家统计局非制造业PMI"""
+    """
+    国家统计局非制造业PMI
+
+    Task #20: Use separate API ak.macro_china_non_man_pmi() for non-manufacturing PMI
+    New format: ['商品', '日期', '今值', '预测值', '前值']
+    """
     try:
         import akshare as ak
+
+        # Try the dedicated non-manufacturing PMI API first
+        try:
+            df = ak.macro_china_non_man_pmi()
+            if "今值" in df.columns:
+                df = df.sort_values("日期", ascending=True)
+                df = df.tail(n).reset_index(drop=True)
+
+                values = df["今值"].astype(float).tolist()
+                latest = values[-1]
+
+                date_val = df.iloc[-1]["日期"]
+                if hasattr(date_val, 'strftime'):
+                    period = date_val.strftime("%Y-%m")
+                else:
+                    period = str(date_val)[:7]
+
+                mom = _compute_mom(values)
+                return PmiPoint(period=period, value=latest, mom_change=mom, above_50=latest >= 50.0)
+        except Exception:
+            pass  # Fall through to legacy method
+
+        # Fallback: old wide format from macro_china_pmi_yearly
         df = ak.macro_china_pmi_yearly()
+        svc_col = next(
+            (c for c in df.columns if "非制造业" in c and
+             any(k in c for k in ["指数", "PMI", "今值"])),
+            None
+        )
+        if not svc_col:
+            svc_col = next((c for c in df.columns if "非制造" in c), None)
+        if not svc_col:
+            raise KeyError(f"找不到非制造业PMI列，现有列: {df.columns.tolist()}")
+
+        period_col = next(
+            (c for c in df.columns if any(k in c for k in ["月份", "日期", "时间"])),
+            df.columns[0]
+        )
+
         df = df.tail(n).reset_index(drop=True)
-        values = df["非制造业-指数"].astype(float).tolist()
+        values = df[svc_col].astype(float).tolist()
         latest = values[-1]
-        period = str(df.iloc[-1]["月份"])[:7]
+        period = str(df.iloc[-1][period_col])[:7]
         mom = _compute_mom(values)
         return PmiPoint(period=period, value=latest, mom_change=mom, above_50=latest >= 50.0)
     except Exception as e:

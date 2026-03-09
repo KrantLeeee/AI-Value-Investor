@@ -93,6 +93,24 @@ FINANCIAL_DDM_GROWTH = 0.03        # 3% long-term dividend growth
 PB_MIN_FINANCIAL = 0.5             # Minimum reasonable P/B for banks
 PB_MAX_FINANCIAL = 3.0             # Maximum reasonable P/B
 
+# Task #15: Utility stock valuation parameters (DDM is primary for stable dividend payers)
+# Utilities have lower cost of equity due to regulated, stable cash flows
+UTILITY_COST_OF_EQUITY = 0.07      # 7% cost of equity (lower than financial due to stability)
+UTILITY_DDM_GROWTH = 0.025         # 2.5% long-term dividend growth (inflation-linked)
+
+# Utility tickers - these use DDM as primary valuation method
+_UTILITY_TICKERS = {
+    "600900.SH",   # 长江电力 - stable dividend payer
+    "601985.SH",   # 中国核电
+    "600023.SH",   # 浙能电力
+    "600025.SH",   # 华能水电
+    "000027.SZ",   # 深圳能源
+    "600011.SH",   # 华能国际
+    "600795.SH",   # 国电电力
+    "601991.SH",   # 大唐发电
+    "600886.SH",   # 国投电力
+}
+
 # Phase 2: Cyclical stock valuation parameters
 # Use cycle-bottom multiples, not current period
 EV_EBITDA_CYCLE_BOTTOM = 5.0       # Cycle trough EV/EBITDA for oil services
@@ -351,6 +369,99 @@ def _get_shares_outstanding(income_rows: list[dict], metric_rows: list[dict]) ->
     return None
 
 
+def _get_dividend_from_akshare(ticker: str) -> float | None:
+    """
+    Task #15: Fetch dividend per share from AKShare for utility stocks.
+
+    Uses stock_history_dividend_detail which returns:
+    - 派息: Cash dividend per 10 shares (e.g., 2.10 means ¥0.21 per share)
+
+    For annual DPS, sums up all dividends with "实施" status in the current/recent year.
+
+    Returns:
+        Estimated annual dividend per share in yuan, or None if unavailable.
+    """
+    try:
+        import akshare as ak
+        from datetime import datetime
+        code = ticker.split(".")[0]
+
+        # Use stock_history_dividend_detail - the working API
+        df = ak.stock_history_dividend_detail(symbol=code)
+
+        if df is None or df.empty:
+            logger.debug("[Valuation] %s: No dividend detail data from AKShare", ticker)
+            return None
+
+        # Calculate annual DPS by summing implemented dividends
+        # 派息 column contains dividend per 10 shares
+        if "派息" not in df.columns:
+            logger.debug("[Valuation] %s: No '派息' column in dividend data", ticker)
+            return None
+
+        # Filter for implemented dividends (进度 == "实施")
+        if "进度" in df.columns:
+            implemented = df[df["进度"] == "实施"]
+        else:
+            implemented = df
+
+        if implemented.empty:
+            # Fallback to first row if no implemented
+            implemented = df.head(1)
+
+        # Get current year
+        current_year = datetime.now().year
+
+        # Sum dividends from current year or most recent year with data
+        annual_dividend_per_10 = 0.0
+        years_checked = set()
+
+        for _, row in implemented.iterrows():
+            try:
+                # Parse announcement date
+                announce_date = row.get("公告日期")
+                if announce_date:
+                    if isinstance(announce_date, str):
+                        year = int(announce_date[:4])
+                    else:
+                        year = announce_date.year
+
+                    # Only sum dividends from current year or previous year
+                    if year >= current_year - 1:
+                        dividend_per_10 = float(row["派息"]) if row["派息"] else 0
+                        if dividend_per_10 > 0:
+                            annual_dividend_per_10 += dividend_per_10
+                            years_checked.add(year)
+            except (ValueError, TypeError):
+                continue
+
+        # If no current year data, use the latest single dividend
+        if annual_dividend_per_10 == 0 and not implemented.empty:
+            latest = implemented.iloc[0]
+            dividend_per_10 = float(latest["派息"]) if latest["派息"] else 0
+            if dividend_per_10 > 0:
+                annual_dividend_per_10 = dividend_per_10
+
+        if annual_dividend_per_10 > 0:
+            dps = annual_dividend_per_10 / 10  # Convert from per-10-shares to per-share
+            logger.info(
+                "[Valuation] %s: fetched annual DPS=¥%.3f from AKShare "
+                "(派息=%s/10股, years=%s)",
+                ticker, dps, annual_dividend_per_10, years_checked or "latest"
+            )
+            return dps
+
+    except Exception as e:
+        logger.warning("[Valuation] AKShare dividend fetch failed for %s: %s", ticker, e)
+
+    return None
+
+
+def _is_utility_stock(ticker: str) -> bool:
+    """Check if ticker is a utility stock that should use DDM valuation."""
+    return ticker in _UTILITY_TICKERS
+
+
 def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     """
     Run the Valuation Agent for a given ticker.
@@ -583,8 +694,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     dividend_yield = None
 
     if metric_rows:
-        roe = _safe(metric_rows[0].get("roe"))
-        dividend_yield = _safe(metric_rows[0].get("dividend_yield"))
+        roe_raw = _safe(metric_rows[0].get("roe"))
+        dividend_yield_raw = _safe(metric_rows[0].get("dividend_yield"))
+
+        # BUG-FIX: Normalize ROE/dividend_yield to decimal form
+        # AKShare returns ROE as percentage (e.g., 10.47 for 10.47%)
+        # We need decimal form (0.1047) for P/B-ROE calculation: fair_pb = roe / Ke
+        if roe_raw is not None:
+            roe = roe_raw / 100 if roe_raw > 1 else roe_raw  # 10.47 → 0.1047
+        if dividend_yield_raw is not None:
+            dividend_yield = dividend_yield_raw / 100 if dividend_yield_raw > 1 else dividend_yield_raw
 
     # Only check financial if not already classified
     if not is_loss_making_tech and not is_growth_stock:
@@ -597,6 +716,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if is_financial_stock:
         results["is_financial_stock"] = True
         results["valuation_mode"] = "financial"
+        # Store as percentage for display (roe is now decimal, so *100 is correct)
         results["roe"] = round(roe * 100, 2) if roe else None
         results["dividend_yield"] = round(dividend_yield * 100, 2) if dividend_yield else None
         detail_lines.append(
@@ -656,6 +776,22 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 f"💊 成熟期医药股：使用PE/DCF估值方法（盈利稳定可比较）"
                 + (f" (净利率={net_margin_pct:.1f}%)" if net_margin_pct else "")
             )
+
+    # ── Task #15: Detect utility stocks ─────────────────────────────────────────
+    # Utility stocks (power, gas, water) use DDM as primary valuation method
+    # due to stable, regulated cash flows and predictable dividends
+    is_utility_stock = False
+
+    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock:
+        is_utility_stock = _is_utility_stock(ticker)
+
+    if is_utility_stock:
+        results["is_utility_stock"] = True
+        results["valuation_mode"] = "utility"
+        detail_lines.append(
+            "⚡ 公用事业股：使用DDM股息折现模型为主要估值方法（稳定股息，"
+            "监管收益可预测），禁用高增长DCF假设"
+        )
 
     if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
@@ -771,27 +907,37 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     industry_class = classify_industry(industry) if industry else "default"
     _ev_multiple = get_ev_ebitda_multiple(industry_class, cycle_phase="normal")
 
+    # Task #18: Check if utility stock - skip generic EV/EBITDA detail lines
+    # Utility stocks will add their own 12x detail lines later
+    _skip_generic_ev_detail = _is_utility_stock(ticker)
+
     if ebitda and ebitda > 0:
         ev_ebitda_total = ebitda * _ev_multiple
         results["ev_ebitda_value"] = ev_ebitda_total
         results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
-        detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
         ev_ebitda_value = ev_ebitda_total
+
+        # Only add generic detail lines for non-utility stocks
+        if not _skip_generic_ev_detail:
+            detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+
         # Per-share estimate
         if shares and shares > 0:
             ev_ebitda_per_share = ev_ebitda_total / shares
             results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
-            detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
+            if not _skip_generic_ev_detail:
+                detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
 
-        # P/B per share target
-        if bvps:
+        # P/B per share target - also skip for utility stocks (they have their own)
+        if bvps and not _skip_generic_ev_detail:
             _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
             pb_target_per_share = bvps * _pb
             results["pb_target"] = round(pb_target_per_share, 2)
             detail_lines.append(f"P/B目标价 ({_pb}x BVPS={bvps:.2f}): ¥{pb_target_per_share:.2f}")
     else:
         results["ev_ebitda_value"] = None
-        detail_lines.append("- EBITDA 数据缺失（注：已尝试用净利润×1.5估算，仍失败）")
+        if not _skip_generic_ev_detail:
+            detail_lines.append("- EBITDA 数据缺失（注：已尝试用净利润×1.5估算，仍失败）")
 
     # ── 3b. PS (Price-to-Sales) valuation (BUG-03A: for loss-making tech stocks) ──
     ps_per_share = None
@@ -900,12 +1046,17 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     ddm_per_share = None
 
     if is_financial_stock:
-        # Try to get dividend per share
+        # Try multiple sources for dividend per share:
+        # 1. Database metrics
         dps = _safe(metric_rows[0].get("dividend_per_share")) if metric_rows else None
 
-        # Fallback: estimate DPS from dividend yield and current price
+        # 2. Fallback: estimate DPS from dividend yield and current price
         if dps is None and dividend_yield and current_price:
             dps = dividend_yield * current_price
+
+        # 3. Task #17 Fix: Fetch from AKShare directly
+        if dps is None:
+            dps = _get_dividend_from_akshare(ticker)
 
         if dps and dps > 0:
             # DDM formula: P = D1 / (Ke - g)
@@ -920,7 +1071,39 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                     f"Ke={FINANCIAL_COST_OF_EQUITY*100:.0f}%): ¥{ddm_per_share:.2f}/股"
                 )
         else:
-            detail_lines.append("⚠ DDM估值无法计算（缺少股息数据）")
+            detail_lines.append("⚠ DDM估值无法计算（缺少股息数据，已尝试AKShare获取）")
+
+    # ── Task #15: DDM valuation for utility stocks ─────────────────────────────
+    # Utilities have stable, predictable dividends - DDM is primary method
+    ddm_utility_per_share = None
+
+    if is_utility_stock:
+        # Try multiple sources for dividend per share:
+        # 1. Database metrics
+        dps = _safe(metric_rows[0].get("dividend_per_share")) if metric_rows else None
+
+        # 2. Fallback: estimate from dividend yield
+        if dps is None and dividend_yield and current_price:
+            dps = dividend_yield * current_price
+
+        # 3. Task #15: Fetch from AKShare directly for utilities
+        if dps is None:
+            dps = _get_dividend_from_akshare(ticker)
+
+        if dps and dps > 0:
+            # DDM formula: P = D1 / (Ke - g)
+            # D1 = DPS × (1 + g)
+            d1 = dps * (1 + UTILITY_DDM_GROWTH)
+            if UTILITY_COST_OF_EQUITY > UTILITY_DDM_GROWTH:
+                ddm_utility_per_share = d1 / (UTILITY_COST_OF_EQUITY - UTILITY_DDM_GROWTH)
+                results["ddm_per_share"] = round(ddm_utility_per_share, 2)
+                results["dps"] = round(dps, 2)
+                detail_lines.append(
+                    f"DDM股息折现 (DPS=¥{dps:.2f}, g={UTILITY_DDM_GROWTH*100:.1f}%, "
+                    f"Ke={UTILITY_COST_OF_EQUITY*100:.0f}%): ¥{ddm_utility_per_share:.2f}/股"
+                )
+        else:
+            detail_lines.append("⚠ DDM估值无法计算（缺少股息数据，已尝试AKShare获取）")
 
     # ── 3g. Cycle-adjusted EV/EBITDA (Phase 2: for cyclical stocks) ──────────
     # Use cycle-bottom multiples instead of current period from industry_profiles.yaml
@@ -1125,6 +1308,47 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             if ps_per_share:
                 valuation_methods.append(("PS", ps_per_share))
 
+    elif is_utility_stock:
+        # Task #15: Utility stock valuation methods
+        # Uses DDM as primary (stable dividends), DCF, and P/B
+        # Disables high-growth assumptions (utilities have regulated, slow growth)
+
+        # DDM valuation - primary method for utilities
+        if ddm_utility_per_share:
+            valuation_methods.append(("DDM", ddm_utility_per_share))
+
+        # DCF with conservative growth (use bear case as more realistic for utilities)
+        if dcf_bear and shares and shares > 0:
+            dcf_per_share = dcf_bear / shares  # Use conservative DCF
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF_Conservative", dcf_per_share))
+            detail_lines.append(f"公用事业DCF（保守）: ¥{dcf_per_share:.2f}/股")
+
+        # EV/EBITDA with utility multiple (12-15x) - OVERRIDE the generic calculation
+        if ebitda and ebitda > 0 and shares and shares > 0:
+            utility_ev_multiple = 12.0  # Utility sector median
+            utility_ev = ebitda * utility_ev_multiple
+            utility_ev_per_share = utility_ev / shares
+            results["ev_ebitda_utility_per_share"] = round(utility_ev_per_share, 2)
+            results["ev_ebitda_per_share"] = round(utility_ev_per_share, 2)  # Override generic
+            results["ev_ebitda_multiple"] = utility_ev_multiple  # Override for report
+            valuation_methods.append(("EV/EBITDA", utility_ev_per_share))
+            # Fix #16: Add detail line with correct 12x multiple
+            detail_lines.append(
+                f"EV/EBITDA ({utility_ev_multiple:.0f}x 公用事业倍数): ¥{utility_ev_per_share:.2f}/股"
+            )
+
+        # P/B as floor value (utilities typically trade at 1.5-2.5x book)
+        if bvps:
+            utility_pb_multiple = 2.0  # Utility P/B multiple
+            pb_target_per_share = bvps * utility_pb_multiple
+            results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
+            detail_lines.append(f"P/B目标价 ({utility_pb_multiple}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股")
+
+        # NOTE: Graham Number is DISABLED for utilities
+        # (Graham Number is designed for undervalued stocks, not regulated utilities)
+
     else:
         # Standard valuation methods for traditional value stocks
         # DCF base case (per share)
@@ -1199,6 +1423,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             valuation_config = get_healthcare_mature_valuation_config()
             default_weights = valuation_config["weights"]
             logger.info("[Valuation] %s: Using healthcare mature stage weights: %s", ticker, default_weights)
+    elif is_utility_stock:
+        # Task #15: Use utility stock weights (DDM-focused for stable dividend payers)
+        default_weights = {
+            "DDM": 0.50,              # Primary - utilities have stable, predictable dividends
+            "DCF_Conservative": 0.20, # Secondary - conservative growth assumptions
+            "EV/EBITDA": 0.20,        # Tertiary - regulated asset base
+            "P/B": 0.10,              # Floor value
+        }
+        logger.info("[Valuation] %s: Using utility stock weights: %s", ticker, default_weights)
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
@@ -1307,18 +1540,49 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             weighted_target_str = f"¥{weighted_target:.2f}" if weighted_target else "N/A"
             validation_mode = "降级模式（≤1个有效方法）" if weighted_result["degraded"] else "正常模式"
 
+            # Task #19: Build detailed method lists for LLM to reference correctly
+            valuation_mode = results.get("valuation_mode", "standard")
+            valuation_mode_display = {
+                "financial": "金融股（P/B-ROE + DDM + P/E）",
+                "utility": "公用事业股（DDM为主）",
+                "growth_stock": "成长股（PEG + DCF）",
+                "loss_making_tech": "亏损期科技股（PS + EV/Sales）",
+                "cyclical": "周期股（正常化DCF + 周期底部倍数）",
+                "healthcare_rd": "研发期医药股（PS + EV/Sales）",
+                "healthcare_mature": "成熟期医药股（PE + DCF）",
+                "standard": "传统价值股（DCF + Graham + EV/EBITDA）",
+            }.get(valuation_mode, valuation_mode)
+
+            # Build valid methods details
+            valid_methods_details_list = []
+            for v in validated_results:
+                if not v.get("exclude_from_weighted", True):
+                    valid_methods_details_list.append(
+                        f"- {v['method']}: ¥{v['target_price']:.2f}/股"
+                    )
+            valid_methods_details = "\n".join(valid_methods_details_list) if valid_methods_details_list else "无有效方法"
+
+            # Build excluded/not-applicable methods
+            excluded_details_list = []
+            for v in validated_results:
+                if v.get("exclude_from_weighted", True):
+                    excluded_details_list.append(f"- {v['method']}: 已排除")
+            # Add methods that were never calculated for this stock type
+            if valuation_mode == "financial":
+                excluded_details_list.append("- DCF: 不适用于金融股")
+                excluded_details_list.append("- Graham Number: 不适用于金融股")
+            elif valuation_mode == "utility":
+                excluded_details_list.append("- Graham Number: 不适用于公用事业股")
+            excluded_methods_details = "\n".join(excluded_details_list) if excluded_details_list else "无排除方法"
+
             user_msg = VALUATION_INTERPRET_USER_TEMPLATE.format(
                 ticker=ticker,
                 current_price=f"¥{current_price:.2f}" if current_price else "未知",
-                dcf_bull=f"¥{dcf_bull/shares:.2f}/股" if dcf_bull and shares else "N/A",
-                dcf_base=f"¥{dcf_base/shares:.2f}/股" if dcf_base and shares else "N/A",
-                dcf_bear=f"¥{dcf_bear/shares:.2f}/股" if dcf_bear and shares else "N/A",
-                graham_number=f"¥{graham_number_per_share:.2f}" if graham_number_per_share else "N/A",
-                owner_earnings_value=f"¥{owner_earnings/1e8:.1f}亿" if owner_earnings else "N/A",
-                ev_ebitda_value=f"¥{ev_ebitda_per_share:.2f}/股" if 'ev_ebitda_per_share' in dir() and ev_ebitda_per_share else "N/A",
+                valuation_mode=valuation_mode_display,
+                valid_methods_details=valid_methods_details,
+                excluded_methods_details=excluded_methods_details,
                 wacc=wacc * 100,
                 terminal_growth=TERMINAL_GROWTH * 100,
-                fcf_growth=FCF_GROWTH_BASE * 100,
                 valid_methods=valid_methods_str,
                 excluded_methods=excluded_methods_str,
                 weighted_target=weighted_target_str,
