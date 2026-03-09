@@ -106,6 +106,21 @@ class NewsItem(BaseModel):
     sentiment_score: float | None = None  # -1.0 to 1.0
 
 
+class ProfitWarning(BaseModel):
+    """业绩预告数据 - 上市公司业绩预告信息."""
+    ticker: str
+    report_date: date  # 报告期 (e.g., 2024-12-31)
+    publish_date: date  # 公告日期
+    warning_type: str  # 预增/预减/扭亏/首亏/略增/略减/续亏/续盈/不确定
+    change_pct_min: float | None = None  # 预计增幅下限 (%)
+    change_pct_max: float | None = None  # 预计增幅上限 (%)
+    profit_min: float | None = None  # 预计净利润下限 (元)
+    profit_max: float | None = None  # 预计净利润上限 (元)
+    last_year_profit: float | None = None  # 上年同期净利润 (元)
+    reason: str | None = None  # 变动原因
+    source: str
+
+
 # ── Data Quality ──────────────────────────────────────────────────────────────
 
 class QualityFlag(BaseModel):

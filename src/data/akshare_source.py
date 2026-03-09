@@ -30,6 +30,7 @@ from src.data.models import (
     IncomeStatement,
     MarketType,
     NewsItem,
+    ProfitWarning,
 )
 from src.utils.logger import get_logger
 
@@ -587,5 +588,102 @@ class AKShareSource(BaseDataSource):
                 ))
         except Exception as e:
             logger.warning("[AKShare] get_news failed for %s: %s", ticker, e)
+
+        return results
+
+    # ── Profit Warnings (业绩预告) ─────────────────────────────────────────────
+
+    def get_profit_warnings(
+        self, ticker: str, market: MarketType, limit: int = 4,
+    ) -> list[ProfitWarning]:
+        """
+        East Money 业绩预告: stock_yjyg_em (A-share only).
+        Fetches profit warning announcements for a specific stock.
+
+        Returns recent profit warnings sorted by report date (newest first).
+        """
+        if market != "a_share":
+            return []
+        import akshare as ak
+
+        code = _clean_ticker(ticker, market)
+        results: list[ProfitWarning] = []
+
+        try:
+            # Try fetching all profit warnings and filter by ticker
+            # stock_yjyg_em returns all A-share profit warnings by date
+            # We need to filter by code
+            df = ak.stock_yjyg_em(date="")  # Empty date = most recent
+            if df is None or df.empty:
+                logger.debug("[AKShare] No profit warnings available from stock_yjyg_em")
+                return []
+
+            # Filter by stock code - the API returns '股票代码' column
+            if "股票代码" in df.columns:
+                df = df[df["股票代码"] == code]
+            elif "代码" in df.columns:
+                df = df[df["代码"] == code]
+
+            if df.empty:
+                logger.debug("[AKShare] No profit warnings found for %s", ticker)
+                return []
+
+            # Sort by report period (newest first) and take limit
+            if "报告期" in df.columns:
+                df = df.sort_values("报告期", ascending=False).head(limit)
+
+            for _, row in df.iterrows():
+                try:
+                    # Parse report date
+                    report_date_str = str(row.get("报告期", ""))
+                    if report_date_str and report_date_str != "nan":
+                        report_date = pd.to_datetime(report_date_str).date()
+                    else:
+                        continue
+
+                    # Parse publish date
+                    publish_date_str = str(row.get("公告日期", "") or row.get("发布日期", ""))
+                    if publish_date_str and publish_date_str != "nan":
+                        publish_date = pd.to_datetime(publish_date_str).date()
+                    else:
+                        publish_date = report_date
+
+                    # Parse warning type
+                    warning_type = str(row.get("业绩变动类型", "") or row.get("预告类型", "") or "不确定")
+
+                    # Parse change percentages
+                    change_min = _safe_float(row.get("预计增幅下限", "") or row.get("增幅下限", ""))
+                    change_max = _safe_float(row.get("预计增幅上限", "") or row.get("增幅上限", ""))
+
+                    # Parse profit values
+                    profit_min = _parse_cn_number(row.get("预计净利润下限", "") or row.get("净利润下限", ""))
+                    profit_max = _parse_cn_number(row.get("预计净利润上限", "") or row.get("净利润上限", ""))
+                    last_profit = _parse_cn_number(row.get("上年同期净利润", "") or row.get("去年同期", ""))
+
+                    # Parse reason
+                    reason = str(row.get("业绩变动原因", "") or row.get("变动原因", "") or "")
+                    if reason == "nan":
+                        reason = None
+
+                    results.append(ProfitWarning(
+                        ticker=ticker,
+                        report_date=report_date,
+                        publish_date=publish_date,
+                        warning_type=warning_type,
+                        change_pct_min=change_min,
+                        change_pct_max=change_max,
+                        profit_min=profit_min,
+                        profit_max=profit_max,
+                        last_year_profit=last_profit,
+                        reason=reason if reason else None,
+                        source=self.source_name,
+                    ))
+                except Exception as e:
+                    logger.debug("[AKShare] Failed to parse profit warning row: %s", e)
+                    continue
+
+            logger.info("[AKShare] %s profit_warnings: %d rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[AKShare] get_profit_warnings failed for %s: %s", ticker, e)
 
         return results

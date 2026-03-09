@@ -5,13 +5,16 @@ and compute an overall sentiment score for the ticker.
 
 If no news data is available in DB, returns neutral signal with low confidence.
 If LLM is unavailable, returns neutral with a note.
+
+Integrates structured profit warning data from AKShare (业绩预告) for
+forward-looking sentiment analysis.
 """
 
 import json
 from datetime import date
 
 from src.data.database import get_manual_docs, insert_agent_signal
-from src.data.models import AgentSignal
+from src.data.models import AgentSignal, ProfitWarning
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,6 +56,64 @@ def _get_news_from_akshare(ticker: str, market: str) -> list[str]:
     return []
 
 
+def _get_profit_warnings(ticker: str, market: str) -> list[ProfitWarning]:
+    """Fetch structured profit warning data from AKShare."""
+    if market != "a_share":
+        return []
+    try:
+        from src.data.akshare_source import AKShareSource
+        source = AKShareSource()
+        return source.get_profit_warnings(ticker, market, limit=2)
+    except Exception as e:
+        logger.debug("[Sentiment] Profit warning fetch failed for %s: %s", ticker, e)
+    return []
+
+
+def _extract_profit_warning_info(warnings: list[ProfitWarning]) -> tuple[str | None, str | None]:
+    """
+    Extract structured profit warning type and details from ProfitWarning data.
+
+    Returns:
+        (warning_type, details): e.g., ("预增", "预计净利增长50%-80%")
+    """
+    if not warnings:
+        return None, None
+
+    # Get the most recent warning
+    latest = warnings[0]
+    warning_type = latest.warning_type
+
+    # Build details string
+    details_parts = []
+
+    # Add change percentage range
+    if latest.change_pct_min is not None and latest.change_pct_max is not None:
+        if latest.change_pct_min == latest.change_pct_max:
+            details_parts.append(f"预计增幅{latest.change_pct_min:.0f}%")
+        else:
+            details_parts.append(f"预计增幅{latest.change_pct_min:.0f}%~{latest.change_pct_max:.0f}%")
+    elif latest.change_pct_max is not None:
+        details_parts.append(f"预计增幅{latest.change_pct_max:.0f}%")
+    elif latest.change_pct_min is not None:
+        details_parts.append(f"预计增幅{latest.change_pct_min:.0f}%")
+
+    # Add profit range (in 亿)
+    if latest.profit_min is not None and latest.profit_max is not None:
+        profit_min_yi = latest.profit_min / 1e8
+        profit_max_yi = latest.profit_max / 1e8
+        if abs(profit_min_yi - profit_max_yi) < 0.01:
+            details_parts.append(f"预计净利润{profit_min_yi:.2f}亿")
+        else:
+            details_parts.append(f"预计净利润{profit_min_yi:.2f}~{profit_max_yi:.2f}亿")
+
+    # Add report period
+    details_parts.append(f"报告期:{latest.report_date}")
+
+    details = "，".join(details_parts) if details_parts else None
+
+    return warning_type, details
+
+
 def run(
     ticker: str,
     market: str,
@@ -61,16 +122,31 @@ def run(
     """
     Run the Sentiment Agent.
     Returns AgentSignal and persists to DB.
+
+    Integrates:
+    1. News headlines from AKShare or manual docs
+    2. Structured profit warning data from AKShare (业绩预告)
     """
     # Gather news from all available sources
     news_headlines = _get_news_from_akshare(ticker, market)
     if not news_headlines:
         news_headlines = _get_news_from_db(ticker)
 
+    # Fetch structured profit warning data
+    profit_warnings = _get_profit_warnings(ticker, market)
+    profit_warning_type, profit_warning_details = _extract_profit_warning_info(profit_warnings)
+
     metrics_snapshot: dict = {
         "news_count": len(news_headlines),
         "news_days": NEWS_LOOKBACK_DAYS,
+        "profit_warning": profit_warning_type,
+        "profit_warning_details": profit_warning_details,
     }
+
+    logger.info(
+        "[Sentiment] %s: profit_warning=%s, details=%s",
+        ticker, profit_warning_type, profit_warning_details
+    )
 
     # Handle case: no news available
     if not news_headlines:
