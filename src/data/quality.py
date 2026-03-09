@@ -764,15 +764,46 @@ def check_source_availability() -> list[QualityFlag]:
 # ── Rule 12: Median Deviation Detection ───────────────────────────────────
 
 
+def _is_growth_company(revenues: list[float]) -> tuple[bool, float | None]:
+    """
+    Check if company is a growth company based on revenue growth.
+
+    BUG-07 FIX: For growth companies, historical median underestimates current scale.
+    A company is considered "growth" if recent YoY revenue growth > 20%.
+
+    Args:
+        revenues: List of annual revenues sorted newest first
+
+    Returns:
+        (is_growth, growth_rate): Whether company is growth and YoY growth rate
+    """
+    if len(revenues) < 2:
+        return False, None
+
+    current = revenues[0]
+    prior = revenues[1]
+
+    if prior <= 0:
+        return False, None
+
+    growth_rate = (current - prior) / prior
+    return growth_rate > 0.20, growth_rate
+
+
 def check_median_deviation(income_data: list[IncomeStatement],
                            balance_data: list[BalanceSheet]) -> list[QualityFlag]:
     """
     Check if key financial metrics deviate >50% from historical median.
 
+    BUG-07 FIX: For growth companies (revenue growth >20%), use only recent 2 years
+    of data instead of full historical median. This prevents misleading warnings
+    like "汇川营收偏离中位数292%" for high-growth stocks.
+
     Detects outliers in P/E-relevant metrics (revenue, net_income, equity)
     that could indicate data quality issues or structural changes.
 
     Severity: warning (may indicate data quality issue or major business change)
+             info (for growth companies - deviation is expected behavior)
     """
     import statistics
 
@@ -783,16 +814,36 @@ def check_median_deviation(income_data: list[IncomeStatement],
     if len(annual_income) >= 3:
         revenues = [r.revenue for r in annual_income if r.revenue and r.revenue > 0]
         if len(revenues) >= 3:
-            median_rev = statistics.median(revenues)
-            latest_rev = revenues[0]
-            deviation = abs(latest_rev - median_rev) / median_rev
-            if deviation > 0.50:
-                flags.append(QualityFlag(
-                    flag="median_deviation",
-                    field="revenue",
-                    detail=f"最新营收偏离中位数 {deviation:.1%} (中位数: {median_rev/1e8:.1f}亿, 最新: {latest_rev/1e8:.1f}亿)",
-                    severity="warning"
-                ))
+            # BUG-07 FIX: Check if this is a growth company
+            is_growth, growth_rate = _is_growth_company(revenues)
+
+            if is_growth and len(revenues) >= 2:
+                # For growth companies, use only recent 2 years as baseline
+                median_rev = statistics.median(revenues[:2])
+                latest_rev = revenues[0]
+                deviation = abs(latest_rev - median_rev) / median_rev if median_rev > 0 else 0
+
+                # For growth companies, only flag if deviation is still excessive
+                # relative to recent history (>50% deviation even from 2-year median)
+                if deviation > 0.50:
+                    flags.append(QualityFlag(
+                        flag="median_deviation",
+                        field="revenue",
+                        detail=f"成长股营收偏离近2年中位数 {deviation:.1%} (增速: {growth_rate:.0%}, 近2年中位数: {median_rev/1e8:.1f}亿, 最新: {latest_rev/1e8:.1f}亿)",
+                        severity="info"  # Info for growth stocks, not warning
+                    ))
+            else:
+                # Standard check for non-growth companies
+                median_rev = statistics.median(revenues)
+                latest_rev = revenues[0]
+                deviation = abs(latest_rev - median_rev) / median_rev
+                if deviation > 0.50:
+                    flags.append(QualityFlag(
+                        flag="median_deviation",
+                        field="revenue",
+                        detail=f"最新营收偏离中位数 {deviation:.1%} (中位数: {median_rev/1e8:.1f}亿, 最新: {latest_rev/1e8:.1f}亿)",
+                        severity="warning"
+                    ))
 
     # Check net income deviation from median
     if len(annual_income) >= 3:
