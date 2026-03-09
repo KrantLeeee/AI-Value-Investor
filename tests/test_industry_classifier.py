@@ -213,3 +213,102 @@ def test_all_profiles_have_required_fields():
 
         # All should be marked as not validated (pending P3)
         assert profile["validated"] is False
+
+
+# ── Phase 3: Industry-specific valuation multiples tests ───────────────────
+
+
+def test_get_ev_ebitda_multiple_energy():
+    """Energy industry should have specific EV/EBITDA multiples."""
+    from src.agents.industry_classifier import get_ev_ebitda_multiple
+
+    bottom = get_ev_ebitda_multiple("energy", "bottom")
+    normal = get_ev_ebitda_multiple("energy", "normal")
+    peak = get_ev_ebitda_multiple("energy", "peak")
+
+    # Energy should have cycle-aware multiples
+    assert bottom < normal < peak
+    assert 4.0 <= bottom <= 6.0  # Cycle bottom around 4.5x
+    assert 5.0 <= normal <= 8.0  # Mid-cycle around 6.5x
+    assert 8.0 <= peak <= 12.0   # Peak around 10x
+
+
+def test_get_ev_ebitda_multiple_consumer():
+    """Consumer industry should have higher EV/EBITDA multiples."""
+    from src.agents.industry_classifier import get_ev_ebitda_multiple
+
+    normal = get_ev_ebitda_multiple("consumer", "normal")
+
+    # Consumer stocks typically trade at higher multiples
+    assert normal >= 12.0  # Should be ~18x for consumer
+
+
+def test_get_ev_ebitda_multiple_default():
+    """Default industry should return fallback multiples."""
+    from src.agents.industry_classifier import get_ev_ebitda_multiple
+
+    normal = get_ev_ebitda_multiple("default", "normal")
+
+    # Default should be moderate
+    assert 6.0 <= normal <= 10.0
+
+
+def test_get_ev_ebitda_multiple_invalid_industry():
+    """Invalid industry should fall back to default multiples."""
+    from src.agents.industry_classifier import get_ev_ebitda_multiple
+
+    normal = get_ev_ebitda_multiple("nonexistent_industry", "normal")
+
+    # Should fall back to default (8x)
+    assert normal == 8.0
+
+
+def test_get_pe_multiple_banking():
+    """Banking industry should have specific P/E multiples."""
+    from src.agents.industry_classifier import get_pe_multiple
+
+    undervalued = get_pe_multiple("banking", "undervalued")
+    fair = get_pe_multiple("banking", "fair_value")
+    overvalued = get_pe_multiple("banking", "overvalued")
+
+    # Banks typically have low P/E
+    assert undervalued is not None
+    assert undervalued < fair < overvalued
+    assert 4.0 <= undervalued <= 6.0
+    assert 6.0 <= fair <= 10.0
+
+
+def test_get_pe_multiple_healthcare_rd_stage():
+    """Healthcare R&D stage should not have P/E (loss-making)."""
+    from src.agents.industry_classifier import get_pe_multiple
+
+    rd_pe = get_pe_multiple("healthcare", "rd_stage")
+
+    # R&D stage biotech/pharma typically has no PE (losses)
+    assert rd_pe is None
+
+
+def test_get_ps_multiple_tech():
+    """Tech industry should have P/S multiples."""
+    from src.agents.industry_classifier import get_ps_multiple
+
+    loss_making = get_ps_multiple("tech", "loss_making")
+    growth = get_ps_multiple("tech", "growth_stage")
+
+    # Tech PS multiples
+    assert loss_making >= 4.0
+    assert growth >= 6.0
+
+
+def test_get_pb_multiple_banking():
+    """Banking industry should have specific P/B multiples."""
+    from src.agents.industry_classifier import get_pb_multiple
+
+    undervalued = get_pb_multiple("banking", "undervalued")
+    fair = get_pb_multiple("banking", "fair_value")
+
+    # Banks typically have low P/B
+    assert undervalued is not None
+    assert undervalued < fair
+    assert 0.5 <= undervalued <= 0.7
+    assert 0.9 <= fair <= 1.1

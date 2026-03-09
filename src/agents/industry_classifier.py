@@ -181,6 +181,147 @@ def get_scoring_thresholds(industry: str) -> IndustryScoring:
     return profile["scoring"]
 
 
+def get_ev_ebitda_multiple(industry: str, cycle_phase: str = "normal") -> float:
+    """
+    Get industry-specific EV/EBITDA multiple.
+
+    Phase 3: Replace hardcoded 6x/8x multiples with industry-specific values
+    from industry_profiles.yaml.
+
+    Args:
+        industry: Industry key from classify_industry()
+        cycle_phase: "bottom", "normal", or "peak" (default: "normal")
+
+    Returns:
+        EV/EBITDA multiple for the industry and cycle phase
+    """
+    profiles, _ = _load_profiles()
+
+    if industry not in profiles:
+        industry = "default"
+
+    profile = profiles[industry]
+    multiples = profile.get("valuation_multiples", {}).get("ev_ebitda", {})
+
+    # Map cycle_phase to YAML key format
+    key_mapping = {
+        "bottom": "cycle_bottom",
+        "normal": "cycle_normal",
+        "peak": "cycle_peak",
+    }
+    key = key_mapping.get(cycle_phase, "cycle_normal")
+
+    # Get the multiple or fallback to default
+    multiple = multiples.get(key)
+
+    if multiple is None:
+        # Fallback to default industry
+        default_multiples = profiles.get("default", {}).get("valuation_multiples", {}).get("ev_ebitda", {})
+        multiple = default_multiples.get(key, 8.0)  # Ultimate fallback: 8x
+
+    logger.debug(f"[Industry] EV/EBITDA multiple for {industry} ({cycle_phase}): {multiple}x")
+    return float(multiple)
+
+
+def get_pe_multiple(industry: str, stage: str = "normal") -> float | None:
+    """
+    Get industry-specific P/E multiple.
+
+    Args:
+        industry: Industry key
+        stage: "rd_stage", "growth_stage", "mature_stage", "cycle_bottom", "cycle_normal", "cycle_peak"
+
+    Returns:
+        P/E multiple or None if PE not applicable (e.g., R&D stage)
+    """
+    profiles, _ = _load_profiles()
+
+    if industry not in profiles:
+        industry = "default"
+
+    profile = profiles[industry]
+    multiples = profile.get("valuation_multiples", {}).get("pe", {})
+
+    # Try exact key match
+    multiple = multiples.get(stage)
+
+    # Fallback mapping
+    if multiple is None:
+        key_mapping = {
+            "bottom": "cycle_bottom",
+            "normal": "cycle_normal",
+            "peak": "cycle_peak",
+        }
+        multiple = multiples.get(key_mapping.get(stage, stage))
+
+    return float(multiple) if multiple is not None else None
+
+
+def get_ps_multiple(industry: str, stage: str = "normal") -> float:
+    """
+    Get industry-specific P/S (Price-to-Sales) multiple.
+
+    Args:
+        industry: Industry key
+        stage: "loss_making", "growth_stage", "mature_stage", "rd_stage", "cycle_normal"
+
+    Returns:
+        P/S multiple for the industry
+    """
+    profiles, _ = _load_profiles()
+
+    if industry not in profiles:
+        industry = "default"
+
+    profile = profiles[industry]
+    multiples = profile.get("valuation_multiples", {}).get("ps", {})
+
+    # Try exact key match
+    multiple = multiples.get(stage)
+
+    # Fallback to normal/growth
+    if multiple is None:
+        multiple = multiples.get("cycle_normal") or multiples.get("growth_stage") or 4.0
+
+    return float(multiple)
+
+
+def get_pb_multiple(industry: str, cycle_phase: str = "normal") -> float:
+    """
+    Get industry-specific P/B (Price-to-Book) multiple.
+
+    Args:
+        industry: Industry key
+        cycle_phase: "bottom", "normal", "peak", "undervalued", "fair_value", "overvalued"
+
+    Returns:
+        P/B multiple for the industry
+    """
+    profiles, _ = _load_profiles()
+
+    if industry not in profiles:
+        industry = "default"
+
+    profile = profiles[industry]
+    multiples = profile.get("valuation_multiples", {}).get("pb", {})
+
+    # Map cycle_phase to YAML key format
+    key_mapping = {
+        "bottom": "cycle_bottom",
+        "normal": "cycle_normal",
+        "peak": "cycle_peak",
+        "fair": "fair_value",
+    }
+    key = key_mapping.get(cycle_phase, cycle_phase)
+
+    multiple = multiples.get(key)
+
+    if multiple is None:
+        multiple = multiples.get("cycle_normal") or multiples.get("fair_value") or 1.5
+
+    return float(multiple)
+
+
 def get_industry_from_watchlist(ticker: str, watchlist_path: Path | None = None) -> str:
     """
     Get industry classification from watchlist.yaml.

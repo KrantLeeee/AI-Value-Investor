@@ -38,6 +38,8 @@ from src.agents.industry_classifier import (
     detect_healthcare_rd_stage,
     get_healthcare_rd_valuation_config,
     get_healthcare_mature_valuation_config,
+    get_ev_ebitda_multiple,
+    classify_industry,
 )
 from src.utils.logger import get_logger
 
@@ -732,13 +734,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 ebitda = ni * 1.5
                 logger.debug("[Valuation] %s: estimated EBITDA=%.0f亿 from NI×1.5", ticker, ebitda / 1e8)
 
-    _is_oil = industry and any(k in (industry or "").lower() for k in ["oil", "energy"])
-    _ev_multiple = INDUSTRY_EV_EBITDA_OIL if _is_oil else INDUSTRY_EV_EBITDA
+    # Phase 3: Use industry-specific EV/EBITDA multiple from industry_profiles.yaml
+    industry_class = classify_industry(industry) if industry else "default"
+    _ev_multiple = get_ev_ebitda_multiple(industry_class, cycle_phase="normal")
 
     if ebitda and ebitda > 0:
         ev_ebitda_total = ebitda * _ev_multiple
         results["ev_ebitda_value"] = ev_ebitda_total
-        detail_lines.append(f"EV/EBITDA ({_ev_multiple}x): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+        results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
+        detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
         ev_ebitda_value = ev_ebitda_total
         # Per-share estimate
         if shares and shares > 0:
@@ -886,18 +890,22 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             detail_lines.append("⚠ DDM估值无法计算（缺少股息数据）")
 
     # ── 3g. Cycle-adjusted EV/EBITDA (Phase 2: for cyclical stocks) ──────────
-    # Use cycle-bottom multiples instead of current period
+    # Use cycle-bottom multiples instead of current period from industry_profiles.yaml
     ev_ebitda_cycle_per_share = None
 
     if is_cyclical_stock and ebitda and ebitda > 0 and shares and shares > 0:
-        # Use cycle-bottom EV/EBITDA multiple
-        ev_ebitda_cycle_total = ebitda * EV_EBITDA_CYCLE_BOTTOM
+        # Use industry-specific cycle multiples
+        _ev_cycle_bottom = get_ev_ebitda_multiple(industry_class, cycle_phase="bottom")
+        _ev_cycle_normal = get_ev_ebitda_multiple(industry_class, cycle_phase="normal")
+        _ev_cycle_peak = get_ev_ebitda_multiple(industry_class, cycle_phase="peak")
+
+        ev_ebitda_cycle_total = ebitda * _ev_cycle_bottom
         ev_ebitda_cycle_per_share = ev_ebitda_cycle_total / shares
         results["ev_ebitda_cycle_per_share"] = round(ev_ebitda_cycle_per_share, 2)
-        results["ev_ebitda_cycle_multiple"] = EV_EBITDA_CYCLE_BOTTOM
+        results["ev_ebitda_cycle_multiple"] = _ev_cycle_bottom
         detail_lines.append(
-            f"周期底部EV/EBITDA ({EV_EBITDA_CYCLE_BOTTOM}x): "
-            f"¥{ev_ebitda_cycle_per_share:.2f}/股 (vs 正常{EV_EBITDA_CYCLE_NORMAL}x, 顶部{EV_EBITDA_CYCLE_PEAK}x)"
+            f"周期底部EV/EBITDA ({_ev_cycle_bottom:.1f}x): "
+            f"¥{ev_ebitda_cycle_per_share:.2f}/股 (vs 正常{_ev_cycle_normal:.1f}x, 顶部{_ev_cycle_peak:.1f}x)"
         )
 
     # ── 3h. Cycle-bottom P/B (Phase 2: for cyclical stocks) ──────────────────
