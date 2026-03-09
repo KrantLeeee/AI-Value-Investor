@@ -411,6 +411,8 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # Apply cyclical sector WACC premium
     _is_cyclical = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "mining", "steel"])
+    # Flag for oil services P/B target
+    _is_oil = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "油", "石油", "油服", "海油"])
     if _is_cyclical:
         wacc = wacc + WACC_CYCLE_ADDON
         logger.info("[Valuation] %s: cyclical sector → WACC +50bp → %.2f%%", ticker, wacc * 100)
@@ -488,6 +490,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     is_loss_making_tech = False
     net_margin = None
     revenue_growth = None
+    net_income = None  # Initialize to None for healthcare detection fallback
 
     if income_rows and len(income_rows) >= 1:
         revenue = _safe(income_rows[0].get("revenue"))
@@ -634,7 +637,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             net_income=net_income,
             net_margin=net_margin,
             rd_ratio=None,  # TODO: Get R&D ratio from income statement if available
-            revenue_growth=revenue_yoy,
+            revenue_growth=revenue_growth,
         )
 
         results["is_healthcare_stock"] = True
