@@ -466,3 +466,187 @@ def generate_sensitivity_matrix(
         "growth_values": growth_values.tolist(),
         "current_wacc": wacc_current,
     }
+
+
+def generate_sensitivity_heatmap(
+    base_fcf: float,
+    shares: float,
+    current_price: float,
+    wacc_range: tuple[float, float] = (0.06, 0.14),
+    growth_range: tuple[float, float] = (0.00, 0.08),
+    terminal_growth: float = 0.025,
+    years: int = 10,
+    grid_size: int = 7,
+) -> dict:
+    """
+    Generate 2D WACC × Growth heatmap with implied market assumptions.
+
+    P2 Enhancement: Shows what WACC/growth combination the market is implying
+    at the current stock price. Helps investors understand "what the market is betting on".
+
+    Args:
+        base_fcf: Base free cash flow (latest year)
+        shares: Shares outstanding
+        current_price: Current market price per share
+        wacc_range: (min, max) WACC range to test
+        growth_range: (min, max) perpetual growth range to test
+        terminal_growth: Terminal growth rate for explicit period
+        years: Explicit forecast period
+        grid_size: Number of grid points per axis
+
+    Returns:
+        Dictionary with:
+        - matrix: 2D array of DCF values [wacc_idx][growth_idx]
+        - wacc_axis: WACC values tested
+        - growth_axis: Growth values tested
+        - implied_wacc: WACC implied by current market price
+        - implied_growth: Growth implied by current market price
+        - implied_cell: (wacc_idx, growth_idx) of cell closest to current price
+        - current_price: Input current price
+        - valuation_zones: Classification of each cell (undervalued/fair/overvalued)
+    """
+    wacc_steps = np.linspace(wacc_range[0], wacc_range[1], grid_size)
+    growth_steps = np.linspace(growth_range[0], growth_range[1], grid_size)
+
+    matrix = np.zeros((grid_size, grid_size))
+    valuation_zones = [[None for _ in range(grid_size)] for _ in range(grid_size)]
+
+    for i, wacc in enumerate(wacc_steps):
+        for j, growth in enumerate(growth_steps):
+            # DCF calculation with explicit forecast + terminal value
+            pv = 0.0
+            fcf = base_fcf
+
+            # Explicit period (use terminal_growth for FCF growth during explicit period)
+            for yr in range(1, years + 1):
+                fcf *= (1 + terminal_growth)
+                pv += fcf / ((1 + wacc) ** yr)
+
+            # Terminal value using perpetual growth (j-axis value)
+            if wacc > growth:
+                terminal_fcf = fcf * (1 + growth)
+                terminal_value = terminal_fcf / (wacc - growth)
+                pv += terminal_value / ((1 + wacc) ** years)
+            else:
+                # Invalid: growth >= wacc leads to infinite value
+                pv = float('inf')
+
+            # Per share value
+            if shares > 0 and not np.isinf(pv):
+                per_share = pv / shares
+            else:
+                per_share = 0.0
+
+            matrix[i, j] = per_share
+
+            # Classify valuation zone
+            if per_share > 0:
+                premium = (per_share - current_price) / current_price
+                if premium > 0.20:
+                    valuation_zones[i][j] = "undervalued"  # >20% upside
+                elif premium < -0.20:
+                    valuation_zones[i][j] = "overvalued"   # >20% downside
+                else:
+                    valuation_zones[i][j] = "fair"          # ±20%
+
+    # Find implied assumptions (cell closest to current price)
+    valid_matrix = np.where(np.isinf(matrix), np.nan, matrix)
+    diff = np.abs(valid_matrix - current_price)
+    min_idx = np.unravel_index(np.nanargmin(diff), diff.shape)
+
+    implied_wacc = wacc_steps[min_idx[0]]
+    implied_growth = growth_steps[min_idx[1]]
+
+    logger.info(
+        f"[WACC] Sensitivity heatmap: current_price=¥{current_price:.2f}, "
+        f"implied WACC={implied_wacc*100:.1f}%, implied growth={implied_growth*100:.1f}%"
+    )
+
+    return {
+        "matrix": matrix.tolist(),
+        "wacc_axis": wacc_steps.tolist(),
+        "growth_axis": growth_steps.tolist(),
+        "implied_wacc": float(implied_wacc),
+        "implied_growth": float(implied_growth),
+        "implied_cell": (int(min_idx[0]), int(min_idx[1])),
+        "current_price": current_price,
+        "valuation_zones": valuation_zones,
+    }
+
+
+def format_sensitivity_heatmap(heatmap_data: dict) -> str:
+    """
+    Format sensitivity heatmap as markdown table with visual indicators.
+
+    Visual indicators:
+    - 🟢 Green: >20% above current price (undervalued)
+    - 🟡 Yellow: within ±20% of current price (fair)
+    - 🔴 Red: >20% below current price (overvalued)
+    - ⭐ Star: implied assumptions cell (closest to current price)
+
+    Args:
+        heatmap_data: Output from generate_sensitivity_heatmap()
+
+    Returns:
+        Markdown formatted heatmap string
+    """
+    matrix = heatmap_data["matrix"]
+    wacc_axis = heatmap_data["wacc_axis"]
+    growth_axis = heatmap_data["growth_axis"]
+    implied_cell = heatmap_data["implied_cell"]
+    current_price = heatmap_data["current_price"]
+    zones = heatmap_data["valuation_zones"]
+
+    lines = []
+    lines.append("### 敏感性热图 (WACC × 永续增长率)\n")
+
+    # Header row with growth values
+    header = "| WACC \\ 增长 |"
+    for g in growth_axis:
+        header += f" {g*100:.1f}% |"
+    lines.append(header)
+
+    # Separator
+    sep = "|:------------|"
+    for _ in growth_axis:
+        sep += ":-------:|"
+    lines.append(sep)
+
+    # Data rows
+    for i, wacc in enumerate(wacc_axis):
+        row = f"| **{wacc*100:.1f}%** |"
+        for j, _ in enumerate(growth_axis):
+            value = matrix[i][j]
+            zone = zones[i][j]
+            is_implied = (i, j) == tuple(implied_cell)
+
+            # Format cell value
+            if value == 0 or value == float('inf'):
+                cell = "—"
+            else:
+                # Add indicator
+                if is_implied:
+                    indicator = "⭐"
+                elif zone == "undervalued":
+                    indicator = "🟢"
+                elif zone == "overvalued":
+                    indicator = "🔴"
+                else:
+                    indicator = "🟡"
+
+                cell = f"{indicator}¥{value:.0f}"
+
+            row += f" {cell} |"
+        lines.append(row)
+
+    # Add legend and implied assumptions
+    lines.append("")
+    lines.append(f"**当前市价**: ¥{current_price:.2f}")
+    lines.append(
+        f"**市场隐含假设**: WACC={heatmap_data['implied_wacc']*100:.1f}%, "
+        f"永续增长={heatmap_data['implied_growth']*100:.1f}% (⭐标记)"
+    )
+    lines.append("")
+    lines.append("图例: 🟢低估(>20%上涨空间) | 🟡合理(±20%) | 🔴高估(>20%下跌风险)")
+
+    return "\n".join(lines)

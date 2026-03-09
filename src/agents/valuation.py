@@ -23,7 +23,12 @@ from src.data.database import (
     insert_agent_signal,
 )
 from src.data.models import AgentSignal
-from src.agents.wacc import calculate_wacc, generate_sensitivity_matrix
+from src.agents.wacc import (
+    calculate_wacc,
+    generate_sensitivity_matrix,
+    generate_sensitivity_heatmap,
+    format_sensitivity_heatmap,
+)
 from src.agents.industry_classifier import (
     get_industry_from_watchlist,
     detect_loss_making_tech_stock,
@@ -691,6 +696,31 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 )
                 results["sensitivity_matrix"] = sensitivity
                 logger.debug(f"[Valuation] Generated sensitivity matrix for {ticker}")
+
+                # Generate sensitivity heatmap with implied market assumptions (P2 enhancement)
+                if current_price and current_price > 0:
+                    heatmap = generate_sensitivity_heatmap(
+                        base_fcf=base_fcf,
+                        shares=shares,
+                        current_price=current_price,
+                        wacc_range=(max(0.05, wacc * 0.6), min(0.18, wacc * 1.5)),  # Wider range
+                        growth_range=(0.00, 0.08),  # Perpetual growth: 0-8%
+                        terminal_growth=TERMINAL_GROWTH,
+                        years=PROJECTION_YEARS,
+                        grid_size=7,
+                    )
+                    results["sensitivity_heatmap"] = heatmap
+                    results["implied_wacc"] = heatmap["implied_wacc"]
+                    results["implied_growth"] = heatmap["implied_growth"]
+
+                    # Add formatted heatmap to detail_lines
+                    heatmap_md = format_sensitivity_heatmap(heatmap)
+                    detail_lines.append("")
+                    detail_lines.append(heatmap_md)
+                    logger.info(
+                        f"[Valuation] {ticker}: implied WACC={heatmap['implied_wacc']*100:.1f}%, "
+                        f"implied growth={heatmap['implied_growth']*100:.1f}%"
+                    )
         else:
             fcf_str = f"FCF={fcf/1e8:.1f}亿" if fcf is not None else "FCF缺失"
             ocf_str = f"OCF={ocf/1e8:.1f}亿" if ocf is not None else "OCF缺失"

@@ -267,3 +267,244 @@ def test_generate_sensitivity_matrix_values_increase_with_growth():
     fixed_wacc_row = matrix_result["matrix"][0]
     for i in range(len(fixed_wacc_row) - 1):
         assert fixed_wacc_row[i] < fixed_wacc_row[i + 1]
+
+
+# ── Phase 2: Sensitivity Heatmap Tests ─────────────────────────────────────
+
+from src.agents.wacc import generate_sensitivity_heatmap, format_sensitivity_heatmap
+
+
+def test_generate_sensitivity_heatmap_structure():
+    """Heatmap should return expected structure."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,  # 10亿 FCF
+        shares=1_000_000_000,    # 10亿股
+        current_price=15.0,      # ¥15/股
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.00, 0.08),
+        terminal_growth=0.025,
+        years=10,
+        grid_size=7,
+    )
+
+    # Check structure
+    assert "matrix" in result
+    assert "wacc_axis" in result
+    assert "growth_axis" in result
+    assert "implied_wacc" in result
+    assert "implied_growth" in result
+    assert "implied_cell" in result
+    assert "current_price" in result
+    assert "valuation_zones" in result
+
+    # Check dimensions
+    assert len(result["matrix"]) == 7
+    assert len(result["matrix"][0]) == 7
+    assert len(result["wacc_axis"]) == 7
+    assert len(result["growth_axis"]) == 7
+    assert len(result["valuation_zones"]) == 7
+
+
+def test_generate_sensitivity_heatmap_wacc_range():
+    """WACC axis should span the specified range."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.00, 0.08),
+        grid_size=7,
+    )
+
+    assert abs(result["wacc_axis"][0] - 0.06) < 0.001
+    assert abs(result["wacc_axis"][-1] - 0.14) < 0.001
+
+
+def test_generate_sensitivity_heatmap_growth_range():
+    """Growth axis should span the specified range."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.00, 0.08),
+        grid_size=7,
+    )
+
+    assert abs(result["growth_axis"][0] - 0.00) < 0.001
+    assert abs(result["growth_axis"][-1] - 0.08) < 0.001
+
+
+def test_generate_sensitivity_heatmap_implied_assumptions():
+    """Implied WACC and growth should be within tested ranges."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.00, 0.08),
+    )
+
+    # Implied values should be within range
+    assert 0.06 <= result["implied_wacc"] <= 0.14
+    assert 0.00 <= result["implied_growth"] <= 0.08
+
+    # Implied cell should be valid indices
+    assert 0 <= result["implied_cell"][0] < 7
+    assert 0 <= result["implied_cell"][1] < 7
+
+
+def test_generate_sensitivity_heatmap_valuation_zones():
+    """Valuation zones should be correctly classified."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.00, 0.08),
+    )
+
+    zones = result["valuation_zones"]
+    current_price = result["current_price"]
+    matrix = result["matrix"]
+
+    # Check that zones are correctly assigned based on value vs price
+    for i in range(7):
+        for j in range(7):
+            val = matrix[i][j]
+            zone = zones[i][j]
+            if val > 0 and val != float('inf'):
+                premium = (val - current_price) / current_price
+                if premium > 0.20:
+                    assert zone == "undervalued"
+                elif premium < -0.20:
+                    assert zone == "overvalued"
+                else:
+                    assert zone == "fair"
+
+
+def test_generate_sensitivity_heatmap_dcf_decreases_with_wacc():
+    """DCF value should decrease as WACC increases (for same growth)."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.06, 0.14),
+        growth_range=(0.03, 0.03),  # Fixed growth
+        grid_size=5,
+    )
+
+    # For fixed growth, DCF should decrease as WACC increases
+    col = [result["matrix"][i][0] for i in range(5)]
+    for i in range(len(col) - 1):
+        assert col[i] > col[i + 1], f"DCF should decrease: {col[i]} > {col[i+1]}"
+
+
+def test_generate_sensitivity_heatmap_dcf_increases_with_growth():
+    """DCF value should increase as growth increases (for same WACC)."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.10, 0.10),  # Fixed WACC
+        growth_range=(0.01, 0.06),  # Valid range where growth < WACC
+        grid_size=5,
+    )
+
+    # For fixed WACC, DCF should increase as growth increases
+    row = result["matrix"][0]
+    for i in range(len(row) - 1):
+        assert row[i] < row[i + 1], f"DCF should increase: {row[i]} < {row[i+1]}"
+
+
+def test_generate_sensitivity_heatmap_invalid_growth_ge_wacc():
+    """Growth >= WACC should result in infinity (invalid DCF)."""
+    result = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.05, 0.05),  # Low WACC
+        growth_range=(0.06, 0.06),  # Growth > WACC
+        grid_size=3,
+    )
+
+    # When growth >= WACC, terminal value is infinite
+    # Implementation should handle this gracefully (inf or 0)
+    val = result["matrix"][0][0]
+    assert val == float('inf') or val == 0.0
+
+
+def test_format_sensitivity_heatmap_markdown():
+    """Format should return valid markdown table."""
+    heatmap_data = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.08, 0.12),
+        growth_range=(0.02, 0.05),
+        grid_size=5,
+    )
+
+    markdown = format_sensitivity_heatmap(heatmap_data)
+
+    # Check markdown structure
+    assert "### 敏感性热图" in markdown
+    assert "| WACC \\ 增长 |" in markdown
+    assert "**当前市价**" in markdown
+    assert "**市场隐含假设**" in markdown
+    assert "图例:" in markdown
+
+
+def test_format_sensitivity_heatmap_contains_indicators():
+    """Format should include emoji indicators."""
+    heatmap_data = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.08, 0.12),
+        growth_range=(0.02, 0.05),
+        grid_size=5,
+    )
+
+    markdown = format_sensitivity_heatmap(heatmap_data)
+
+    # Should contain at least one indicator emoji
+    has_indicator = any(
+        indicator in markdown
+        for indicator in ["🟢", "🟡", "🔴", "⭐"]
+    )
+    assert has_indicator
+
+
+def test_format_sensitivity_heatmap_star_implied():
+    """Star indicator should mark implied assumptions cell."""
+    heatmap_data = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.08, 0.12),
+        growth_range=(0.02, 0.05),
+        grid_size=5,
+    )
+
+    markdown = format_sensitivity_heatmap(heatmap_data)
+
+    # Should have star in table (once in data rows) plus once in legend
+    assert "⭐" in markdown
+    # Star appears in: (1) one cell in the table, (2) legend text "(⭐标记)"
+    assert markdown.count("⭐") == 2
+
+
+def test_format_sensitivity_heatmap_shows_price():
+    """Format should display current market price."""
+    heatmap_data = generate_sensitivity_heatmap(
+        base_fcf=1_000_000_000,
+        shares=1_000_000_000,
+        current_price=15.0,
+        wacc_range=(0.08, 0.12),
+        growth_range=(0.02, 0.05),
+    )
+
+    markdown = format_sensitivity_heatmap(heatmap_data)
+
+    assert "¥15.00" in markdown
