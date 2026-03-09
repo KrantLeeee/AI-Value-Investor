@@ -19,6 +19,12 @@ from src.data.database import (
     insert_agent_signal,
 )
 from src.data.models import AgentSignal, QualityReport
+from src.data.macro_data import get_macro_snapshot, MacroSnapshot
+from src.data.industry_macro_mapping import (
+    get_macro_prompt_context,
+    get_industry_type,
+    INDUSTRY_PROFILES,
+)
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
 from src.agents.report_config import CHAPTERS, validate_chapter
@@ -308,9 +314,25 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None) -> str:
 
 
 
-def _render_contrarian_chapter(contrarian_signal: AgentSignal | None) -> str:
+def _render_contrarian_chapter(
+    contrarian_signal: AgentSignal | None,
+    ticker: str = "",
+    macro_snapshot: MacroSnapshot | None = None,
+) -> str:
     """Build Chapter 5: Risk Factors & Dialectical Analysis."""
     lines = ["## 5. 风险因素与辩证分析", ""]
+
+    # P2: Inject macro risk factors at the beginning
+    if macro_snapshot and macro_snapshot.available:
+        industry_type = get_industry_type(ticker)
+        profile = INDUSTRY_PROFILES.get(industry_type) if industry_type != "unknown" else None
+        profile_name = profile.name_cn if profile else "该行业"
+        macro_risk_text = macro_snapshot.to_risk_factor_text(profile_name)
+        if macro_risk_text:
+            lines.append("### 宏观景气度风险")
+            lines.append("")
+            lines.append(f"> {macro_risk_text}")
+            lines.append("")
 
     if not contrarian_signal:
         lines.append("辩证分析未运行。")
@@ -522,7 +544,8 @@ def _generate_llm_chapter(
     signals: dict[str, AgentSignal],
     quality_report: QualityReport,
     industry_context: str,
-    company_context: dict | None = None,  # NEW
+    company_context: dict | None = None,
+    macro_snapshot: MacroSnapshot | None = None,  # P2: Macro context
 ) -> str:
     """
     Generate a single LLM chapter with validation and retry.
@@ -562,6 +585,7 @@ def _generate_llm_chapter(
     user_prompt = _build_chapter_user_prompt(
         chapter_key, user_template, ticker, market, signals, quality_report, industry_context,
         company_context=company_context,
+        macro_snapshot=macro_snapshot,
     )
 
     # Retry loop with validation
@@ -598,7 +622,8 @@ def _build_chapter_user_prompt(
     signals: dict[str, AgentSignal],
     quality_report: QualityReport,
     industry_context: str,
-    company_context: dict | None = None,  # NEW
+    company_context: dict | None = None,
+    macro_snapshot: MacroSnapshot | None = None,  # P2: Macro context
 ) -> str:
     """Build user prompt for LLM chapter with data injection."""
 
@@ -623,7 +648,13 @@ def _build_chapter_user_prompt(
         net_margin_str = f"{fund.metrics.get('net_margin_pct', 0):.1f}" if fund else "N/A"
         cr = fund.metrics.get('current_ratio') if fund else None
         cr_str = f"{cr:.2f}" if cr else "N/A"
-        return user_template.format(
+
+        # P2: Generate macro context for Ch1
+        macro_context = ""
+        if macro_snapshot:
+            macro_context = get_macro_prompt_context(ticker, macro_snapshot)
+
+        base_prompt = user_template.format(
             ticker=ticker,
             analysis_date=str(_date.today()),
             company_name=ctx.get("company_name", ticker),
@@ -638,6 +669,12 @@ def _build_chapter_user_prompt(
             net_margin=net_margin_str,
             current_ratio=cr_str,
         )
+
+        # Inject macro context if available
+        if macro_context:
+            base_prompt += f"\n\n--- 宏观景气度参考数据 ---\n{macro_context}\n---"
+
+        return base_prompt
 
     elif chapter_key == "ch2_competitive":
         # BUG-05 FIX: Inject industry context for proper competitive analysis
@@ -963,6 +1000,19 @@ def run(
     # For MVP, we'll use empty string and let LLM infer
     industry_context = ""
 
+    # P2: Fetch macro snapshot (4-hour cached, failure does not block report)
+    macro_snapshot = None
+    try:
+        macro_snapshot = get_macro_snapshot(use_cache=True, cache_ttl_hours=4)
+        logger.info(
+            "[Report] Macro snapshot: available=%s, periods=%d, mfg_signal=%s",
+            macro_snapshot.available,
+            macro_snapshot.periods_fetched,
+            macro_snapshot.manufacturing_signal
+        )
+    except Exception as e:
+        logger.warning("[Report] Macro data fetch failed (non-blocking): %s", e)
+
     # Ensure quality_report exists for fallback
     if quality_report is None:
         from src.data.models import QualityReport
@@ -980,11 +1030,12 @@ def run(
     chapters = {}
 
     try:
-        # Ch1: Industry Background (LLM)
+        # Ch1: Industry Background (LLM) - with macro context
         logger.info("[Report] Generating Ch1: Industry Background")
         chapters["ch1_industry"] = _generate_llm_chapter(
             "ch1_industry", ticker, market, signals, quality_report, industry_context,
             company_context=company_context,
+            macro_snapshot=macro_snapshot,
         )
 
         # Ch2: Competitive Analysis (LLM)
@@ -1004,9 +1055,13 @@ def run(
         logger.info("[Report] Generating Ch4: Valuation Analysis")
         chapters["ch4_valuation"] = _build_valuation_analysis(signals.get("valuation"))
 
-        # Ch5: Risk Factors (Contrarian Template)
+        # Ch5: Risk Factors (Contrarian Template) - with macro risk factors
         logger.info("[Report] Generating Ch5: Risk Factors (Contrarian)")
-        chapters["ch5_risks"] = _render_contrarian_chapter(signals.get("contrarian"))
+        chapters["ch5_risks"] = _render_contrarian_chapter(
+            signals.get("contrarian"),
+            ticker=ticker,
+            macro_snapshot=macro_snapshot,
+        )
 
         # Ch6: Market Sentiment (LLM)
         logger.info("[Report] Generating Ch6: Market Sentiment")
