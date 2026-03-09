@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.data.database import get_financial_metrics, get_latest_prices
-from src.agents.industry_classifier import classify_industry
+from src.agents.industry_classifier import classify_industry, get_industry_comparables
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
 
@@ -75,12 +75,11 @@ def get_comparables_from_watchlist(ticker: str) -> list[str]:
 
 def auto_select_comparables(ticker: str, sector: str, limit: int = 5) -> list[str]:
     """
-    Auto-select comparable companies using AKShare API.
+    Auto-select comparable companies using industry profile or AKShare API.
 
-    TODO: Implement AKShare integration
-    - Use ak.stock_zh_a_spot_em() to get all A-share stocks
-    - Filter by same sector/industry
-    - Select top N by market cap similarity
+    Fallback order:
+    1. Industry profile comparables from industry_profiles.yaml
+    2. TODO: AKShare API integration for dynamic selection
 
     Args:
         ticker: Target stock ticker
@@ -90,11 +89,31 @@ def auto_select_comparables(ticker: str, sector: str, limit: int = 5) -> list[st
     Returns:
         List of comparable tickers
     """
+    # First, try to get comparables from industry profile
+    industry = classify_industry(sector)
+    industry_comps = get_industry_comparables(industry)
+
+    if industry_comps:
+        # Filter out the target ticker and take up to limit
+        comp_tickers = [
+            c["ticker"] for c in industry_comps
+            if c.get("ticker") != ticker
+        ][:limit]
+
+        if comp_tickers:
+            logger.info(
+                f"[Comparables] Using {len(comp_tickers)} comparables from "
+                f"{industry} industry profile"
+            )
+            return comp_tickers
+
     # TODO: Implement AKShare auto-selection
-    # For now, return empty list
+    # - Use ak.stock_zh_a_spot_em() to get all A-share stocks
+    # - Filter by same sector/industry
+    # - Select top N by market cap similarity
     logger.debug(
-        f"[Comparables] Auto-selection not yet implemented, "
-        f"returning empty list for {ticker}"
+        f"[Comparables] No industry comparables found for {ticker}, "
+        f"returning empty list"
     )
     return []
 

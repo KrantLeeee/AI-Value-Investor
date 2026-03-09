@@ -322,6 +322,28 @@ def get_pb_multiple(industry: str, cycle_phase: str = "normal") -> float:
     return float(multiple)
 
 
+def get_industry_comparables(industry: str) -> list[dict]:
+    """
+    Get industry-specific comparable companies from industry_profiles.yaml.
+
+    Args:
+        industry: Industry key from classify_industry()
+
+    Returns:
+        List of comparable company dicts with ticker, name, and note
+    """
+    profiles, _ = _load_profiles()
+
+    if industry not in profiles:
+        industry = "default"
+
+    profile = profiles[industry]
+    comparables = profile.get("comparable_companies", [])
+
+    logger.debug(f"[Industry] Found {len(comparables)} comparables for {industry}")
+    return comparables
+
+
 def get_industry_from_watchlist(ticker: str, watchlist_path: Path | None = None) -> str:
     """
     Get industry classification from watchlist.yaml.

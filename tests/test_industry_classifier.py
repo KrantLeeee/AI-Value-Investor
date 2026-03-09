@@ -312,3 +312,39 @@ def test_get_pb_multiple_banking():
     assert undervalued < fair
     assert 0.5 <= undervalued <= 0.7
     assert 0.9 <= fair <= 1.1
+
+
+def test_get_industry_comparables_energy():
+    """Energy industry should have comparable companies."""
+    from src.agents.industry_classifier import get_industry_comparables
+
+    comparables = get_industry_comparables("energy")
+
+    assert len(comparables) >= 3
+    # Each comparable should have ticker, name, note
+    for comp in comparables:
+        assert "ticker" in comp
+        assert "name" in comp
+        assert "note" in comp
+
+
+def test_get_industry_comparables_banking():
+    """Banking industry should have comparable companies."""
+    from src.agents.industry_classifier import get_industry_comparables
+
+    comparables = get_industry_comparables("banking")
+
+    assert len(comparables) >= 3
+    # Should include major banks
+    tickers = [c["ticker"] for c in comparables]
+    # 招商银行 or 工商银行 should be in the list
+    assert any("600036" in t or "601398" in t for t in tickers)
+
+
+def test_get_industry_comparables_default():
+    """Default industry should have empty comparables."""
+    from src.agents.industry_classifier import get_industry_comparables
+
+    comparables = get_industry_comparables("default")
+
+    assert comparables == []

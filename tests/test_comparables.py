@@ -55,10 +55,24 @@ def test_get_comparables_from_watchlist_file_error(mock_file):
     assert comparables == []
 
 
-def test_auto_select_comparables_not_implemented():
-    """Auto-selection should return empty list (not implemented)."""
+def test_auto_select_comparables_uses_industry_profile():
+    """Auto-selection should return industry comparables from profile."""
     comparables = auto_select_comparables("600000.SH", "银行", limit=5)
 
+    # Banking industry has comparables in industry_profiles.yaml
+    assert len(comparables) > 0
+    # Should not include the target ticker
+    assert "600000.SH" not in comparables
+    # Should include banking stocks
+    # Note: 600036.SH is 招商银行, a banking comparable
+    assert any("60" in c for c in comparables)
+
+
+def test_auto_select_comparables_unknown_sector():
+    """Auto-selection with unknown sector should return empty list."""
+    comparables = auto_select_comparables("123456.SH", "未知行业", limit=5)
+
+    # Default industry has no comparables defined
     assert comparables == []
 
 
