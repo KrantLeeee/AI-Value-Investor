@@ -91,6 +91,10 @@ class FinancialMetrics(BaseModel):
     fcf_per_share: float | None = None
     market_cap: float | None = None
     enterprise_value: float | None = None
+    # P0-1: New metrics for 5-year trend analysis
+    roic: float | None = None  # 投入资本回报率 (%)
+    rd_expense_ratio: float | None = None  # 研发费用率 (%) - tech/pharma only
+    receivables_turnover_days: float | None = None  # 应收账款周转天数
     source: str
 
 
@@ -179,6 +183,36 @@ class ScreeningSignal(BaseModel):
     metrics: dict = Field(default_factory=dict)
     dcf_intrinsic_value: float | None = None
     margin_of_safety: float | None = None
+
+
+# ── P0-2 Data Provenance ─────────────────────────────────────────────────────
+
+class CalculationTrace(BaseModel):
+    """
+    P0-2: Calculation transparency — shows how derived metrics are computed.
+
+    Example: ROE = net_income / total_equity * 100
+    """
+    metric_name: str  # e.g., "ROE", "ROIC", "current_ratio"
+    result_value: float
+    formula: str  # Human-readable formula: "net_income / total_equity * 100"
+    inputs: dict[str, dict]  # {input_name: {value, source, period}}
+    unit: str = ""  # e.g., "%", "days", "ratio"
+    calculated_at: datetime = Field(default_factory=datetime.now)
+
+
+class DataValidationStatus(BaseModel):
+    """
+    P0-2: Multi-source cross-validation status.
+
+    Tracks whether a data point has been confirmed by ≥2 independent sources.
+    """
+    field_name: str  # e.g., "net_income", "revenue"
+    value: float
+    sources: list[str]  # e.g., ["akshare", "eastmoney"]
+    is_validated: bool  # True if ≥2 sources agree within tolerance
+    discrepancy_pct: float = 0.0  # Max discrepancy between sources (%)
+    validation_time: datetime = Field(default_factory=datetime.now)
 
 
 # ── Portfolio ─────────────────────────────────────────────────────────────────

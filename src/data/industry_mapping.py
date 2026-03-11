@@ -1,0 +1,179 @@
+"""Industry classification and representative stock mapping.
+
+Uses AKShare APIs verified on 2026-03-11:
+- stock_industry_change_cninfo: Stock → Industry mapping
+- stock_individual_info_em: Stock info including industry
+"""
+
+import akshare as ak
+
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Manually curated representative stocks for major industries
+# Format: {industry_name: [(ticker, name), ...]}
+INDUSTRY_REPRESENTATIVES = {
+    "银行": [
+        ("601398", "工商银行"),
+        ("601939", "建设银行"),
+        ("601288", "农业银行"),
+        ("601988", "中国银行"),
+        ("600036", "招商银行"),
+        ("000001", "平安银行"),
+        ("601166", "兴业银行"),
+        ("600000", "浦发银行"),
+        ("601818", "光大银行"),
+        ("002142", "宁波银行"),
+    ],
+    "白酒": [
+        ("600519", "贵州茅台"),
+        ("000858", "五粮液"),
+        ("000568", "泸州老窖"),
+        ("002304", "洋河股份"),
+        ("000596", "古井贡酒"),
+        ("600779", "水井坊"),
+        ("603369", "今世缘"),
+        ("600559", "老白干酒"),
+    ],
+    "保险": [
+        ("601318", "中国平安"),
+        ("601628", "中国人寿"),
+        ("601336", "新华保险"),
+        ("601601", "中国太保"),
+        ("601319", "中国人保"),
+    ],
+    "房地产": [
+        ("000002", "万科A"),
+        ("001979", "招商蛇口"),
+        ("600048", "保利发展"),
+        ("600383", "金地集团"),
+        ("000069", "华侨城A"),
+    ],
+    "医药": [
+        ("600276", "恒瑞医药"),
+        ("000538", "云南白药"),
+        ("600196", "复星医药"),
+        ("002007", "华兰生物"),
+        ("300760", "迈瑞医疗"),
+        ("603259", "药明康德"),
+        ("000963", "华东医药"),
+        ("002001", "新和成"),
+    ],
+    "电力": [
+        ("600900", "长江电力"),
+        ("601991", "大唐发电"),
+        ("600886", "国投电力"),
+        ("000027", "深圳能源"),
+        ("600025", "华能水电"),
+        ("003816", "中国广核"),
+        ("601985", "中国核电"),
+    ],
+    "互联网": [
+        ("300059", "东方财富"),
+        ("002230", "科大讯飞"),
+        ("002415", "海康威视"),
+        ("002475", "立讯精密"),
+        ("603881", "数据港"),
+        ("300496", "中科创达"),
+    ],
+    "新能源": [
+        ("300750", "宁德时代"),
+        ("002594", "比亚迪"),
+        ("601012", "隆基绿能"),
+        ("002129", "TCL中环"),
+        ("300274", "阳光电源"),
+    ],
+    "家电": [
+        ("000651", "格力电器"),
+        ("000333", "美的集团"),
+        ("600690", "海尔智家"),
+        ("002508", "老板电器"),
+        ("002242", "九阳股份"),
+    ],
+    "食品饮料": [
+        ("600887", "伊利股份"),
+        ("002714", "牧原股份"),
+        ("603288", "海天味业"),
+        ("002568", "百润股份"),
+        ("600597", "光明乳业"),
+    ],
+}
+
+
+def get_stock_industry(ticker: str) -> str | None:
+    """
+    Get industry classification for a stock.
+
+    Uses CNINFO classification via AKShare.
+    """
+    # Clean ticker (remove .SH/.SZ suffix if present)
+    clean_ticker = ticker.split(".")[0]
+
+    try:
+        df = ak.stock_industry_change_cninfo(symbol=clean_ticker)
+        if df is not None and not df.empty:
+            # Use 巨潮分类 if available
+            juchao_row = df[df["分类标准"] == "巨潮行业分类标准"]
+            if not juchao_row.empty:
+                return juchao_row.iloc[0]["行业大类"]
+            # Fallback to first row
+            return df.iloc[0]["行业大类"]
+    except Exception as e:
+        logger.warning("Failed to get industry for %s via CNINFO: %s", ticker, e)
+
+    # Fallback: check if in representative stocks
+    for industry, stocks in INDUSTRY_REPRESENTATIVES.items():
+        for stock_ticker, _ in stocks:
+            if stock_ticker == clean_ticker:
+                return industry
+
+    return None
+
+
+def get_industry_representatives(industry: str) -> list[dict]:
+    """
+    Get representative stocks for an industry.
+
+    Returns:
+        List of {ticker, name} dicts
+    """
+    # Try exact match first
+    if industry in INDUSTRY_REPRESENTATIVES:
+        return [
+            {"ticker": t, "name": n}
+            for t, n in INDUSTRY_REPRESENTATIVES[industry]
+        ]
+
+    # Try partial match
+    for ind_name, stocks in INDUSTRY_REPRESENTATIVES.items():
+        if ind_name in industry or industry in ind_name:
+            return [
+                {"ticker": t, "name": n}
+                for t, n in stocks
+            ]
+
+    logger.warning("No representatives found for industry: %s", industry)
+    return []
+
+
+def find_industry_for_stock(ticker: str) -> str | None:
+    """
+    Find industry for a stock, trying multiple methods.
+
+    Returns:
+        Industry name or None
+    """
+    # Method 1: Try CNINFO API
+    industry = get_stock_industry(ticker)
+    if industry:
+        return industry
+
+    # Method 2: Check representative stocks
+    clean_ticker = ticker.split(".")[0]
+    for ind_name, stocks in INDUSTRY_REPRESENTATIVES.items():
+        for stock_ticker, _ in stocks:
+            if stock_ticker == clean_ticker:
+                return ind_name
+
+    return None

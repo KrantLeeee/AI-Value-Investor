@@ -203,6 +203,38 @@ def _build_financial_quality_table(
         lines.append(f"| FCF/净利覆盖率 | {_fmt(fcf_ni, '.2f', 'x')} | {_status(fcf_ni, (0.8, 0.5))} |")
         lines.append("")
 
+        # ── P0-1: 5-year trend analysis ──
+        trends = m.get('5_year_trends', {})
+        if trends and not trends.get('insufficient_data'):
+            lines.append("### 5年趋势分析")
+            lines.append("")
+            trend_labels = {"improving": "↑改善", "stable": "→稳定", "declining": "↓下滑", "no_data": "—"}
+            roe_trend = trends.get('roe_trend', 'no_data')
+            roic_trend = trends.get('roic_trend', 'no_data')
+            margin_trend = trends.get('margin_trend', 'no_data')
+            avg_roe = trends.get('avg_roe_5y')
+
+            lines.append("| 指标 | 趋势 | 5年平均 |")
+            lines.append("|:-----|:-----|:--------|")
+            lines.append(f"| ROE | {trend_labels.get(roe_trend, '—')} | {avg_roe:.1f}%" if avg_roe else f"| ROE | {trend_labels.get(roe_trend, '—')} | — |")
+            if roic_trend != 'no_data':
+                avg_roic = trends.get('avg_roic_5y')
+                lines.append(f"| ROIC | {trend_labels.get(roic_trend, '—')} | {avg_roic:.1f}%" if avg_roic else f"| ROIC | {trend_labels.get(roic_trend, '—')} | — |")
+            if margin_trend != 'no_data':
+                lines.append(f"| 毛利率 | {trend_labels.get(margin_trend, '—')} | — |")
+            lines.append("")
+
+        # ── P0-2: Calculation traces ──
+        traces = m.get('calculation_traces', [])
+        if traces:
+            lines.append("### 计算透明度追溯")
+            lines.append("")
+            lines.append("> 以下为派生指标的计算过程，确保数据来源可追溯：")
+            lines.append("")
+            for trace in traces[:3]:  # Show top 3 traces
+                lines.append(f"- **{trace.get('metric', '?')}**: {trace.get('explanation', '')[:200]}")
+            lines.append("")
+
         # ── 评分明细（原始文字）
         lines.append("### 评分明细")
         lines.append("")
@@ -384,6 +416,27 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None, ticker: str 
         lines.append("")
     lines.append(f"**估值模型完整评估**: {valuation_signal.reasoning}")
     lines.append("")
+
+    # P2-1: Industry valuation positioning
+    industry_pos = metrics.get("industry_position")
+    if industry_pos and not industry_pos.get("error"):
+        lines.append("### 行业估值定位")
+        lines.append("")
+        lines.append(f"**所属行业**: {industry_pos.get('industry', '未知')}")
+        lines.append("")
+        lines.append("| 指标 | 本标的 | 行业中位数 | 分位数 |")
+        lines.append("|:-----|:-------|:-----------|:-------|")
+        target_pe = industry_pos.get('target_pe')
+        target_pb = industry_pos.get('target_pb')
+        pe_median = industry_pos.get('industry_pe_median')
+        pb_median = industry_pos.get('industry_pb_median')
+        pe_pct = industry_pos.get('pe_percentile')
+        pb_pct = industry_pos.get('pb_percentile')
+        lines.append(f"| PE(TTM) | {target_pe:.1f}x | {pe_median:.1f}x | {pe_pct:.0f}% |" if target_pe and pe_median else "| PE(TTM) | — | — | — |")
+        lines.append(f"| PB | {target_pb:.1f}x | {pb_median:.1f}x | {pb_pct:.0f}% |" if target_pb and pb_median else "| PB | — | — | — |")
+        lines.append("")
+        lines.append(f"> 同业比较样本: {industry_pos.get('peer_count', 0)}家代表性公司")
+        lines.append("")
 
     return "\n".join(lines)
 

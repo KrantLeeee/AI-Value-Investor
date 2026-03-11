@@ -8,6 +8,9 @@ If LLM is unavailable, returns neutral with a note.
 
 Integrates structured profit warning data from AKShare (业绩预告) for
 forward-looking sentiment analysis.
+
+P1-1: Tavily web search integration for financial news.
+P1-2: Rule-based sentiment scoring for stability.
 """
 
 import json
@@ -22,25 +25,83 @@ logger = get_logger(__name__)
 AGENT_NAME = "sentiment"
 NEWS_LOOKBACK_DAYS = 30
 
+# P1-2: Rule-based sentiment keywords
+POSITIVE_KEYWORDS = [
+    "超预期", "增长", "上涨", "突破", "新高", "利好", "盈利", "回暖",
+    "获得", "签署", "合作", "扩张", "提升", "强劲", "乐观", "创新高",
+    "业绩预增", "大单", "中标", "收购", "分红", "回购",
+]
+NEGATIVE_KEYWORDS = [
+    "下滑", "下降", "亏损", "暴跌", "利空", "调查", "处罚", "风险",
+    "减持", "质押", "违规", "退市", "诉讼", "裁员", "停产", "业绩预减",
+    "业绩首亏", "续亏", "警示", "ST", "暂停", "冻结",
+]
 
-def _get_news_from_db(ticker: str) -> list[str]:
+
+def calculate_rule_based_sentiment(news_items: list) -> float:
+    """
+    P1-2: Calculate sentiment score using keyword matching.
+
+    Returns:
+        Score from 0.0 (very negative) to 1.0 (very positive)
+        0.5 is neutral
+    """
+    if not news_items:
+        return 0.5
+
+    total_positive = 0
+    total_negative = 0
+
+    for item in news_items:
+        # Handle both dict format (new) and string format (legacy/mocked)
+        if isinstance(item, dict):
+            text = f"{item.get('title', '')} {item.get('content', '')}".lower()
+        else:
+            text = str(item).lower()
+
+        for keyword in POSITIVE_KEYWORDS:
+            if keyword in text:
+                total_positive += 1
+
+        for keyword in NEGATIVE_KEYWORDS:
+            if keyword in text:
+                total_negative += 1
+
+    # Normalize to 0-1 scale
+    total = total_positive + total_negative
+    if total == 0:
+        return 0.5
+
+    # positive_ratio: 0 (all negative) to 1 (all positive)
+    positive_ratio = total_positive / total
+
+    # Smooth towards 0.5 for low signal
+    confidence = min(total / 10, 1.0)  # Confidence grows with more signals
+    return 0.5 + (positive_ratio - 0.5) * confidence
+
+
+def _get_news_from_db(ticker: str) -> list[dict]:
     """
     Retrieve recent news headlines from:
     1. manual_docs table (extracted_text from uploaded docs)
     2. In future: a `news` table (to be added when news fetching is implemented)
-    Returns a list of headline/text strings.
+    Returns a list of {title, content, source} dicts.
     """
     docs = get_manual_docs(ticker)
-    headlines = []
+    results = []
     for doc in docs:
         text = doc.get("extracted_text", "") or ""
         # Use first 200 chars per doc as headline proxy
         if text.strip():
-            headlines.append(text.strip()[:200])
-    return headlines
+            results.append({
+                "title": text.strip()[:100],
+                "content": text.strip()[:200],
+                "source": "manual_doc",
+            })
+    return results
 
 
-def _get_news_from_akshare(ticker: str, market: str) -> list[str]:
+def _get_news_from_akshare(ticker: str, market: str) -> list[dict]:
     """Try to fetch fresh news headlines from AKShare (A-share only)."""
     if market != "a_share":
         return []
@@ -49,10 +110,36 @@ def _get_news_from_akshare(ticker: str, market: str) -> list[str]:
         code = ticker.split(".")[0]
         df = ak.stock_news_em(symbol=code)
         if df is not None and not df.empty:
-            headlines = df["新闻标题"].head(20).tolist()
-            return [str(h) for h in headlines if h]
+            results = []
+            for _, row in df.head(20).iterrows():
+                results.append({
+                    "title": str(row.get("新闻标题", "")),
+                    "content": str(row.get("新闻内容", ""))[:200] if row.get("新闻内容") else "",
+                    "source": "akshare",
+                })
+            return results
     except Exception as e:
         logger.debug("[Sentiment] AKShare news fetch failed for %s: %s", ticker, e)
+    return []
+
+
+def _get_news_from_tavily(query: str) -> list[dict]:
+    """
+    P1-1: Fetch financial news using Tavily API.
+
+    Returns list of {title, content, url, source} dicts.
+    """
+    try:
+        from src.data.tavily_source import TavilySource
+        source = TavilySource()
+        results = source.search_news(query, max_results=10, time_range="month")
+        logger.info("[Sentiment] Tavily returned %d results for '%s'", len(results), query[:30])
+        return results
+    except ValueError as e:
+        # TAVILY_API_KEY not set
+        logger.debug("[Sentiment] Tavily not available: %s", e)
+    except Exception as e:
+        logger.warning("[Sentiment] Tavily search failed: %s", e)
     return []
 
 
@@ -118,38 +205,73 @@ def run(
     ticker: str,
     market: str,
     use_llm: bool = True,
+    use_tavily: bool = True,
 ) -> AgentSignal:
     """
     Run the Sentiment Agent.
     Returns AgentSignal and persists to DB.
 
     Integrates:
-    1. News headlines from AKShare or manual docs
+    1. News headlines from Tavily (P1-1), AKShare or manual docs
     2. Structured profit warning data from AKShare (业绩预告)
+    3. Rule-based sentiment scoring (P1-2)
     """
-    # Gather news from all available sources
-    news_headlines = _get_news_from_akshare(ticker, market)
-    if not news_headlines:
-        news_headlines = _get_news_from_db(ticker)
+    # P1-1: Try Tavily first for financial news (better quality)
+    news_items = []
+    news_source = "none"
+
+    if use_tavily:
+        # Build search query from ticker
+        query = f"{ticker.split('.')[0]} 财报 业绩 股票"
+        news_items = _get_news_from_tavily(query)
+        if news_items:
+            news_source = "tavily"
+
+    # Fallback to AKShare
+    if not news_items:
+        news_items = _get_news_from_akshare(ticker, market)
+        if news_items:
+            news_source = "akshare"
+
+    # Last resort: manual docs
+    if not news_items:
+        news_items = _get_news_from_db(ticker)
+        if news_items:
+            news_source = "manual_docs"
+
+    # Extract headlines for LLM (backwards compatibility)
+    # Handle both dict format (new) and string format (legacy/mocked)
+    news_headlines = []
+    for item in news_items:
+        if isinstance(item, dict):
+            if item.get("title"):
+                news_headlines.append(item["title"])
+        elif isinstance(item, str) and item:
+            news_headlines.append(item)
 
     # Fetch structured profit warning data
     profit_warnings = _get_profit_warnings(ticker, market)
     profit_warning_type, profit_warning_details = _extract_profit_warning_info(profit_warnings)
 
+    # P1-2: Calculate rule-based sentiment score
+    rule_based_score = calculate_rule_based_sentiment(news_items)
+
     metrics_snapshot: dict = {
         "news_count": len(news_headlines),
         "news_days": NEWS_LOOKBACK_DAYS,
+        "news_source": news_source,
         "profit_warning": profit_warning_type,
         "profit_warning_details": profit_warning_details,
+        "rule_based_score": round(rule_based_score, 3),
     }
 
     logger.info(
-        "[Sentiment] %s: profit_warning=%s, details=%s",
-        ticker, profit_warning_type, profit_warning_details
+        "[Sentiment] %s: profit_warning=%s, rule_score=%.2f, source=%s",
+        ticker, profit_warning_type, rule_based_score, news_source
     )
 
     # Handle case: no news available
-    if not news_headlines:
+    if not news_items:
         agent_signal = AgentSignal(
             ticker=ticker,
             agent_name=AGENT_NAME,
@@ -161,6 +283,9 @@ def run(
         insert_agent_signal(agent_signal)
         logger.info("[Sentiment] %s: no news data, returning neutral", ticker)
         return agent_signal
+
+    # P1-2: Use rule-based score as baseline (0.0-1.0 → -1.0 to 1.0 for compatibility)
+    rule_sentiment_score = (rule_based_score - 0.5) * 2  # Convert to -1 to 1 range
 
     signal, confidence, reasoning = "neutral", 0.40, "LLM 分析暂不可用"
 
@@ -241,8 +366,16 @@ def run(
 
         except Exception as e:
             logger.warning("[Sentiment] LLM call failed: %s", e)
-            reasoning = f"LLM 调用失败 ({e})。获取到 {len(news_headlines)} 条新闻但无法分析情绪。"
-            signal, confidence = "neutral", 0.25
+            # P1-2: Fall back to rule-based scoring when LLM fails
+            if rule_sentiment_score > 0.3:
+                signal, confidence = "bullish", 0.35
+                reasoning = f"LLM不可用，基于关键词规则分析（正面偏向）。获取到 {len(news_headlines)} 条新闻。"
+            elif rule_sentiment_score < -0.3:
+                signal, confidence = "bearish", 0.35
+                reasoning = f"LLM不可用，基于关键词规则分析（负面偏向）。获取到 {len(news_headlines)} 条新闻。"
+            else:
+                signal, confidence = "neutral", 0.30
+                reasoning = f"LLM不可用，基于关键词规则分析（中性）。获取到 {len(news_headlines)} 条新闻。"
 
     agent_signal = AgentSignal(
         ticker=ticker,

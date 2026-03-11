@@ -49,6 +49,7 @@ pyyaml = "^6.0"
 
 # ── Visualization (P2) ───────────────────────────────────
 matplotlib = "^3.8"
+tavily-python = "^0.7.23"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

@@ -52,6 +52,24 @@ logger = get_logger(__name__)
 
 AGENT_NAME = "valuation"
 
+
+def _get_industry_position_safe(ticker: str) -> dict | None:
+    """
+    P2-1: Get industry valuation positioning with error handling.
+
+    Returns positioning dict or None if unavailable.
+    """
+    try:
+        from src.agents.industry_valuation import get_industry_position
+        result = get_industry_position(ticker)
+        if result.get("error"):
+            logger.warning("[Valuation] Industry positioning failed: %s", result["error"])
+            return None
+        return result
+    except Exception as e:
+        logger.warning("[Valuation] Industry positioning error: %s", e)
+        return None
+
 # Default valuation assumptions (conservative value-investor settings)
 WACC_DEFAULT     = 0.10   # 10% discount rate
 WACC_CYCLE_ADDON = 0.005  # +50bp for highly cyclical sectors (oil services)
@@ -1493,6 +1511,17 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if weighted_result.get("warning"):
             detail_lines.append(f"\n{weighted_result['warning']}")
         detail_lines.append("⚠ 所有估值方法均被排除，无法计算目标价")
+
+    # P2-1: Get industry valuation positioning
+    industry_position = _get_industry_position_safe(ticker)
+    if industry_position:
+        results["industry_position"] = industry_position
+        detail_lines.append(f"\n【行业估值定位】")
+        detail_lines.append(f"  行业: {industry_position.get('industry', '未知')}")
+        detail_lines.append(f"  PE分位: {industry_position.get('pe_percentile', 'N/A')}%")
+        detail_lines.append(f"  PB分位: {industry_position.get('pb_percentile', 'N/A')}%")
+        detail_lines.append(f"  行业PE中位数: {industry_position.get('industry_pe_median', 'N/A')}")
+        detail_lines.append(f"  同业比较样本: {industry_position.get('peer_count', 0)}家")
 
     # Determine signal based on margin of safety
     if margin_of_safety is not None:

@@ -27,10 +27,55 @@ from src.data.database import (
 )
 from src.data.models import AgentSignal
 from src.utils.logger import get_logger
+from src.utils.calculation_tracer import CalculationTracer
 
 logger = get_logger(__name__)
 
 AGENT_NAME = "fundamentals"
+
+
+def _compute_5_year_trends(metrics_history: list[dict]) -> dict:
+    """
+    P0-1: Compute 5-year trend metrics.
+
+    Returns dict with:
+    - roe_trend: "improving" | "stable" | "declining"
+    - roic_trend: "improving" | "stable" | "declining"
+    - margin_trend: "improving" | "stable" | "declining"
+    - avg_roe_5y: float
+    - avg_roic_5y: float
+    """
+    if len(metrics_history) < 3:
+        return {"insufficient_data": True}
+
+    # Sort by date ascending for trend calculation
+    sorted_metrics = sorted(metrics_history, key=lambda x: x.get("date", ""))
+
+    def _get_trend(values: list[float]) -> str:
+        if len(values) < 3:
+            return "insufficient"
+        # Simple linear trend: compare first half avg to second half avg
+        mid = len(values) // 2
+        first_half = sum(values[:mid]) / mid if mid > 0 else 0
+        second_half = sum(values[mid:]) / (len(values) - mid) if (len(values) - mid) > 0 else 0
+        diff_pct = (second_half - first_half) / first_half * 100 if first_half != 0 else 0
+        if diff_pct > 10:
+            return "improving"
+        elif diff_pct < -10:
+            return "declining"
+        return "stable"
+
+    roe_values = [m["roe"] for m in sorted_metrics if m.get("roe") is not None]
+    roic_values = [m["roic"] for m in sorted_metrics if m.get("roic") is not None]
+    margin_values = [m["gross_margin"] for m in sorted_metrics if m.get("gross_margin") is not None]
+
+    return {
+        "roe_trend": _get_trend(roe_values),
+        "roic_trend": _get_trend(roic_values) if roic_values else "no_data",
+        "margin_trend": _get_trend(margin_values) if margin_values else "no_data",
+        "avg_roe_5y": round(sum(roe_values) / len(roe_values), 2) if roe_values else None,
+        "avg_roic_5y": round(sum(roic_values) / len(roic_values), 2) if roic_values else None,
+    }
 
 # Financial stock tickers - high D/E is normal for banks/insurance
 _FINANCIAL_TICKERS = {
@@ -132,6 +177,14 @@ def run(ticker: str, market: str) -> AgentSignal:
     detail_lines: list[str] = []
     metrics_snapshot: dict = {}
 
+    # P0-2: Initialize calculation tracer for transparency
+    tracer = CalculationTracer()
+
+    # P0-1: Compute 5-year trends from metrics history
+    metrics_for_trends = get_financial_metrics(ticker, limit=5)
+    five_year_trends = _compute_5_year_trends(metrics_for_trends)
+    metrics_snapshot["5_year_trends"] = five_year_trends
+
     # Check if this is a financial or utility stock (different safety standards)
     is_financial, is_utility = _is_financial_or_utility(ticker)
     if is_financial:
@@ -147,7 +200,16 @@ def run(ticker: str, market: str) -> AgentSignal:
         ni  = _safe(income_rows[0].get("net_income"))
         eq  = _safe(balance_rows[0].get("total_equity"))
         if ni and eq and eq != 0:
-            roe = ni / eq * 100  # store as %
+            roe = tracer.trace_calculation(
+                metric_name="ROE",
+                formula="net_income / total_equity * 100",
+                inputs={
+                    "net_income": {"value": ni, "source": "database", "period": income_rows[0].get("period_end_date")},
+                    "total_equity": {"value": eq, "source": "database", "period": balance_rows[0].get("period_end_date")},
+                },
+                result=(ni / eq) * 100,
+                unit="%",
+            )
 
     net_margin_direct = _safe(metric_rows[0].get("operating_margin")) if metric_rows else None
 
@@ -338,6 +400,24 @@ def run(ticker: str, market: str) -> AgentSignal:
     metrics_snapshot["total_score"] = score
     metrics_snapshot["available_periods"] = len(income_rows)
     metrics_snapshot["data_fields_available"] = data_fields_available
+
+    # P0-2: Add calculation traces for transparency
+    metrics_snapshot["calculation_traces"] = [
+        {"metric": t.metric_name, "explanation": tracer.explain(t.metric_name)}
+        for t in tracer.get_traces()
+    ]
+
+    # P0-1: Add 5-year trend summary to detail lines
+    if not five_year_trends.get("insufficient_data"):
+        trend_labels = {"improving": "↑改善", "stable": "→稳定", "declining": "↓下滑", "no_data": "数据不足"}
+        detail_lines.append(f"\n【5年趋势分析】")
+        detail_lines.append(f"  ROE趋势: {trend_labels.get(five_year_trends.get('roe_trend'), '未知')}")
+        if five_year_trends.get("avg_roe_5y"):
+            detail_lines.append(f"  5年平均ROE: {five_year_trends['avg_roe_5y']:.1f}%")
+        if five_year_trends.get("roic_trend") != "no_data":
+            detail_lines.append(f"  ROIC趋势: {trend_labels.get(five_year_trends.get('roic_trend'), '未知')}")
+        if five_year_trends.get("margin_trend") != "no_data":
+            detail_lines.append(f"  毛利率趋势: {trend_labels.get(five_year_trends.get('margin_trend'), '未知')}")
 
     # Expose raw revenue for Ch1 template (format_yuan needs absolute value)
     if income_rows and _safe(income_rows[0].get("revenue")):

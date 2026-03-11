@@ -104,11 +104,15 @@ CREATE TABLE IF NOT EXISTS financial_metrics (
     current_ratio    REAL,
     dividend_yield   REAL,
     operating_margin REAL,
+    gross_margin     REAL,
     revenue_growth   REAL,
     net_income_growth REAL,
     fcf_per_share    REAL,
     market_cap       REAL,
     enterprise_value REAL,
+    roic             REAL,
+    rd_expense_ratio REAL,
+    receivables_turnover_days REAL,
     source           TEXT NOT NULL,
     updated_at       TEXT DEFAULT (datetime('now')),
     UNIQUE(ticker, date)
@@ -295,19 +299,23 @@ def upsert_financial_metrics(metrics: list[FinancialMetrics]) -> int:
         INSERT INTO financial_metrics
             (ticker, date, pe_ratio, pb_ratio, ps_ratio, roe, roa, debt_to_equity,
              current_ratio, dividend_yield, operating_margin, gross_margin, revenue_growth,
-             net_income_growth, fcf_per_share, market_cap, enterprise_value, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             net_income_growth, fcf_per_share, market_cap, enterprise_value,
+             roic, rd_expense_ratio, receivables_turnover_days, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticker, date) DO UPDATE SET
             pe_ratio=excluded.pe_ratio, roe=excluded.roe, roa=excluded.roa,
             operating_margin=excluded.operating_margin, gross_margin=excluded.gross_margin,
             revenue_growth=excluded.revenue_growth, net_income_growth=excluded.net_income_growth,
+            roic=excluded.roic, rd_expense_ratio=excluded.rd_expense_ratio,
+            receivables_turnover_days=excluded.receivables_turnover_days,
             source=excluded.source, updated_at=datetime('now')
     """
     rows = [
         (m.ticker, str(m.date), m.pe_ratio, m.pb_ratio, m.ps_ratio, m.roe, m.roa,
          m.debt_to_equity, m.current_ratio, m.dividend_yield, m.operating_margin,
          m.gross_margin, m.revenue_growth, m.net_income_growth, m.fcf_per_share,
-         m.market_cap, m.enterprise_value, m.source)
+         m.market_cap, m.enterprise_value,
+         m.roic, m.rd_expense_ratio, m.receivables_turnover_days, m.source)
         for m in metrics
     ]
     with get_connection() as conn:
