@@ -38,6 +38,58 @@ NEGATIVE_KEYWORDS = [
 ]
 
 
+def classify_headline_sentiment(title: str) -> str:
+    """Classify headline sentiment based on keywords."""
+    positive_keywords = ['增长', '突破', '创新高', '超预期', '利好', '获批', '中标']
+    negative_keywords = ['下跌', '亏损', '退市', '处罚', '调查', '下滑', '风险']
+
+    if any(kw in title for kw in positive_keywords):
+        return 'positive'
+    elif any(kw in title for kw in negative_keywords):
+        return 'negative'
+    return 'neutral'
+
+
+def build_sentiment_context(news_items: list, max_headlines: int = 10) -> dict:
+    """
+    Build sentiment analysis context with headlines.
+
+    Args:
+        news_items: List of news items with title, date, source, content
+        max_headlines: Maximum number of headlines to include
+
+    Returns:
+        dict with news_count, news_headlines, date_range, data_status
+    """
+    if not news_items:
+        return {
+            'news_count': 0,
+            'news_headlines': [],
+            'date_range': '无近期新闻',
+            'data_status': 'insufficient'
+        }
+
+    # Sort by date, take most recent
+    sorted_news = sorted(news_items, key=lambda x: x.get('date', ''), reverse=True)
+    selected = sorted_news[:max_headlines]
+
+    return {
+        'news_count': len(news_items),
+        'selected_count': len(selected),
+        'news_headlines': [
+            {
+                'title': item['title'],
+                'date': item.get('date', '未知'),
+                'source': item.get('source', '未知来源'),
+                'sentiment_hint': classify_headline_sentiment(item['title'])
+            }
+            for item in selected
+        ],
+        'date_range': f"{selected[-1].get('date', '?')} 至 {selected[0].get('date', '?')}",
+        'data_status': 'sufficient' if len(news_items) >= 3 else 'limited'
+    }
+
+
 def calculate_rule_based_sentiment(news_items: list) -> float:
     """
     P1-2: Calculate sentiment score using keyword matching.
