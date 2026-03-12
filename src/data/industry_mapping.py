@@ -32,6 +32,13 @@ INDUSTRY_ALIASES = {
     "核电": "电力",
 }
 
+REAL_ESTATE_CONFIG = {
+    'pb_multiple_cap': 0.5,
+    'warning_text': '⚠️ 房地产开发行业不适合使用标准P/B倍数估值。'
+                    '当前估值仅供参考，建议参考NAV（净资产价值折价法）。',
+    'disable_methods': ['graham_number'],
+}
+
 INDUSTRY_REPRESENTATIVES = {
     "数据中心": [
         ("603881", "数据港"),

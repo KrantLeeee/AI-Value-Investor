@@ -23,6 +23,7 @@ from src.data.database import (
     insert_agent_signal,
 )
 from src.data.models import AgentSignal
+from src.data.industry_mapping import REAL_ESTATE_CONFIG
 from src.agents.wacc import (
     calculate_wacc,
     generate_sensitivity_matrix,
@@ -51,6 +52,31 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 AGENT_NAME = "valuation"
+
+
+def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
+    """
+    Apply P/B cap for real estate industry.
+
+    Args:
+        pb_value: Calculated P/B multiple
+        industry_type: Industry classification
+
+    Returns:
+        dict with pb_capped value and optional warning
+    """
+    if industry_type != '房地产':
+        return {'pb_capped': pb_value, 'warning': None}
+
+    cap = REAL_ESTATE_CONFIG['pb_multiple_cap']
+    if pb_value > cap:
+        return {
+            'pb_capped': cap,
+            'original_pb': pb_value,
+            'warning': REAL_ESTATE_CONFIG['warning_text']
+        }
+
+    return {'pb_capped': pb_value, 'warning': None}
 
 
 def _get_industry_position_safe(ticker: str) -> dict | None:
@@ -954,6 +980,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if bvps and not _skip_generic_ev_detail:
             _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
             pb_target_per_share = bvps * _pb
+
+            # Apply real estate P/B cap (Task 1.2)
+            if industry == '房地产':
+                cap_result = apply_real_estate_cap(_pb, industry)
+                _pb = cap_result['pb_capped']
+                pb_target_per_share = bvps * _pb
+                if cap_result.get('warning'):
+                    detail_lines.append(cap_result['warning'])
+
             results["pb_target"] = round(pb_target_per_share, 2)
             detail_lines.append(f"P/B目标价 ({_pb}x BVPS={bvps:.2f}): ¥{pb_target_per_share:.2f}")
     else:
@@ -1201,6 +1236,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if bvps:
             _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
             pb_target_per_share = bvps * _pb
+
+            # Apply real estate P/B cap (Task 1.2)
+            if industry == '房地产':
+                cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
+                pb_target_per_share = cap_result['pb_capped'] * bvps
+                if cap_result.get('warning'):
+                    detail_lines.append(cap_result['warning'])
+
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)
             valuation_methods.append(("P/B", pb_target_per_share))
@@ -1230,6 +1273,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if bvps:
             _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
             pb_target_per_share = bvps * _pb
+
+            # Apply real estate P/B cap (Task 1.2)
+            if industry == '房地产':
+                cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
+                pb_target_per_share = cap_result['pb_capped'] * bvps
+                if cap_result.get('warning'):
+                    detail_lines.append(cap_result['warning'])
+
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)
             valuation_methods.append(("P/B", pb_target_per_share))
@@ -1304,7 +1355,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
             # P/B as floor value
             if bvps:
-                pb_target_per_share = bvps * 1.5  # Conservative multiple for R&D stage
+                _pb = 1.5  # Conservative multiple for R&D stage
+                pb_target_per_share = bvps * _pb
+
+                # Apply real estate P/B cap (Task 1.2)
+                if industry == '房地产':
+                    cap_result = apply_real_estate_cap(_pb, industry)
+                    pb_target_per_share = cap_result['pb_capped'] * bvps
+                    if cap_result.get('warning'):
+                        detail_lines.append(cap_result['warning'])
+
                 valuation_methods.append(("P/B", pb_target_per_share))
 
             # NOTE: PE methods are DISABLED for R&D stage (unprofitable)
@@ -1370,6 +1430,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if bvps:
             utility_pb_multiple = 2.0  # Utility P/B multiple
             pb_target_per_share = bvps * utility_pb_multiple
+
+            # Apply real estate P/B cap (Task 1.2)
+            if industry == '房地产':
+                cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
+                pb_target_per_share = cap_result['pb_capped'] * bvps
+                if cap_result.get('warning'):
+                    detail_lines.append(cap_result['warning'])
+
             results["pb_target"] = round(pb_target_per_share, 2)
             valuation_methods.append(("P/B", pb_target_per_share))
             detail_lines.append(f"P/B目标价 ({utility_pb_multiple}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股")
@@ -1397,6 +1465,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if bvps:
             _pb = PB_TARGET_OIL_SERVICES if _is_oil else PB_TARGET_DEFAULT
             pb_target_per_share = bvps * _pb
+
+            # Apply real estate P/B cap (Task 1.2)
+            if industry == '房地产':
+                cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
+                pb_target_per_share = cap_result['pb_capped'] * bvps
+                if cap_result.get('warning'):
+                    detail_lines.append(cap_result['warning'])
+
             # Only add to results if not already added in EV/EBITDA section
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)

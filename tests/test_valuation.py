@@ -867,3 +867,47 @@ class TestHealthcareValuationConfig:
 
         assert "DCF" in config["enabled_methods"]
         assert "DCF" in config["weights"]
+
+
+# ── Task 1.2: Real Estate P/B Cap ─────────────────────────────────────────────
+
+
+class TestRealEstatePbCap:
+    """Tests for real estate P/B cap at 0.5x (Task 1.2)."""
+
+    def test_real_estate_pb_cap(self):
+        """Test real estate P/B is capped at 0.5x"""
+        from src.agents.valuation import apply_real_estate_cap
+
+        result = apply_real_estate_cap(
+            pb_value=1.2,  # Would give 120% upside
+            industry_type='房地产'
+        )
+
+        assert result['pb_capped'] == 0.5
+        assert result['warning'] is not None
+        assert 'NAV' in result['warning']
+
+    def test_non_real_estate_no_cap(self):
+        """Test non-real estate industries are not capped"""
+        from src.agents.valuation import apply_real_estate_cap
+
+        result = apply_real_estate_cap(
+            pb_value=1.5,
+            industry_type='银行'
+        )
+
+        assert result['pb_capped'] == 1.5
+        assert result.get('warning') is None
+
+    def test_real_estate_pb_below_cap_no_warning(self):
+        """Test real estate P/B below cap doesn't trigger warning"""
+        from src.agents.valuation import apply_real_estate_cap
+
+        result = apply_real_estate_cap(
+            pb_value=0.3,
+            industry_type='房地产'
+        )
+
+        assert result['pb_capped'] == 0.3
+        assert result.get('warning') is None
