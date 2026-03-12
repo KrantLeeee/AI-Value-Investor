@@ -216,3 +216,68 @@ def find_industry_for_stock(ticker: str) -> str | None:
         return INDUSTRY_ALIASES.get(industry, industry)
 
     return None
+
+
+# New industry type mappings (v2.1.0)
+NEW_INDUSTRY_MAPPINGS = {
+    # Cyclical Materials
+    '有色金属': 'cyclical_materials',
+    '钢铁': 'cyclical_materials',
+    '水泥': 'cyclical_materials',
+    '化工': 'cyclical_materials',
+    '铝业': 'cyclical_materials',
+    '铜业': 'cyclical_materials',
+
+    # Telecom
+    '通信运营': 'telecom_operator',
+    '电信运营': 'telecom_operator',
+    '通信设备': 'telecom_equipment',
+    '网络设备': 'telecom_equipment',
+
+    # New Energy
+    '新能源汽车': 'auto_new_energy',
+    '电动汽车': 'auto_new_energy',
+    '锂电池': 'new_energy_mfg',
+    '动力电池': 'new_energy_mfg',
+    '储能': 'new_energy_mfg',
+
+    # Agriculture
+    '养殖': 'cyclical_agri',
+    '生猪养殖': 'cyclical_agri',
+    '畜牧': 'cyclical_agri',
+
+    # Defense
+    '军工': 'defense_equipment',
+    '国防': 'defense_equipment',
+    '航空航天': 'defense_equipment',
+
+    # Low Margin Manufacturing
+    '电子制造': 'low_margin_mfg',
+    'ODM': 'low_margin_mfg',
+    'OEM': 'low_margin_mfg',
+    '代工': 'low_margin_mfg',
+}
+
+
+def get_industry_type(company_name: str, sector: str) -> str:
+    """
+    Get industry type from company name and sector.
+
+    Args:
+        company_name: Company name
+        sector: Sector classification from data source
+
+    Returns:
+        Industry type string (matches keys in industry_profiles.yaml)
+    """
+    # Check direct sector mapping first
+    for keyword, industry_type in NEW_INDUSTRY_MAPPINGS.items():
+        if keyword in sector:
+            return industry_type
+
+    # Check company name for keywords
+    for keyword, industry_type in NEW_INDUSTRY_MAPPINGS.items():
+        if keyword in company_name:
+            return industry_type
+
+    return 'generic'

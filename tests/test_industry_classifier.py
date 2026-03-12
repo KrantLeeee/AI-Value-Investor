@@ -377,3 +377,31 @@ def test_new_energy_keywords_priority():
     )
 
     assert result == 'new_energy_mfg'
+
+
+# ── Task 2.2: New Industry Type Mappings ────────────────────────────────────
+
+
+def test_cyclical_materials_mapping():
+    """Test cyclical materials companies are mapped correctly"""
+    from src.data.industry_mapping import get_industry_type
+
+    assert get_industry_type('紫金矿业', '有色金属') == 'cyclical_materials'
+    assert get_industry_type('宝钢股份', '钢铁') == 'cyclical_materials'
+    assert get_industry_type('海螺水泥', '水泥') == 'cyclical_materials'
+
+
+def test_telecom_mapping():
+    """Test telecom companies are mapped correctly"""
+    from src.data.industry_mapping import get_industry_type
+
+    assert get_industry_type('中国移动', '通信运营') == 'telecom_operator'
+    assert get_industry_type('中兴通讯', '通信设备') == 'telecom_equipment'
+
+
+def test_new_energy_mapping():
+    """Test new energy companies are mapped correctly"""
+    from src.data.industry_mapping import get_industry_type
+
+    assert get_industry_type('比亚迪', '新能源汽车') == 'auto_new_energy'
+    assert get_industry_type('工业富联', '电子制造') == 'low_margin_mfg'
