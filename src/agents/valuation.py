@@ -112,6 +112,127 @@ def calculate_ev_ebitda_value(ebitda: float, multiple: float, shares: int, reven
     return per_share_value, None
 
 
+# ── Task 3.1: Brand Moat P/E Anchor Valuation ──────────────────────────────
+
+
+BRAND_MOAT_CRITERIA = {
+    'gross_margin_min': 0.60,
+    'roe_5yr_avg_min': 0.15,
+    'fcf_positive_years_min': 4,
+    'revenue_growth_stable': True,
+}
+
+
+def detect_brand_moat(metrics: dict) -> bool:
+    """
+    Detect if company has brand moat characteristics.
+    Must meet 3+ conditions.
+    """
+    conditions_met = 0
+
+    if metrics.get('gross_margin', 0) >= BRAND_MOAT_CRITERIA['gross_margin_min'] * 100:
+        conditions_met += 1
+
+    if metrics.get('roe_5yr_avg', 0) >= BRAND_MOAT_CRITERIA['roe_5yr_avg_min'] * 100:
+        conditions_met += 1
+
+    fcf_history = metrics.get('fcf_history', [])
+    positive_years = sum(1 for fcf in fcf_history if fcf > 0)
+    if positive_years >= BRAND_MOAT_CRITERIA['fcf_positive_years_min']:
+        conditions_met += 1
+
+    revenue_growth = metrics.get('revenue_growth_5yr', [])
+    if len(revenue_growth) >= 3 and all(g > 0 for g in revenue_growth[-3:]):
+        conditions_met += 1
+
+    return conditions_met >= 3
+
+
+BRAND_MOAT_PE_ANCHORS = {
+    'premium': {'pe_range': (30, 40)},
+    'strong': {'pe_range': (25, 35)},
+    'moderate': {'pe_range': (20, 28)},
+}
+
+
+def classify_moat_tier(metrics: dict) -> str:
+    """Classify moat tier based on financials."""
+    gross_margin = metrics.get('gross_margin', 0)
+    roe_5yr = metrics.get('roe_5yr_avg', 0)
+
+    if gross_margin >= 80 and roe_5yr >= 25:
+        return 'premium'
+    elif gross_margin >= 60 and roe_5yr >= 18:
+        return 'strong'
+    elif gross_margin >= 50 and roe_5yr >= 15:
+        return 'moderate'
+
+    return None
+
+
+def apply_brand_moat_valuation(metrics: dict, industry_config: dict) -> dict:
+    """
+    Apply brand moat valuation using P/E anchors.
+
+    Why P/E not P/B:
+    - P/B formula (ROE/Ke) fails for growth companies (g > 0)
+    - Brand value isn't reflected in book value
+    - P/E directly captures earnings power
+    """
+    if not detect_brand_moat(metrics):
+        return None
+
+    # Classify tier
+    moat_tier = classify_moat_tier(metrics)
+    if moat_tier is None:
+        moat_tier = 'moderate'
+
+    # Get P/E range
+    pe_range = BRAND_MOAT_PE_ANCHORS[moat_tier]['pe_range']
+    pe_low, pe_high = pe_range
+    pe_mid = (pe_low + pe_high) / 2
+
+    # Normalize EPS: use max(TTM, 3yr avg) to avoid one-time impact
+    eps_ttm = metrics.get('eps')
+    eps_3yr_avg = metrics.get('eps_3yr_avg')
+
+    if eps_ttm is None or eps_ttm <= 0:
+        if eps_3yr_avg is not None and eps_3yr_avg > 0:
+            eps = eps_3yr_avg
+            eps_source = '3年平均EPS（TTM为负）'
+        else:
+            return {
+                'method': 'pe_moat',
+                'error': 'EPS为负或无效，护城河P/E估值不适用',
+                'moat_tier': moat_tier
+            }
+    elif eps_3yr_avg is not None and eps_3yr_avg > eps_ttm * 1.2:
+        eps = eps_3yr_avg
+        eps_source = f'3年平均EPS（TTM={eps_ttm:.2f}显著偏低）'
+    else:
+        eps = eps_ttm
+        eps_source = 'TTM EPS'
+
+    # Calculate target prices
+    target_low = eps * pe_low
+    target_mid = eps * pe_mid
+    target_high = eps * pe_high
+
+    return {
+        'method': 'pe_moat',
+        'moat_tier': moat_tier,
+        'pe_range': pe_range,
+        'pe_applied': pe_mid,
+        'target_price': target_mid,
+        'target_range': (target_low, target_high),
+        'eps_used': eps,
+        'eps_source': eps_source,
+        'eps_ttm': eps_ttm,
+        'eps_3yr_avg': eps_3yr_avg,
+        'note': f'护城河等级: {moat_tier}，P/E锚点: {pe_low}-{pe_high}x，使用{eps_source}'
+    }
+
+
 def _get_industry_position_safe(ticker: str) -> dict | None:
     """
     P2-1: Get industry valuation positioning with error handling.

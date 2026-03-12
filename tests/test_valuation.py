@@ -949,3 +949,66 @@ class TestEbitdaValidation:
         value, error = calculate_ev_ebitda_value(ebitda=1000000, multiple=8, shares=1000000, revenue=10000000)
         assert value == 8.0
         assert error is None
+
+
+# ── Task 3.1: Brand Moat P/E Anchor Valuation ──────────────────────────────
+
+
+def test_detect_brand_moat():
+    """Test brand moat detection criteria"""
+    from src.agents.valuation import detect_brand_moat
+
+    # Strong moat company
+    metrics = {
+        'gross_margin': 65,
+        'roe_5yr_avg': 18,
+        'fcf_history': [100, 150, 200, 180, 220],  # 4+ positive years
+        'revenue_growth_5yr': [5, 8, 10, 12, 15]   # All positive
+    }
+    assert detect_brand_moat(metrics) is True
+
+    # Not a moat company (low margin and low ROE - only 2 conditions met)
+    metrics_no_moat = {
+        'gross_margin': 30,  # FAIL
+        'roe_5yr_avg': 10,   # FAIL
+        'fcf_history': [100, 150, 200, 180, 220],  # PASS
+        'revenue_growth_5yr': [5, 8, 10, 12, 15]   # PASS
+    }
+    assert detect_brand_moat(metrics_no_moat) is False
+
+
+def test_classify_moat_tier():
+    """Test moat tier classification"""
+    from src.agents.valuation import classify_moat_tier
+
+    # Premium tier (茅台级)
+    assert classify_moat_tier({'gross_margin': 85, 'roe_5yr_avg': 28}) == 'premium'
+
+    # Strong tier
+    assert classify_moat_tier({'gross_margin': 65, 'roe_5yr_avg': 20}) == 'strong'
+
+    # Moderate tier
+    assert classify_moat_tier({'gross_margin': 55, 'roe_5yr_avg': 16}) == 'moderate'
+
+
+def test_brand_moat_pe_valuation():
+    """Test brand moat uses P/E anchors, not P/B formula"""
+    from src.agents.valuation import apply_brand_moat_valuation
+
+    metrics = {
+        'gross_margin': 85,
+        'roe_5yr_avg': 28,
+        'fcf_history': [100, 150, 200, 180, 220],
+        'revenue_growth_5yr': [5, 8, 10, 12, 15],
+        'eps': 50.0,
+        'eps_3yr_avg': 48.0
+    }
+    industry_config = {}
+
+    result = apply_brand_moat_valuation(metrics, industry_config)
+
+    assert result['method'] == 'pe_moat'
+    assert result['moat_tier'] == 'premium'
+    assert result['pe_range'] == (30, 40)
+    # Target should be EPS * PE_mid = 50 * 35 = 1750
+    assert 1500 < result['target_price'] < 2000
