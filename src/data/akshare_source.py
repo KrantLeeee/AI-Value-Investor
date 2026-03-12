@@ -687,3 +687,36 @@ class AKShareSource(BaseDataSource):
             logger.warning("[AKShare] get_profit_warnings failed for %s: %s", ticker, e)
 
         return results
+
+
+# ── Standalone helper functions ─────────────────────────────────────────────────
+
+
+def fetch_company_basic_info(stock_code: str) -> dict:
+    """
+    Fetch company basic information from AKShare.
+
+    Args:
+        stock_code: Stock code without market suffix (e.g., '600519')
+
+    Returns:
+        dict with established_date, registered_capital, employee_count
+    """
+    import akshare as ak
+
+    try:
+        info_df = ak.stock_individual_info_em(symbol=stock_code)
+        info_dict = dict(zip(info_df['item'], info_df['value']))
+
+        return {
+            'established_date': info_dict.get('上市时间', '未知'),
+            'registered_capital': info_dict.get('注册资本', '未知'),
+            'employee_count': info_dict.get('员工人数', '未知'),
+        }
+    except Exception as e:
+        logger.warning(f"Failed to fetch company info for {stock_code}: {e}")
+        return {
+            'established_date': '未知',
+            'registered_capital': '未知',
+            'employee_count': '未知',
+        }
