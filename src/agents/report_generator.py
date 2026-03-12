@@ -162,6 +162,37 @@ def _signal_emoji(s: str) -> str:
     return {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}.get(s, "❓")
 
 
+def generate_conservative_warning(company_name: str, confidence: float,
+                                   threshold: float = 0.5) -> str:
+    """
+    Generate warning text for conservative mode.
+
+    Args:
+        company_name: Company name
+        confidence: Classification confidence (0-1)
+        threshold: Confidence threshold
+
+    Returns:
+        Warning markdown text
+    """
+    return f"""## ⚠️ 行业识别置信度提示
+
+本系统对「{company_name}」的行业识别置信度为 **{confidence:.0%}**（阈值{threshold:.0%}）。
+
+**建议**：以下估值结论仅供参考，建议结合行业专家意见。
+
+---
+## 可信输出
+- ✅ 基本面评分
+- ✅ 数据质量评估
+- ✅ 情绪信号
+
+## 参考输出（置信度受限）
+- ⚠️ 目标价（仅供参考）
+- ⚠️ 安全边际（仅供参考）
+"""
+
+
 def _build_financial_quality_table(
     ticker: str,
     fundamentals_signal: AgentSignal | None,

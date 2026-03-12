@@ -219,3 +219,19 @@ def test_generate_llm_chapter_fail_validation_retry(mock_llm):
 
     # Should have attempted retries (3 total calls)
     assert mock_llm.call_count == 3
+
+
+def test_conservative_mode_output():
+    """Test conservative mode generates proper warning output"""
+    from src.agents.report_generator import generate_conservative_warning
+
+    warning = generate_conservative_warning(
+        company_name='某某公司',
+        confidence=0.35,
+        threshold=0.5
+    )
+
+    assert '⚠️' in warning
+    assert '35%' in warning
+    assert '置信度' in warning
+    assert '仅供参考' in warning
