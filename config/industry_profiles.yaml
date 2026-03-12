@@ -359,6 +359,53 @@ industry_profiles:
         name: "金科股份"
         note: "民营房企"
 
+  data_center:
+    weights:
+      fundamentals: 0.22
+      valuation: 0.28
+      warren_buffett: 0.15
+      ben_graham: 0.15
+      sentiment: 0.20
+    rationale: "数据中心/IDC行业：重资产+稳定现金流，类似公用事业但估值更高，AI算力需求推动成长预期"
+    validated: false
+
+    scoring:
+      roe_thresholds: [12, 8, 5]  # Capital intensive, lower ROE acceptable
+      net_margin_thresholds: [15, 10, 6]
+      de_thresholds: [0.8, 1.2, 1.8]  # Higher leverage for infrastructure
+      growth_weight: 0.25  # Growth matters in AI era
+      cash_quality_weight: 0.28
+      wacc_range: [0.07, 0.09]  # Infrastructure with growth premium
+      default_beta: 1.0
+
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 15.0
+        cycle_normal: 22.0    # Data center premium (AI demand)
+        cycle_peak: 30.0
+      pe:
+        cycle_bottom: 25.0
+        cycle_normal: 40.0
+        cycle_peak: 60.0
+      ps:
+        cycle_bottom: 3.0
+        cycle_normal: 5.0
+        cycle_peak: 8.0
+
+    comparable_companies:
+      - ticker: "603881.SH"
+        name: "数据港"
+        note: "IDC龙头"
+      - ticker: "300383.SZ"
+        name: "光环新网"
+        note: "云计算IDC"
+      - ticker: "300166.SZ"
+        name: "东方国信"
+        note: "大数据"
+      - ticker: "002212.SZ"
+        name: "天融信"
+        note: "网络安全"
+
   default:
     weights:
       fundamentals: 0.25
@@ -402,6 +449,13 @@ industry_keywords:
     - "天然气"
     - "煤炭"
     - "电力"
+  data_center:
+    - "数据中心"
+    - "IDC"
+    - "信息技术服务"
+    - "云计算"
+    - "算力"
+    - "互联网数据中心"
   consumer:
     - "消费"
     - "零售"
