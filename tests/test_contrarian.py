@@ -477,3 +477,29 @@ def test_validate_critical_questions_json():
     is_valid, data = _validate_json(json_str, "critical_questions")
     assert is_valid
     assert data["mode"] == "critical_questions"
+
+
+# ── Task 1.1: safe_format Tests ──────────────────────────────────────────────
+
+
+def test_safe_format_with_none():
+    """Test safe_format handles None values"""
+    from src.agents.contrarian import safe_format
+
+    assert safe_format(None, "{:.1f}%") == "N/A"
+    assert safe_format(None, "{:.2f}", default="--") == "--"
+
+
+def test_safe_format_with_valid_values():
+    """Test safe_format handles valid values"""
+    from src.agents.contrarian import safe_format
+
+    assert safe_format(25.5, "{:.1f}%") == "25.5%"
+    assert safe_format(3.14159, "{:.2f}") == "3.14"
+
+
+def test_safe_format_with_invalid_format():
+    """Test safe_format handles format errors gracefully"""
+    from src.agents.contrarian import safe_format
+
+    assert safe_format("not a number", "{:.1f}") == "N/A"

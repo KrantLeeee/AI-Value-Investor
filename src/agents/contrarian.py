@@ -28,6 +28,26 @@ logger = get_logger(__name__)
 AGENT_NAME = "contrarian"
 
 
+def safe_format(value, fmt="{}", default="N/A"):
+    """
+    Safe formatting that handles None values and format errors.
+
+    Args:
+        value: The value to format
+        fmt: Format string (default: "{}")
+        default: Value to return if formatting fails (default: "N/A")
+
+    Returns:
+        Formatted string or default value
+    """
+    if value is None:
+        return default
+    try:
+        return fmt.format(value)
+    except (ValueError, TypeError, KeyError, IndexError):
+        return default
+
+
 def _determine_consensus(signals: dict[str, AgentSignal | None]) -> tuple[str, float]:
     """
     Determine if there's a bullish/bearish consensus among agent signals.
