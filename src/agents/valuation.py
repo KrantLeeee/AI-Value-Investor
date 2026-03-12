@@ -1018,6 +1018,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         peg_per_share = fair_pe * eps_for_pe
         results["peg_per_share"] = round(peg_per_share, 2)
         results["peg_fair_pe"] = round(fair_pe, 1)
+        # BUG-C FIX: Add note explaining PEG is reference-only
+        results["peg_note"] = (
+            "PEG估值仅供交叉验证参考，未纳入加权目标价计算。"
+            f"原因：EPS增速({eps_growth_pct:.1f}%)对短期波动敏感，"
+            "PEG方法对增速假设高度依赖，不适合作为核心定价依据。"
+        )
 
         # Add detail line
         peg_status = ""

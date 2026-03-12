@@ -39,6 +39,8 @@ INDUSTRY_EV_EBITDA_MULTIPLES: dict[str, tuple[float, str]] = {
     "ai_tech_profitable": (20.0, "科技盈利期"),
     "ai_tech_loss": (25.0, "科技亏损期"),  # Higher multiple for growth
     "cyclical_materials": (6.0, "周期性材料"),
+    "data_center": (22.0, "数据中心/IDC"),  # High capex, recurring revenue
+    "it_services": (18.0, "信息技术服务"),
 }
 DEFAULT_EV_EBITDA_MULTIPLE = (10.0, "综合")
 
@@ -80,6 +82,14 @@ INDUSTRY_SENSITIVITY_SCENARIOS: dict[str, tuple[str, str]] = {
     "cyclical_materials": (
         "大宗商品涨价，量价齐升",
         "需求萎缩，库存减值风险",
+    ),
+    "data_center": (
+        "AI算力需求爆发，机柜上架率提升",
+        "电力成本上涨，竞争加剧压低租金",
+    ),
+    "it_services": (
+        "数字化转型加速，订单增长",
+        "IT预算收紧，项目延期",
     ),
 }
 DEFAULT_SENSITIVITY_SCENARIOS = (
@@ -203,26 +213,43 @@ def _build_financial_quality_table(
         lines.append(f"| FCF/净利覆盖率 | {_fmt(fcf_ni, '.2f', 'x')} | {_status(fcf_ni, (0.8, 0.5))} |")
         lines.append("")
 
-        # ── P0-1: 5-year trend analysis ──
+        # ── P0-1: 5-year trend analysis (enhanced with explanations) ──
         trends = m.get('5_year_trends', {})
         if trends and not trends.get('insufficient_data'):
             lines.append("### 5年趋势分析")
             lines.append("")
-            trend_labels = {"improving": "↑改善", "stable": "→稳定", "declining": "↓下滑", "no_data": "—"}
+            trend_labels = {"improving": "↑改善", "stable": "→稳定", "declining": "↓下滑", "no_data": "—", "insufficient": "数据不足"}
             roe_trend = trends.get('roe_trend', 'no_data')
             roic_trend = trends.get('roic_trend', 'no_data')
             margin_trend = trends.get('margin_trend', 'no_data')
             avg_roe = trends.get('avg_roe_5y')
+            avg_roic = trends.get('avg_roic_5y')
 
             lines.append("| 指标 | 趋势 | 5年平均 |")
             lines.append("|:-----|:-----|:--------|")
-            lines.append(f"| ROE | {trend_labels.get(roe_trend, '—')} | {avg_roe:.1f}%" if avg_roe else f"| ROE | {trend_labels.get(roe_trend, '—')} | — |")
+            lines.append(f"| ROE | {trend_labels.get(roe_trend, '—')} | {avg_roe:.1f}% |" if avg_roe else f"| ROE | {trend_labels.get(roe_trend, '—')} | — |")
             if roic_trend != 'no_data':
-                avg_roic = trends.get('avg_roic_5y')
-                lines.append(f"| ROIC | {trend_labels.get(roic_trend, '—')} | {avg_roic:.1f}%" if avg_roic else f"| ROIC | {trend_labels.get(roic_trend, '—')} | — |")
+                lines.append(f"| ROIC | {trend_labels.get(roic_trend, '—')} | {avg_roic:.1f}% |" if avg_roic else f"| ROIC | {trend_labels.get(roic_trend, '—')} | — |")
+            else:
+                lines.append("| ROIC | — | 数据源暂未提供 |")
             if margin_trend != 'no_data':
                 lines.append(f"| 毛利率 | {trend_labels.get(margin_trend, '—')} | — |")
             lines.append("")
+
+            # P0-1 Enhancement: Add trend interpretation
+            trend_notes = []
+            if roe_trend == 'declining' and roic_trend == 'stable':
+                trend_notes.append("ROE下滑但ROIC稳定，可能因资本结构变化（如增发融资）导致分母效应，非真实盈利能力下滑")
+            elif roe_trend == 'declining' and roic_trend == 'no_data':
+                trend_notes.append("ROE下滑，因ROIC数据不可用无法判断是否为分母效应。建议关注净利润绝对值变化")
+            elif roe_trend == 'improving' and margin_trend == 'declining':
+                trend_notes.append("ROE改善但毛利率下滑，可能通过提高周转率或财务杠杆弥补。需关注可持续性")
+            elif roe_trend == 'stable' and avg_roe and avg_roe > 15:
+                trend_notes.append("ROE稳定在15%以上，显示较强的盈利能力和经营壁垒")
+
+            if trend_notes:
+                lines.append("> **趋势解读**: " + " | ".join(trend_notes))
+                lines.append("")
 
         # ── P0-2: Calculation traces ──
         traces = m.get('calculation_traces', [])
@@ -387,6 +414,13 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None, ticker: str 
             lines.append(f"**综合结论**: 加权目标价约 ¥{w_tgt:.2f}{exclusion_note}，与当前价 ¥{current:.2f} 相近，估值合理。")
         lines.append("")
 
+    # BUG-C FIX: Add PEG note if available (explains PEG is reference-only)
+    peg_per_share = metrics.get("peg_per_share")
+    peg_note = metrics.get("peg_note")
+    if peg_per_share and peg_note:
+        lines.append(f"> **PEG估值参考**: ¥{peg_per_share:.2f}/股 — {peg_note}")
+        lines.append("")
+
     # Sensitivity scenarios - only if DCF is valid
     excluded_methods = validation.get("excluded_methods", [])
     dcf_excluded = "DCF" in excluded_methods
@@ -435,6 +469,22 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None, ticker: str 
         lines.append(f"| PE(TTM) | {target_pe:.1f}x | {pe_median:.1f}x | {pe_pct:.0f}% |" if target_pe and pe_median else "| PE(TTM) | — | — | — |")
         lines.append(f"| PB | {target_pb:.1f}x | {pb_median:.1f}x | {pb_pct:.0f}% |" if target_pb and pb_median else "| PB | — | — | — |")
         lines.append("")
+
+        # BUG-D FIX: Render comparison table if available
+        comparison = industry_pos.get("comparison_table", [])
+        if comparison:
+            lines.append("**同业估值比较:**")
+            lines.append("")
+            lines.append("| 公司 | PE(TTM) | PB | 定位 |")
+            lines.append("|:-----|:--------|:---|:-----|")
+            for row in comparison:
+                name = row.get("name") or row.get("ticker", "?")
+                pe_str = f"{row['pe']:.1f}x" if row.get("pe") else "—"
+                pb_str = f"{row['pb']:.1f}x" if row.get("pb") else "—"
+                category = row.get("category", "")
+                lines.append(f"| {name} | {pe_str} | {pb_str} | {category} |")
+            lines.append("")
+
         lines.append(f"> 同业比较样本: {industry_pos.get('peer_count', 0)}家代表性公司")
         lines.append("")
 
@@ -646,6 +696,27 @@ def _build_appendix(
         lines.append("")
     else:
         lines.append("✅ 所有质量检查通过。")
+        lines.append("")
+
+    # P0-2: Calculation provenance/tracing section
+    fund_signal = signals.get("fundamentals")
+    if fund_signal and fund_signal.metrics.get("calculation_traces"):
+        lines.append("### 计算追踪记录")
+        lines.append("")
+        lines.append("> 以下为关键派生指标的计算过程，确保数据来源可追溯：")
+        lines.append("")
+        for trace in fund_signal.metrics["calculation_traces"]:
+            metric_name = trace.get("metric", "?")
+            explanation = trace.get("explanation", "")
+            lines.append(f"**{metric_name}**:")
+            lines.append("```")
+            lines.append(explanation[:300] if len(explanation) > 300 else explanation)
+            lines.append("```")
+            lines.append("")
+    else:
+        lines.append("### 计算追踪记录")
+        lines.append("")
+        lines.append("> 本次分析未记录详细计算追踪。派生指标（如ROE、流动比率）直接读取自数据源。")
         lines.append("")
 
     # Technical notes
@@ -880,11 +951,22 @@ def _build_chapter_user_prompt(
         )
 
     elif chapter_key == "ch6_sentiment":
+        # Check data availability status
+        data_status = sent.metrics.get("data_status", "available") if sent else "unavailable"
+        news_count = sent.metrics.get("news_count", 0) if sent else 0
+
+        # Build data status note for LLM
+        if data_status == "insufficient" or news_count == 0:
+            data_note = "⚠️ 注意：情绪数据不可用或不足，以下分析基于有限信息，请谨慎参考。"
+        else:
+            data_note = ""
+
         return user_template.format(
             sentiment_signal=sent.signal if sent else "未运行",
             sentiment_score=f"{sent.metrics.get('sentiment_score', 0):.2f}" if sent else "N/A",
             sentiment_reasoning=sent.reasoning if sent else "暂无新闻数据",
             news_summary=sent.reasoning[:500] if sent else "（无）",
+            data_status_note=data_note,
         )
 
     elif chapter_key == "ch7_recommendation":

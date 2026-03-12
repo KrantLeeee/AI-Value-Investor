@@ -529,11 +529,13 @@ REPORT_CH6_USER = """**市场情绪监测结果:**
 - 信号: {sentiment_signal}
 - 情绪评分: {sentiment_score}
 - 理由: {sentiment_reasoning}
+{data_status_note}
 
 **近期新闻摘要:**
 {news_summary}
 
-请撰写市场情绪分析（≥200字，避免使用"Agent"等技术术语）。"""
+请撰写市场情绪分析（≥200字，避免使用"Agent"等技术术语）。
+如果上方标注"情绪数据不可用"，请明确说明数据不足，不要编造具体新闻数量或情绪得分。"""
 
 
 REPORT_CH7_SYSTEM = """你是投资决策分析师。综合所有分析维度的信号，给出明确投资建议（≥300字）。

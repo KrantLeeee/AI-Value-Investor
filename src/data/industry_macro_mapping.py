@@ -146,6 +146,18 @@ INDUSTRY_PROFILES: dict[str, IndustryMacroProfile] = {
         example_tickers=["600900.SH"]  # 长江电力
     ),
 
+    "data_center": IndustryMacroProfile(
+        industry_type="data_center",
+        name_cn="数据中心/IDC",
+        description_cn="互联网数据中心运营、云计算基础设施、算力租赁",
+        primary_indicators=["nbs_svc_pmi", "caixin_svc_pmi"],
+        pmi_sensitivity="medium",
+        ppi_effect="negative",  # PPI上行→电力成本上升→利空
+        tailwind_cn="AI算力需求爆发，机柜上架率提升，租金和续约率改善",
+        headwind_cn="电力成本上涨侵蚀利润，IT预算收紧导致新签约放缓",
+        example_tickers=["603881.SH", "300383.SZ"]  # 数据港、光环新网
+    ),
+
     "cyclical_materials": IndustryMacroProfile(
         industry_type="cyclical_materials",
         name_cn="周期性资源/材料",
@@ -189,8 +201,10 @@ TICKER_TO_INDUSTRY: dict[str, str] = {
     # 公用事业
     "600900.SH": "utility_infrastructure",   # 长江电力
     "601985.SH": "utility_infrastructure",   # 中国核电
-    # 数据中心（特殊行业）
-    "603881.SH": "utility_infrastructure",   # 数据港（IDC按公用事业估值）
+    # 数据中心/IDC
+    "603881.SH": "data_center",              # 数据港
+    "300383.SZ": "data_center",              # 光环新网
+    "300166.SZ": "data_center",              # 东方国信
 }
 
 

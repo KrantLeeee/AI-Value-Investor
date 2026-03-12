@@ -13,7 +13,35 @@ logger = get_logger(__name__)
 
 # Manually curated representative stocks for major industries
 # Format: {industry_name: [(ticker, name), ...]}
+# Industry aliases: map various names to canonical industry names
+INDUSTRY_ALIASES = {
+    "信息技术服务": "数据中心",
+    "软件和信息技术服务业": "数据中心",
+    "计算机服务": "数据中心",
+    "IDC": "数据中心",
+    "互联网数据中心": "数据中心",
+    "通信服务": "数据中心",
+    "化学制剂": "医药",
+    "化学制药": "医药",
+    "生物制品": "医药",
+    "医疗器械": "医药",
+    "中药": "医药",
+    "电力/公用事业": "电力",
+    "水电": "电力",
+    "火电": "电力",
+    "核电": "电力",
+}
+
 INDUSTRY_REPRESENTATIVES = {
+    "数据中心": [
+        ("603881", "数据港"),
+        ("300383", "光环新网"),
+        ("300166", "东方国信"),
+        ("600804", "鹏博士"),
+        ("300299", "富春股份"),
+        ("002212", "天融信"),
+        ("300454", "深信服"),
+    ],
     "银行": [
         ("601398", "工商银行"),
         ("601939", "建设银行"),
@@ -138,22 +166,25 @@ def get_industry_representatives(industry: str) -> list[dict]:
     Returns:
         List of {ticker, name} dicts
     """
+    # Resolve alias first
+    canonical_industry = INDUSTRY_ALIASES.get(industry, industry)
+
     # Try exact match first
-    if industry in INDUSTRY_REPRESENTATIVES:
+    if canonical_industry in INDUSTRY_REPRESENTATIVES:
         return [
             {"ticker": t, "name": n}
-            for t, n in INDUSTRY_REPRESENTATIVES[industry]
+            for t, n in INDUSTRY_REPRESENTATIVES[canonical_industry]
         ]
 
     # Try partial match
     for ind_name, stocks in INDUSTRY_REPRESENTATIVES.items():
-        if ind_name in industry or industry in ind_name:
+        if ind_name in canonical_industry or canonical_industry in ind_name:
             return [
                 {"ticker": t, "name": n}
                 for t, n in stocks
             ]
 
-    logger.warning("No representatives found for industry: %s", industry)
+    logger.warning("No representatives found for industry: %s (canonical: %s)", industry, canonical_industry)
     return []
 
 
@@ -162,18 +193,19 @@ def find_industry_for_stock(ticker: str) -> str | None:
     Find industry for a stock, trying multiple methods.
 
     Returns:
-        Industry name or None
+        Canonical industry name or None
     """
-    # Method 1: Try CNINFO API
-    industry = get_stock_industry(ticker)
-    if industry:
-        return industry
-
-    # Method 2: Check representative stocks
+    # Method 1: Check representative stocks first (most reliable)
     clean_ticker = ticker.split(".")[0]
     for ind_name, stocks in INDUSTRY_REPRESENTATIVES.items():
         for stock_ticker, _ in stocks:
             if stock_ticker == clean_ticker:
                 return ind_name
+
+    # Method 2: Try CNINFO API
+    industry = get_stock_industry(ticker)
+    if industry:
+        # Resolve to canonical name
+        return INDUSTRY_ALIASES.get(industry, industry)
 
     return None

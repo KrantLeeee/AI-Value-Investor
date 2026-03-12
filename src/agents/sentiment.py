@@ -256,18 +256,22 @@ def run(
     # P1-2: Calculate rule-based sentiment score
     rule_based_score = calculate_rule_based_sentiment(news_items)
 
+    # Determine data availability status
+    data_status = "available" if news_items else "insufficient"
+
     metrics_snapshot: dict = {
         "news_count": len(news_headlines),
         "news_days": NEWS_LOOKBACK_DAYS,
         "news_source": news_source,
+        "data_status": data_status,
         "profit_warning": profit_warning_type,
         "profit_warning_details": profit_warning_details,
         "rule_based_score": round(rule_based_score, 3),
     }
 
     logger.info(
-        "[Sentiment] %s: profit_warning=%s, rule_score=%.2f, source=%s",
-        ticker, profit_warning_type, rule_based_score, news_source
+        "[Sentiment] %s: profit_warning=%s, rule_score=%.2f, source=%s, status=%s",
+        ticker, profit_warning_type, rule_based_score, news_source, data_status
     )
 
     # Handle case: no news available
@@ -276,8 +280,8 @@ def run(
             ticker=ticker,
             agent_name=AGENT_NAME,
             signal="neutral",
-            confidence=0.20,
-            reasoning="无可用新闻数据，情绪分析无法运行。保持中性默认信号。",
+            confidence=0.15,  # Very low confidence when no data
+            reasoning="⚠️ 情绪数据不可用：近期新闻数据不足，无法进行有效的情绪分析。建议关注后续公告和新闻动态。",
             metrics=metrics_snapshot,
         )
         insert_agent_signal(agent_signal)
