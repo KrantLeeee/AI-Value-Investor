@@ -42,3 +42,51 @@ def test_data_freshness_thresholds():
     # Per spec: 180 days warning, 270 days critical
     assert DATA_FRESHNESS_CONFIG['warning_threshold_days'] == 180
     assert DATA_FRESHNESS_CONFIG['critical_threshold_days'] == 270
+
+
+def test_evaluate_fcf_growth_investment():
+    """Test growth investment FCF is not penalized"""
+    from src.agents.fundamentals import evaluate_fcf
+
+    result = evaluate_fcf(
+        fcf=-500_000_000,      # Negative FCF
+        net_income=1_000_000_000,  # Profitable
+        capex=800_000_000,     # High capex > 50% of NI
+        revenue_growth=25,     # High growth > 20%
+        industry_type='tech'
+    )
+
+    assert result['score_impact'] == 0  # No penalty
+    assert result['fcf_type'] == 'growth_investment'
+
+
+def test_evaluate_fcf_operational_issue():
+    """Test low-growth negative FCF is penalized"""
+    from src.agents.fundamentals import evaluate_fcf
+
+    result = evaluate_fcf(
+        fcf=-200_000_000,
+        net_income=300_000_000,
+        capex=100_000_000,
+        revenue_growth=5,  # Low growth
+        industry_type='retail'
+    )
+
+    assert result['score_impact'] < 0  # Penalty
+    assert result['fcf_type'] == 'operational_issue'
+
+
+def test_evaluate_fcf_loss_company():
+    """Test loss company FCF handled separately"""
+    from src.agents.fundamentals import evaluate_fcf
+
+    result = evaluate_fcf(
+        fcf=-100_000_000,
+        net_income=-200_000_000,  # Loss-making
+        capex=50_000_000,
+        revenue_growth=30,
+        industry_type='biotech'
+    )
+
+    assert result['fcf_type'] == 'loss_company'
+    assert result['score_impact'] == -5  # Light penalty

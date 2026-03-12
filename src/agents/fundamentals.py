@@ -495,6 +495,77 @@ def run(ticker: str, market: str) -> AgentSignal:
     return agent_signal
 
 
+def evaluate_fcf(fcf, net_income, capex, revenue_growth, industry_type):
+    """
+    Evaluate FCF quality with differentiation.
+
+    Cases:
+    1. Loss company: separate handling (not growth investment)
+    2. Profitable + negative FCF + high growth + high capex: growth investment (no penalty)
+    3. Profitable + negative FCF + low growth: operational issue (penalty)
+    4. Profitable + positive FCF: quality check
+
+    v1.2 fix: Added net_income > 0 check before capex comparison
+    """
+    # Case 1: Loss-making company
+    if net_income < 0:
+        if fcf < 0:
+            return {
+                'score_impact': -5,
+                'fcf_type': 'loss_company',
+                'note': f'亏损公司（净利润{net_income/1e8:.1f}亿），FCF为负属预期内'
+            }
+        else:
+            return {
+                'score_impact': 0,
+                'fcf_type': 'loss_but_fcf_positive',
+                'note': '亏损但FCF为正，需关注现金流来源'
+            }
+
+    # Case 2 & 3: Profitable company with negative FCF
+    if fcf < 0 and net_income > 0:
+        # Growth investment: high growth + high capex
+        if revenue_growth > 20 and capex > net_income * 0.5:
+            return {
+                'score_impact': 0,
+                'fcf_type': 'growth_investment',
+                'note': f'成长投资期：营收增速{revenue_growth:.1f}%，资本支出占净利{capex/net_income:.0%}'
+            }
+
+        # Operational issue: low growth + negative FCF
+        if revenue_growth < 10:
+            return {
+                'score_impact': -15,
+                'fcf_type': 'operational_issue',
+                'note': f'经营现金流问题：增速仅{revenue_growth:.1f}%但FCF为负'
+            }
+
+        # Moderate concern
+        return {
+            'score_impact': -8,
+            'fcf_type': 'moderate_concern',
+            'note': f'增速{revenue_growth:.1f}%，FCF为负需关注'
+        }
+
+    # Case 4: Profitable + positive FCF
+    if fcf > 0 and net_income > 0:
+        fcf_ni_ratio = fcf / net_income
+        if fcf_ni_ratio > 1.0:
+            return {
+                'score_impact': 5,
+                'fcf_type': 'excellent',
+                'note': f'FCF/净利润={fcf_ni_ratio:.1f}x，现金质量优秀'
+            }
+        elif fcf_ni_ratio > 0.7:
+            return {
+                'score_impact': 2,
+                'fcf_type': 'good',
+                'note': f'FCF/净利润={fcf_ni_ratio:.1f}x，现金质量良好'
+            }
+
+    return {'score_impact': 0, 'fcf_type': 'neutral', 'note': ''}
+
+
 def calculate_fundamentals_score(metrics: dict, industry_config: dict) -> dict:
     """
     Calculate fundamentals score with cycle adjustment for cyclical industries.
