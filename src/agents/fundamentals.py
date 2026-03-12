@@ -33,6 +33,11 @@ logger = get_logger(__name__)
 
 AGENT_NAME = "fundamentals"
 
+DATA_FRESHNESS_CONFIG = {
+    'warning_threshold_days': 180,   # From 120 days - adapts to semi-annual reports
+    'critical_threshold_days': 270,
+}
+
 
 def _compute_5_year_trends(metrics_history: list[dict]) -> dict:
     """

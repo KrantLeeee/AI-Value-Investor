@@ -33,3 +33,12 @@ def test_non_cyclical_uses_current():
     result = calculate_fundamentals_score(metrics, industry_config)
 
     assert result['roe_for_scoring'] == 20.0
+
+
+def test_data_freshness_thresholds():
+    """Test data freshness thresholds are set correctly"""
+    from src.agents.fundamentals import DATA_FRESHNESS_CONFIG
+
+    # Per spec: 180 days warning, 270 days critical
+    assert DATA_FRESHNESS_CONFIG['warning_threshold_days'] == 180
+    assert DATA_FRESHNESS_CONFIG['critical_threshold_days'] == 270
