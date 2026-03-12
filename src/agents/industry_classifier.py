@@ -1154,3 +1154,93 @@ def get_healthcare_mature_valuation_config() -> ValuationMethodConfig:
             "PS作为辅助参考"
         ),
     }
+
+
+def is_innovative_pharma(metrics: dict, business_desc: str) -> bool:
+    """
+    Detect if company is an innovative pharma company.
+
+    Conditions (need 2+):
+    1. R&D expense ratio > 30%
+    2. Net margin < 5% (loss or slim profit)
+    3. Business description contains innovative drug keywords
+    4. Pipeline/clinical trial mentions
+
+    Args:
+        metrics: Financial metrics dict
+        business_desc: Business description text
+
+    Returns:
+        True if company is an innovative pharma company
+    """
+    conditions = 0
+
+    # R&D expense ratio high
+    rd_ratio = metrics.get('rd_expense_ratio', 0)
+    if rd_ratio > 30:
+        conditions += 1
+
+    # Loss or slim profit
+    net_margin = metrics.get('net_margin', 0)
+    if net_margin < 5:
+        conditions += 1
+
+    # Keywords check
+    innovative_keywords = ['创新药', 'First-in-class', 'Best-in-class',
+                           '临床试验', 'IND', 'NDA', '管线', 'Pipeline']
+    if any(kw.lower() in business_desc.lower() for kw in innovative_keywords):
+        conditions += 1
+
+    return conditions >= 2
+
+
+def classify_sub_industry(industry_type: str, company_info: dict,
+                          metrics: dict) -> str:
+    """
+    Further classify within a main industry to sub-industry.
+
+    Args:
+        industry_type: Main industry type (e.g., 'pharma')
+        company_info: Company information dict
+        metrics: Financial metrics dict
+
+    Returns:
+        Sub-industry type or original industry_type
+    """
+    business_desc = company_info.get('business_description', '')
+    company_name = company_info.get('name', '')
+
+    # === Pharma sub-classification ===
+    if industry_type in ['pharma', 'pharma_mature', 'medical_device']:
+        # Check innovative pharma
+        if is_innovative_pharma(metrics, business_desc):
+            return 'pharma_innovative'
+
+        # Check CXO
+        cxo_keywords = ['CRO', 'CMO', 'CDMO', '医药外包', '药物研发服务']
+        if any(kw in business_desc for kw in cxo_keywords):
+            return 'pharma_cxo'
+
+        # Check TCM
+        tcm_keywords = ['中药', '中成药', '中医药', '传统医药']
+        if any(kw in business_desc + company_name for kw in tcm_keywords):
+            return 'pharma_tcm'
+
+    # === Tech sub-classification ===
+    if industry_type in ['tech', 'software']:
+        saas_keywords = ['SaaS', '云服务', '订阅', 'ARR', '云计算']
+        gross_margin = metrics.get('gross_margin', 0)
+        if any(kw in business_desc for kw in saas_keywords) and gross_margin > 70:
+            return 'tech_saas'
+        else:
+            return 'tech_traditional'
+
+    # === Consumer sub-classification ===
+    if industry_type in ['consumer', 'brand_moat']:
+        gross_margin = metrics.get('gross_margin', 0)
+        if gross_margin > 70:
+            return 'consumer_premium'
+        elif gross_margin > 30:
+            return 'consumer_mass'
+
+    return industry_type  # No further classification

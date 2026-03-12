@@ -145,6 +145,71 @@ industries:
     disable_methods: ["graham_number"]
     pe_range: [25, 40]
 
+  # === Pharma Sub-industries ===
+  pharma_innovative:
+    display_name: "创新药研发"
+    parent: "pharma"
+    confidence: 0.80
+    methods: ["ps", "ev_sales"]
+    method_weights:
+      ps: 0.6
+      ev_sales: 0.4
+    ps_multiple: [5.0, 15.0]
+    disable_methods: ["pe", "graham_number"]
+    characteristics:
+      - "亏损或微利"
+      - "研发费用率>30%"
+    example_companies: ["688235", "688180", "688180"]
+
+  pharma_cxo:
+    display_name: "CXO/医药外包"
+    parent: "pharma"
+    confidence: 0.85
+    ev_ebitda_multiple: [20.0, 30.0]
+    methods: ["ev_ebitda", "pe_growth", "dcf"]
+    example_companies: ["603259", "300759", "300347"]
+
+  pharma_tcm:
+    display_name: "中药"
+    parent: "pharma"
+    confidence: 0.80
+    ev_ebitda_multiple: [12.0, 18.0]
+    methods: ["pe", "ev_ebitda"]
+    example_companies: ["600436", "000538", "600085"]
+
+  # === Tech Sub-industries ===
+  tech_saas:
+    display_name: "SaaS软件"
+    parent: "tech"
+    confidence: 0.80
+    methods: ["ps", "ev_revenue"]
+    example_companies: ["600588", "688111", "002410"]
+
+  tech_traditional:
+    display_name: "传统软件/集成"
+    parent: "tech"
+    confidence: 0.80
+    ev_ebitda_multiple: [8.0, 12.0]
+    methods: ["ev_ebitda", "pe"]
+
+  # === Consumer Sub-industries ===
+  consumer_premium:
+    display_name: "高端消费品牌"
+    parent: "consumer"
+    confidence: 0.85
+    methods: ["pe_moat"]
+    pe_range: [30, 45]
+    example_companies: ["600519", "601888"]
+
+  consumer_mass:
+    display_name: "大众消费品"
+    parent: "consumer"
+    confidence: 0.85
+    methods: ["pe", "ev_ebitda"]
+    pe_range: [15, 25]
+    ev_ebitda_multiple: [10.0, 15.0]
+    example_companies: ["600887", "603288", "002557"]
+
   # === Fallback ===
   generic:
     display_name: "综合行业"

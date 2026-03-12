@@ -68,3 +68,58 @@ def test_high_confidence_no_conservative():
     assert result.industry_type == 'bank'
     assert result.conservative_mode is False
     assert result.confidence >= 0.5
+
+
+def test_innovative_pharma_detection():
+    """Test innovative pharma is detected correctly"""
+    from src.agents.industry_classifier import is_innovative_pharma
+
+    metrics = {
+        'rd_expense_ratio': 35,  # > 30%
+        'net_margin': 2  # < 5%
+    }
+    business_desc = '创新药研发，临床试验阶段'
+
+    assert is_innovative_pharma(metrics, business_desc) is True
+
+
+def test_sub_industry_classification_pharma():
+    """Test pharma sub-industry classification"""
+    from src.agents.industry_classifier import classify_sub_industry
+
+    # CXO detection
+    result = classify_sub_industry(
+        industry_type='pharma',
+        company_info={'business_description': 'CDMO服务，药物研发外包'},
+        metrics={}
+    )
+    assert result == 'pharma_cxo'
+
+    # TCM detection
+    result = classify_sub_industry(
+        industry_type='pharma',
+        company_info={'name': '云南白药', 'business_description': '中药生产'},
+        metrics={}
+    )
+    assert result == 'pharma_tcm'
+
+
+def test_sub_industry_classification_consumer():
+    """Test consumer sub-industry classification by gross margin"""
+    from src.agents.industry_classifier import classify_sub_industry
+
+    # Premium (high gross margin)
+    result = classify_sub_industry(
+        industry_type='consumer',
+        company_info={},
+        metrics={'gross_margin': 85}
+    )
+    assert result == 'consumer_premium'
+
+    # Mass (moderate gross margin)
+    result = classify_sub_industry(
+        industry_type='consumer',
+        company_info={},
+        metrics={'gross_margin': 40}
+    )
+    assert result == 'consumer_mass'
