@@ -1,0 +1,54 @@
+# AI Value Investor — Cursor Rules
+
+## Project Overview
+Multi-agent A-share value investing research assistant. 7 analysis agents + 1 dialectical agent → Chinese research report → Telegram push.
+
+**ALWAYS read `PROJECT_MAP.md` before editing code. Use the "scenario index" table to find files in 30 seconds.**
+
+## Current Development Focus (2026-Q1)
+- Contrarian Agent: `src/agents/contrarian.py`
+- Multi-industry valuation: `src/agents/valuation.py` + `config/industry_profiles.yaml`
+
+## Key File Locations
+- CLI entry: `src/main.py`
+- Agent orchestrator: `src/agents/registry.py`
+- Report generator: `src/agents/report_generator.py` (1358 lines)
+- Valuation engine: `src/agents/valuation.py` (1678 lines, largest file)
+- Contrarian agent: `src/agents/contrarian.py`
+- Data fetcher: `src/data/fetcher.py`
+- SQLite CRUD: `src/data/database.py`
+- LLM router: `src/llm/router.py`
+- All LLM prompts: `src/llm/prompts.py`
+- Industry config: `config/industry_profiles.yaml` (tune params without code changes)
+
+## Code Standards
+- Python 3.12, Poetry for dependencies
+- Formatter: ruff (auto-runs on save via Claude hook)
+- Type hints required on all public functions
+- All agents must return `AgentSignal` from `src/data/models.py`
+
+## Protected Files (Do NOT modify directly)
+- `config/llm_config.yaml`
+- `config/screening_rules.yaml`
+- `.env`
+
+## Architecture Pattern
+```
+CLI (main.py) → registry.run_all_agents() → [7 agents] → contrarian → report_generator → output/reports/
+```
+Data flow: Fetcher → SQLite → Agents (read-only) → agent_signals table
+
+## Important Constraints
+1. Must `invest fetch` before `invest report` — agents read from SQLite
+2. Industry valuation params live in YAML, not hardcoded
+3. All LLM calls go through `src/llm/router.py:call_llm(task, system, user)`
+4. Minimum data completeness = 20% (registry.py:MIN_DATA_COMPLETENESS)
+
+## Common Commands
+```bash
+poetry run invest fetch --ticker 601808.SH
+poetry run invest report --ticker 601808.SH
+poetry run invest report --quick --ticker 601808.SH  # no LLM
+poetry run invest scan
+poetry run pytest tests/ -v
+```

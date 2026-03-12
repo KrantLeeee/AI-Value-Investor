@@ -2,6 +2,20 @@
   "hooks": {
     "PostToolUse": [
       {
+        "matcher": {
+          "tools": [
+            "Write",
+            "Edit"
+          ]
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/update_map_hint.py \"{file_path}\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
         "matcher": "*",
         "hooks": [
           {
