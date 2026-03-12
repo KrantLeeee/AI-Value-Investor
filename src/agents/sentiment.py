@@ -371,6 +371,8 @@ def run(
         "rule_based_score": round(rule_based_score, 3),
         "company_name": company_name,  # BUG-B: Track company name used for search
         "irrelevant_news_filtered": irrelevant_news_count,  # BUG-B: Track filtered news
+        # Store actual news headlines for Ch6 report generation
+        "news_headlines": news_headlines[:10],  # Top 10 headlines for report context
     }
 
     logger.info(

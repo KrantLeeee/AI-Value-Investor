@@ -974,11 +974,26 @@ def _build_chapter_user_prompt(
         else:
             sentiment_score_display = f"偏负面 ({sentiment_score_raw:.2f})"
 
+        # Build news summary from actual headlines (not just reasoning)
+        news_headlines = sent.metrics.get("news_headlines", []) if sent else []
+        key_events = sent.metrics.get("key_events", []) if sent else []
+
+        if news_headlines:
+            # Format actual news headlines as numbered list
+            headlines_text = "\n".join(f"- {h}" for h in news_headlines[:8])
+            news_summary = f"**检索到的新闻标题：**\n{headlines_text}"
+            if key_events:
+                events_text = "\n".join(f"- {e}" for e in key_events[:5])
+                news_summary += f"\n\n**关键事件：**\n{events_text}"
+        else:
+            # Fallback to reasoning if no headlines stored
+            news_summary = sent.reasoning[:500] if sent else "（无新闻数据）"
+
         return user_template.format(
             sentiment_signal=sent.signal if sent else "未运行",
             sentiment_score=sentiment_score_display,
             sentiment_reasoning=sent.reasoning if sent else "暂无新闻数据",
-            news_summary=sent.reasoning[:500] if sent else "（无）",
+            news_summary=news_summary,
             data_status_note=data_note,
         )
 
