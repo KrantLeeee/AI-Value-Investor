@@ -153,16 +153,22 @@ def get_industry_position(ticker: str) -> dict:
 
     # Filter out target from peers for comparison
     peers_without_target = [v for v in valuations if v["ticker"].split(".")[0] != target_ticker_clean]
-    pe_sorted_peers = sorted([v for v in peers_without_target if v.get("pe") and v["pe"] > 0], key=lambda x: x["pe"])
+
+    # PE validity filter: exclude loss-making (PE<=0) and near-zero profit (PE>300)
+    PE_UPPER_LIMIT = 300  # Threshold for valid PE (above this = near-zero profit outlier)
+    pe_sorted_peers = sorted(
+        [v for v in peers_without_target if v.get("pe") and 0 < v["pe"] < PE_UPPER_LIMIT],
+        key=lambda x: x["pe"]
+    )
 
     comparison = []
     seen_tickers = set()  # Track added tickers to avoid duplicates
 
     # Top 2 peers by market position (first in list assumed to be leaders)
-    # FIX: Exclude companies with negative PE (loss-making) from "行业代表"
-    for v in peers_without_target[:5]:  # Check top 5 in case some have negative PE
+    # Uses same PE validity filter as pe_sorted_peers
+    for v in peers_without_target[:8]:  # Check more candidates to find valid ones
         pe_val = v.get("pe")
-        if pe_val and pe_val > 0 and v["ticker"] not in seen_tickers:
+        if pe_val and 0 < pe_val < PE_UPPER_LIMIT and v["ticker"] not in seen_tickers:
             comparison.append({**v, "category": "行业代表"})
             seen_tickers.add(v["ticker"])
             if len([c for c in comparison if c["category"] == "行业代表"]) >= 2:
