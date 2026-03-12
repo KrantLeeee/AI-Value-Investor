@@ -159,8 +159,10 @@ def get_industry_position(ticker: str) -> dict:
     seen_tickers = set()  # Track added tickers to avoid duplicates
 
     # Top 2 peers by market position (first in list assumed to be leaders)
-    for v in peers_without_target[:3]:  # Check top 3 in case some lack PE
-        if v.get("pe") and v["ticker"] not in seen_tickers:
+    # FIX: Exclude companies with negative PE (loss-making) from "行业代表"
+    for v in peers_without_target[:5]:  # Check top 5 in case some have negative PE
+        pe_val = v.get("pe")
+        if pe_val and pe_val > 0 and v["ticker"] not in seen_tickers:
             comparison.append({**v, "category": "行业代表"})
             seen_tickers.add(v["ticker"])
             if len([c for c in comparison if c["category"] == "行业代表"]) >= 2:

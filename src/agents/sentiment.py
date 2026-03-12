@@ -466,23 +466,40 @@ def run(
                     "key_events":       parsed.get("key_events", []),
                     "risks":            parsed.get("risks", []),
                 })
-            except Exception:
-                # Parse signal from prose - but force neutral since we can't reliably
-                # determine sentiment_score from prose alone (BUG-FIX: prevent false bullish)
-                text_lower = llm_text.lower()
-                has_positive = any(w in text_lower for w in ["positive", "看多", "正面", "bullish"])
-                has_negative = any(w in text_lower for w in ["negative", "看空", "负面", "bearish"])
+            except Exception as json_err:
+                # BUG-B FIX: When JSON parsing fails, fallback to rule-based scoring
+                # instead of forcing neutral (rule_score already calculated above)
+                logger.warning(
+                    "[Sentiment] %s: JSON parse failed (%s), falling back to rule-based score=%.2f",
+                    ticker, json_err, rule_based_score
+                )
 
-                # Without proper sentiment_score, we cannot meet threshold requirements
-                # Force neutral signal with weak confidence
-                signal = "neutral"
-                confidence = 0.35
-                reasoning = llm_text + " (JSON解析失败，无法获取可靠情绪得分，信号降级为neutral)"
+                # Use rule-based score as fallback (same logic as LLM unavailable)
+                if rule_sentiment_score > 0.2:  # Lower threshold for JSON fallback
+                    signal = "bullish"
+                    confidence = 0.40  # Slightly higher than pure LLM failure
+                    reasoning = (
+                        f"基于{len(news_headlines)}条新闻的关键词分析（正面偏向，规则得分{rule_based_score:.2f}）。"
+                        f"LLM返回格式异常，使用规则分析作为备选。"
+                    )
+                elif rule_sentiment_score < -0.2:
+                    signal = "bearish"
+                    confidence = 0.40
+                    reasoning = (
+                        f"基于{len(news_headlines)}条新闻的关键词分析（负面偏向，规则得分{rule_based_score:.2f}）。"
+                        f"LLM返回格式异常，使用规则分析作为备选。"
+                    )
+                else:
+                    signal = "neutral"
+                    confidence = 0.35
+                    reasoning = (
+                        f"基于{len(news_headlines)}条新闻的关键词分析（中性，规则得分{rule_based_score:.2f}）。"
+                        f"LLM返回格式异常，使用规则分析作为备选。"
+                    )
 
-                # Record detected keywords for debugging but don't use for signal
-                metrics_snapshot["sentiment_score"] = 0.0
-                metrics_snapshot["prose_detected_positive"] = has_positive
-                metrics_snapshot["prose_detected_negative"] = has_negative
+                # Record rule-based score as sentiment_score
+                metrics_snapshot["sentiment_score"] = rule_sentiment_score
+                metrics_snapshot["json_parse_fallback"] = True
 
         except Exception as e:
             logger.warning("[Sentiment] LLM call failed: %s", e)
