@@ -405,3 +405,26 @@ def test_new_energy_mapping():
 
     assert get_industry_type('比亚迪', '新能源汽车') == 'auto_new_energy'
     assert get_industry_type('工业富联', '电子制造') == 'low_margin_mfg'
+
+
+def test_specific_stock_mappings():
+    """Test specific stocks map to correct industries per spec"""
+    from src.data.industry_mapping import get_industry_type
+
+    # Per spec Section 4.6
+    test_cases = [
+        ('紫金矿业', '有色金属', 'cyclical_materials'),
+        ('宝钢股份', '钢铁', 'cyclical_materials'),
+        ('海螺水泥', '水泥', 'cyclical_materials'),
+        ('万华化学', '化工', 'cyclical_materials'),
+        ('中国移动', '通信运营', 'telecom_operator'),
+        ('中兴通讯', '通信设备', 'telecom_equipment'),
+        ('工业富联', '电子制造', 'low_margin_mfg'),
+        ('比亚迪', '新能源汽车', 'auto_new_energy'),
+        ('牧原股份', '养殖', 'cyclical_agri'),
+        ('航发动力', '军工', 'defense_equipment'),
+    ]
+
+    for company_name, sector, expected in test_cases:
+        result = get_industry_type(company_name, sector)
+        assert result == expected, f"{company_name} expected {expected}, got {result}"
