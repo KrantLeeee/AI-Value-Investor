@@ -450,3 +450,99 @@ def test_auto_select_comparables_akshare_empty_returns_empty(
     result = auto_select_comparables("600000.SH", "未知行业", limit=5)
 
     assert result == []
+
+
+# ── Phase 4: PE/PB Bounds Filtering Tests ──────────────────────────────────
+
+def test_pe_bounds_filtering():
+    """Test PE values outside bounds are filtered"""
+    from src.agents.comparables import filter_peer_metrics
+
+    peers = [
+        {'name': 'Company A', 'pe': 25},      # Valid
+        {'name': 'Company B', 'pe': -10},     # Invalid (negative)
+        {'name': 'Company C', 'pe': 500},     # Invalid (> 300)
+        {'name': 'Company D', 'pe': 0},       # Invalid (zero)
+    ]
+
+    filtered = filter_peer_metrics(peers)
+
+    assert filtered[0]['pe'] == 25
+    assert filtered[1]['pe'] is None
+    assert filtered[2]['pe'] is None
+    assert filtered[3]['pe'] is None
+
+
+def test_pb_bounds_filtering():
+    """Test PB values outside bounds are filtered"""
+    from src.agents.comparables import filter_peer_metrics
+
+    peers = [
+        {'name': 'Company A', 'pb': 3.5},     # Valid
+        {'name': 'Company B', 'pb': -2},      # Invalid
+        {'name': 'Company C', 'pb': 60},      # Invalid (> 50)
+    ]
+
+    filtered = filter_peer_metrics(peers)
+
+    assert filtered[0]['pb'] == 3.5
+    assert filtered[1]['pb'] is None
+    assert filtered[2]['pb'] is None
+
+
+def test_pe_pb_bounds_notes_added():
+    """Test that notes are added when values are filtered"""
+    from src.agents.comparables import filter_peer_metrics
+
+    peers = [
+        {'name': 'Company A', 'pe': -5, 'pb': -1},
+    ]
+
+    filtered = filter_peer_metrics(peers)
+
+    assert filtered[0]['pe'] is None
+    assert filtered[0]['pe_note'] == '超出合理范围，已排除'
+    assert filtered[0]['pb'] is None
+    assert filtered[0]['pb_note'] == '超出合理范围，已排除'
+
+
+def test_pe_pb_edge_cases():
+    """Test edge cases at boundary values"""
+    from src.agents.comparables import filter_peer_metrics
+
+    peers = [
+        {'name': 'Company A', 'pe': 300, 'pb': 50},   # At boundary (invalid)
+        {'name': 'Company B', 'pe': 299.9, 'pb': 49.9},  # Just inside (valid)
+        {'name': 'Company C', 'pe': 0.01, 'pb': 0.01},   # Just above zero (valid)
+    ]
+
+    filtered = filter_peer_metrics(peers)
+
+    # At boundary should be invalid (exclusive bounds)
+    assert filtered[0]['pe'] is None
+    assert filtered[0]['pb'] is None
+
+    # Just inside should be valid
+    assert filtered[1]['pe'] == 299.9
+    assert filtered[1]['pb'] == 49.9
+
+    # Just above zero should be valid
+    assert filtered[2]['pe'] == 0.01
+    assert filtered[2]['pb'] == 0.01
+
+
+def test_filter_peer_metrics_preserves_other_fields():
+    """Test that filtering preserves other fields in the dict"""
+    from src.agents.comparables import filter_peer_metrics
+
+    peers = [
+        {'name': 'Company A', 'ticker': '600000.SH', 'pe': -5, 'pb': 3.5, 'roe': 0.12},
+    ]
+
+    filtered = filter_peer_metrics(peers)
+
+    assert filtered[0]['name'] == 'Company A'
+    assert filtered[0]['ticker'] == '600000.SH'
+    assert filtered[0]['pe'] is None  # Filtered
+    assert filtered[0]['pb'] == 3.5   # Not filtered
+    assert filtered[0]['roe'] == 0.12  # Preserved

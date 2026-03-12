@@ -24,6 +24,41 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Bounds for PE and PB filtering
+PE_BOUNDS = (0, 300)
+PB_BOUNDS = (0, 50)
+
+
+def filter_peer_metrics(peers: list) -> list:
+    """
+    Filter peer metrics to exclude unreasonable values.
+
+    PE: must be in (0, 300)
+    PB: must be in (0, 50)
+
+    Args:
+        peers: List of peer dictionaries with 'pe' and/or 'pb' keys
+
+    Returns:
+        The same list with invalid PE/PB values set to None and notes added
+    """
+    for peer in peers:
+        # Filter PE
+        pe = peer.get('pe')
+        if pe is not None:
+            if not (PE_BOUNDS[0] < pe < PE_BOUNDS[1]):
+                peer['pe'] = None
+                peer['pe_note'] = '超出合理范围，已排除'
+
+        # Filter PB
+        pb = peer.get('pb')
+        if pb is not None:
+            if not (PB_BOUNDS[0] < pb < PB_BOUNDS[1]):
+                peer['pb'] = None
+                peer['pb_note'] = '超出合理范围，已排除'
+
+    return peers
+
 
 def _safe(x) -> float | None:
     """Safe float conversion."""
