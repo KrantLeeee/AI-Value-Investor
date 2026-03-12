@@ -1,547 +1,153 @@
-# Industry-specific agent weights and scoring thresholds
-# Based on PROJECT_ROADMAP.md P1-⑤
-#
-# IMPORTANT: All weights marked validated: false
-# These are "informed assumptions" pending P3 prediction tracking data
-# Requires ≥20 predictions per industry for statistical calibration
+# Industry Profiles Configuration
+# Version: 2.1.0
 
-industry_profiles:
-  energy:
-    weights:
-      fundamentals: 0.25
-      valuation: 0.30
-      warren_buffett: 0.15
-      ben_graham: 0.20
-      sentiment: 0.10
-    rationale: "资源股估值对油价极敏感(→高valuation权重)，护城河非差异化因素(→低buffett)，情绪主要反映油价非公司基本面"
-    validated: false
+industries:
+  # === Verified Industries (High Confidence) ===
+  bank:
+    display_name: "银行"
+    confidence: 0.95
+    methods: ["pb_roe", "ddm"]
+    exempt_metrics: ["debt_equity", "current_ratio", "fcf_ni"]
 
-    # Fundamentals scoring thresholds (adjusted for heavy asset industries)
-    scoring:
-      roe_thresholds: [15, 10, 6]  # Lower than default due to capital intensity
-      net_margin_thresholds: [12, 6, 3]
-      de_thresholds: [0.5, 0.8, 1.5]  # Resource stocks typically have higher leverage
-      growth_weight: 0.15  # Cyclical growth is unstable
-      cash_quality_weight: 0.30  # Cash flow critical for resource stocks
-      wacc_range: [0.08, 0.10]  # Energy/resources: higher β + cyclical volatility
-      default_beta: 1.1  # Slightly higher than market for cyclical sectors
+  insurance:
+    display_name: "保险"
+    confidence: 0.90
+    methods: ["pb_roe", "ddm"]
+    exempt_metrics: ["debt_equity", "current_ratio", "fcf_ni"]
+    exempt_reason: "保险业务模式：保费流入但赔付是或有负债，FCF概念不适用"
 
-    # Phase 3: Industry valuation multiples (replace fixed 6x/8x parameters)
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 4.5    # Trough valuation (2020 oil crash)
-        cycle_normal: 6.5    # Mid-cycle average
-        cycle_peak: 10.0     # Peak valuation (2022 energy boom)
-      pb:
-        cycle_bottom: 0.6
-        cycle_normal: 1.0
-        cycle_peak: 1.8
-      ps:
-        cycle_bottom: 0.5
-        cycle_normal: 1.0
-        cycle_peak: 2.0
+  utility:
+    display_name: "公用事业"
+    confidence: 0.90
+    methods: ["ddm", "dcf"]
+    exempt_metrics: ["debt_equity", "current_ratio"]
 
-    # Phase 3: Industry comparable companies (top 5 A-share)
-    comparable_companies:
-      - ticker: "601808.SH"
-        name: "中海油服"
-        note: "油田服务龙头"
-      - ticker: "600028.SH"
-        name: "中国石化"
-        note: "综合油气巨头"
-      - ticker: "601857.SH"
-        name: "中国石油"
-        note: "上游开采龙头"
-      - ticker: "600583.SH"
-        name: "海油工程"
-        note: "海洋工程服务"
-      - ticker: "002353.SZ"
-        name: "杰瑞股份"
-        note: "油服设备"
+  oil_gas:
+    display_name: "石油天然气"
+    confidence: 0.85
+    ev_ebitda_multiple: [4.0, 5.0]
+    methods: ["ev_ebitda_cycle", "pb_cycle"]
+    scoring_mode: "cycle_adjusted"
 
-  consumer:
-    weights:
-      fundamentals: 0.20
-      valuation: 0.15
-      warren_buffett: 0.35
-      ben_graham: 0.10
-      sentiment: 0.20
-    rationale: "消费品核心壁垒是品牌+渠道(→高buffett)，估值因稳定增长较少波动"
-    validated: false
+  coal:
+    display_name: "煤炭"
+    confidence: 0.85
+    ev_ebitda_multiple: [4.0, 5.0]
+    methods: ["ev_ebitda_cycle", "pb_cycle", "ddm"]
+    scoring_mode: "cycle_adjusted"
 
-    scoring:
-      roe_thresholds: [25, 20, 15]  # Consumer goods expect higher ROE
-      net_margin_thresholds: [15, 10, 6]
-      de_thresholds: [0.3, 0.6, 1.0]
-      growth_weight: 0.30  # Growth is stable and important
-      cash_quality_weight: 0.20
-      wacc_range: [0.07, 0.09]  # Consumer: stable cash flow, defensive
-      default_beta: 0.85  # Lower β for defensive consumer stocks
+  pharma_mature:
+    display_name: "成熟医药"
+    confidence: 0.85
+    ev_ebitda_multiple: [15.0, 20.0]
+    methods: ["ev_ebitda", "pe", "dcf"]
 
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 12.0
-        cycle_normal: 18.0
-        cycle_peak: 28.0
-      pe:
-        cycle_bottom: 20.0
-        cycle_normal: 30.0
-        cycle_peak: 45.0
-      ps:
-        cycle_bottom: 4.0
-        cycle_normal: 8.0
-        cycle_peak: 15.0
+  medical_device:
+    display_name: "医疗器械"
+    confidence: 0.85
+    ev_ebitda_multiple: [15.0, 20.0]
+    methods: ["ev_ebitda", "pe", "dcf"]
 
-    comparable_companies:
-      - ticker: "600519.SH"
-        name: "贵州茅台"
-        note: "白酒龙头"
-      - ticker: "000858.SZ"
-        name: "五粮液"
-        note: "白酒第二"
-      - ticker: "600887.SH"
-        name: "伊利股份"
-        note: "乳制品龙头"
-      - ticker: "603288.SH"
-        name: "海天味业"
-        note: "调味品龙头"
-      - ticker: "000568.SZ"
-        name: "泸州老窖"
-        note: "白酒第三"
-
-  tech:
-    weights:
-      fundamentals: 0.15
-      valuation: 0.25
-      warren_buffett: 0.20
-      ben_graham: 0.10
-      sentiment: 0.30
-    rationale: "科技股市场情绪影响极大，基本面变化快(YoY参考有限)"
-    validated: false
-
-    scoring:
-      roe_thresholds: [20, 15, 10]
-      net_margin_thresholds: [20, 12, 6]
-      de_thresholds: [0.2, 0.5, 0.8]  # Tech usually has low debt
-      growth_weight: 0.35  # Growth is critical for tech
-      cash_quality_weight: 0.25
-      wacc_range: [0.06, 0.08]  # Tech/New Energy: low debt + market optimism
-      default_beta: 1.2  # Higher volatility in tech sector
-
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 8.0
-        cycle_normal: 15.0
-        cycle_peak: 30.0
-      ps:
-        loss_making: 6.0      # For unprofitable tech (AI, etc.)
-        growth_stage: 8.0     # High growth profitable
-        mature_stage: 4.0
-      peg:
-        bargain: 0.8
-        fair_value: 1.2
-        expensive: 2.0
-
-    comparable_companies:
-      - ticker: "002230.SZ"
-        name: "科大讯飞"
-        note: "AI语音龙头"
-      - ticker: "300124.SZ"
-        name: "汇川技术"
-        note: "工业自动化"
-      - ticker: "688169.SH"
-        name: "石头科技"
-        note: "智能硬件"
-      - ticker: "002415.SZ"
-        name: "海康威视"
-        note: "安防龙头"
-      - ticker: "300059.SZ"
-        name: "东方财富"
-        note: "互联网券商"
-
-  banking:
-    weights:
-      fundamentals: 0.30
-      valuation: 0.20
-      warren_buffett: 0.10
-      ben_graham: 0.30
-      sentiment: 0.10
-    rationale: "银行核心看资产质量,格雷厄姆框架(低PE/PB+稳定分红)天然适用"
-    validated: false
-
-    scoring:
-      roe_thresholds: [15, 12, 9]  # Banking ROE is typically lower
-      net_margin_thresholds: [30, 20, 12]  # But margins can be high
-      de_thresholds: [8.0, 12.0, 15.0]  # Banks have much higher D/E
-      growth_weight: 0.15
-      cash_quality_weight: 0.15
-      wacc_range: [0.07, 0.09]  # Banking: special treatment, equity cost dominates
-      default_beta: 0.95  # Moderate volatility, regulated sector
-
-    valuation_multiples:
-      pb:
-        undervalued: 0.6
-        fair_value: 1.0
-        overvalued: 1.5
-      pe:
-        undervalued: 5.0
-        fair_value: 8.0
-        overvalued: 12.0
-      dividend_yield:
-        attractive: 0.05
-        fair: 0.04
-        low: 0.03
-
-    comparable_companies:
-      - ticker: "600036.SH"
-        name: "招商银行"
-        note: "零售银行龙头"
-      - ticker: "601398.SH"
-        name: "工商银行"
-        note: "四大行龙头"
-      - ticker: "601318.SH"
-        name: "中国平安"
-        note: "综合金融"
-      - ticker: "601166.SH"
-        name: "兴业银行"
-        note: "股份制银行"
-      - ticker: "000001.SZ"
-        name: "平安银行"
-        note: "零售转型"
-
-  manufacturing:
-    weights:
-      fundamentals: 0.28
-      valuation: 0.22
-      warren_buffett: 0.18
-      ben_graham: 0.20
-      sentiment: 0.12
-    rationale: "传统制造业看重基本面稳定性和估值合理性"
-    validated: false
-
-    scoring:
-      roe_thresholds: [18, 12, 8]
-      net_margin_thresholds: [12, 7, 4]
-      de_thresholds: [0.6, 1.0, 1.5]
-      growth_weight: 0.20
-      cash_quality_weight: 0.25
-      wacc_range: [0.09, 0.11]  # Steel/Manufacturing: high β + leverage
-      default_beta: 1.15  # Higher cyclicality
-
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 5.0
-        cycle_normal: 8.0
-        cycle_peak: 12.0
-      pe:
-        cycle_bottom: 8.0
-        cycle_normal: 15.0
-        cycle_peak: 25.0
-      pb:
-        cycle_bottom: 0.8
-        cycle_normal: 1.5
-        cycle_peak: 2.5
-
-    comparable_companies:
-      - ticker: "000651.SZ"
-        name: "格力电器"
-        note: "白电龙头"
-      - ticker: "000333.SZ"
-        name: "美的集团"
-        note: "家电综合"
-      - ticker: "600690.SH"
-        name: "海尔智家"
-        note: "智能家电"
-      - ticker: "601012.SH"
-        name: "隆基绿能"
-        note: "光伏龙头"
-      - ticker: "300750.SZ"
-        name: "宁德时代"
-        note: "动力电池"
-
-  healthcare:
-    weights:
-      fundamentals: 0.22
-      valuation: 0.18
-      warren_buffett: 0.25
-      ben_graham: 0.15
-      sentiment: 0.20
-    rationale: "医药股注重品牌和研发护城河，情绪对政策敏感"
-    validated: false
-
-    scoring:
-      roe_thresholds: [22, 16, 11]
-      net_margin_thresholds: [18, 12, 7]
-      de_thresholds: [0.3, 0.6, 1.0]
-      growth_weight: 0.25
-      cash_quality_weight: 0.20
-      wacc_range: [0.07, 0.09]  # Healthcare: moderate, policy-sensitive
-      default_beta: 0.90  # Lower volatility, defensive characteristics
-
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 10.0
-        cycle_normal: 18.0
-        cycle_peak: 30.0
-      pe:
-        rd_stage: null        # Use PS for R&D stage companies
-        growth_stage: 35.0
-        mature_stage: 25.0
-      ps:
-        rd_stage: 8.0         # For pre-profit biotech
-        growth_stage: 6.0
-        mature_stage: 3.0
-
-    comparable_companies:
-      - ticker: "600276.SH"
-        name: "恒瑞医药"
-        note: "创新药龙头"
-      - ticker: "603259.SH"
-        name: "药明康德"
-        note: "CXO龙头"
-      - ticker: "000538.SZ"
-        name: "云南白药"
-        note: "中药龙头"
-      - ticker: "300015.SZ"
-        name: "爱尔眼科"
-        note: "眼科连锁"
-      - ticker: "300760.SZ"
-        name: "迈瑞医疗"
-        note: "医疗器械"
+  datacenter:
+    display_name: "数据中心"
+    confidence: 0.85
+    ev_ebitda_multiple: [18.0, 25.0]
+    methods: ["ev_ebitda", "dcf"]
 
   real_estate:
-    weights:
-      fundamentals: 0.25
-      valuation: 0.30
-      warren_buffett: 0.12
-      ben_graham: 0.23
-      sentiment: 0.10
-    rationale: "房地产看重估值和财务杠杆，护城河差异小"
-    validated: false
+    display_name: "房地产开发"
+    confidence: 0.80
+    pb_multiple_cap: 0.5
+    methods: ["pb"]
+    disable_methods: ["graham_number", "ev_ebitda"]
+    warning_text: "⚠️ 房地产开发行业不适合使用标准P/B倍数估值"
 
-    scoring:
-      roe_thresholds: [14, 10, 7]
-      net_margin_thresholds: [15, 10, 6]
-      de_thresholds: [1.0, 1.5, 2.5]  # High leverage is normal
-      growth_weight: 0.18
-      cash_quality_weight: 0.28  # Cash flow critical
-      wacc_range: [0.08, 0.10]  # Real estate: high leverage + policy risk
-      default_beta: 1.05  # Moderate-high cyclicality
+  # === New 8 Industry Types ===
+  cyclical_materials:
+    display_name: "周期材料"
+    confidence: 0.85
+    applies_to: ["有色金属", "钢铁", "水泥", "化工"]
+    ev_ebitda_multiple: [4.0, 6.0]
+    methods: ["ev_ebitda_cycle", "pb_cycle"]
+    disable_methods: ["graham_number"]
+    scoring_mode: "cycle_adjusted"
 
-    valuation_multiples:
-      nav:
-        discount: 0.70       # NAV discount in downturn
-        fair_value: 1.0
-        premium: 1.20
-      pb:
-        cycle_bottom: 0.5
-        cycle_normal: 0.8
-        cycle_peak: 1.5
-      pe:
-        cycle_bottom: 4.0
-        cycle_normal: 8.0
-        cycle_peak: 15.0
+  telecom_operator:
+    display_name: "通信运营商"
+    confidence: 0.85
+    ev_ebitda_multiple: [6.0, 7.0]
+    methods: ["ddm", "ev_ebitda"]
+    method_weights:
+      ddm: 0.5
+      ev_ebitda: 0.5
+    disable_methods: ["graham_number"]
 
-    comparable_companies:
-      - ticker: "001979.SZ"
-        name: "招商蛇口"
-        note: "央企地产"
-      - ticker: "000002.SZ"
-        name: "万科A"
-        note: "龙头房企"
-      - ticker: "600048.SH"
-        name: "保利发展"
-        note: "央企地产"
-      - ticker: "601155.SH"
-        name: "新城控股"
-        note: "商业地产"
-      - ticker: "000656.SZ"
-        name: "金科股份"
-        note: "民营房企"
+  telecom_equipment:
+    display_name: "通信设备"
+    confidence: 0.80
+    methods: ["ps", "ev_sales"]
+    method_weights:
+      ps: 0.6
+      ev_sales: 0.4
+    disable_methods: ["graham_number", "pb"]
+
+  auto_new_energy:
+    display_name: "新能源汽车"
+    confidence: 0.85
+    ev_ebitda_multiple: [15.0, 20.0]
+    methods: ["pe_growth", "ev_ebitda", "dcf"]
+    method_weights:
+      pe_growth: 0.3
+      ev_ebitda: 0.4
+      dcf: 0.3
+    outlier_threshold: 1.5
 
   new_energy_mfg:
-    weights:
-      fundamentals: 0.24
-      valuation: 0.26
-      warren_buffett: 0.18
-      ben_graham: 0.18
-      sentiment: 0.14
-    rationale: "新能源制造业（电池/光伏）：成长性强但竞争激烈，基本面+估值并重，政策敏感"
-    validated: false
+    display_name: "新能源制造"
+    confidence: 0.85
+    ev_ebitda_multiple: [12.0, 18.0]
+    methods: ["ev_ebitda", "dcf"]
+    disable_methods: ["graham_number"]
+    outlier_threshold: 1.5
+    example_companies: ["300750", "300014", "002812"]
 
-    scoring:
-      roe_thresholds: [20, 15, 10]  # Growth manufacturing
-      net_margin_thresholds: [15, 8, 4]  # Competitive margin pressure
-      de_thresholds: [0.4, 0.8, 1.2]  # Lower leverage for high-growth mfg
-      growth_weight: 0.35  # Growth critical for new energy
-      cash_quality_weight: 0.22  # Cash flow important
-      wacc_range: [0.08, 0.10]  # New energy: growth + policy risk
-      default_beta: 1.25  # Higher volatility in sector
+  cyclical_agri:
+    display_name: "农业养殖"
+    confidence: 0.80
+    methods: ["normalized_pe"]
+    disable_methods: ["graham_number"]
+    scoring_mode: "cycle_adjusted"
+    normalized_years: 5
 
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 8.0
-        cycle_normal: 15.0
-        cycle_peak: 25.0
-      pe:
-        growth_stage: 35.0
-        mature_stage: 25.0
-      ps:
-        growth_stage: 5.0
-        mature_stage: 3.0
-      pb:
-        cycle_bottom: 1.2
-        cycle_normal: 2.0
-        cycle_peak: 3.5
+  defense_equipment:
+    display_name: "军工装备"
+    confidence: 0.75
+    methods: ["ps", "peg", "pb"]
+    method_weights:
+      ps: 0.5
+      peg: 0.3
+      pb: 0.2
+    disable_methods: ["graham_number", "ev_ebitda"]
 
-    comparable_companies:
-      - ticker: "300750.SZ"
-        name: "宁德时代"
-        note: "动力电池龙头"
-      - ticker: "601012.SH"
-        name: "隆基绿能"
-        note: "光伏龙头"
-      - ticker: "600438.SH"
-        name: "通威股份"
-        note: "光伏硅料"
-      - ticker: "300772.SZ"
-        name: "运达股份"
-        note: "风电叶片"
-      - ticker: "002080.SZ"
-        name: "中电环保"
-        note: "新能源配套"
+  low_margin_mfg:
+    display_name: "低利润率制造"
+    confidence: 0.80
+    methods: ["ps", "ev_sales"]
+    method_weights:
+      ps: 0.5
+      ev_sales: 0.5
+    disable_methods: ["graham_number", "pb"]
 
-  data_center:
-    weights:
-      fundamentals: 0.22
-      valuation: 0.28
-      warren_buffett: 0.15
-      ben_graham: 0.15
-      sentiment: 0.20
-    rationale: "数据中心/IDC行业：重资产+稳定现金流，类似公用事业但估值更高，AI算力需求推动成长预期"
-    validated: false
+  brand_moat:
+    display_name: "消费护城河"
+    confidence: 0.85
+    methods: ["pe", "fcf_yield"]
+    disable_methods: ["graham_number"]
+    pe_range: [25, 40]
 
-    scoring:
-      roe_thresholds: [12, 8, 5]  # Capital intensive, lower ROE acceptable
-      net_margin_thresholds: [15, 10, 6]
-      de_thresholds: [0.8, 1.2, 1.8]  # Higher leverage for infrastructure
-      growth_weight: 0.25  # Growth matters in AI era
-      cash_quality_weight: 0.28
-      wacc_range: [0.07, 0.09]  # Infrastructure with growth premium
-      default_beta: 1.0
-
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 15.0
-        cycle_normal: 22.0    # Data center premium (AI demand)
-        cycle_peak: 30.0
-      pe:
-        cycle_bottom: 25.0
-        cycle_normal: 40.0
-        cycle_peak: 60.0
-      ps:
-        cycle_bottom: 3.0
-        cycle_normal: 5.0
-        cycle_peak: 8.0
-
-    comparable_companies:
-      - ticker: "603881.SH"
-        name: "数据港"
-        note: "IDC龙头"
-      - ticker: "300383.SZ"
-        name: "光环新网"
-        note: "云计算IDC"
-      - ticker: "300166.SZ"
-        name: "东方国信"
-        note: "大数据"
-      - ticker: "002212.SZ"
-        name: "天融信"
-        note: "网络安全"
-
-  default:
-    weights:
-      fundamentals: 0.25
-      valuation: 0.25
-      warren_buffett: 0.20
-      ben_graham: 0.15
-      sentiment: 0.15
-    rationale: "均等分布偏保守，适用于未分类行业"
-    validated: false
-
-    scoring:
-      roe_thresholds: [20, 15, 10]
-      net_margin_thresholds: [15, 10, 5]
-      de_thresholds: [0.5, 1.0, 1.5]
-      growth_weight: 0.25
-      cash_quality_weight: 0.25
-      wacc_range: [0.08, 0.10]  # Default: conservative middle range
-      default_beta: 1.0  # Market average beta
-
-    valuation_multiples:
-      ev_ebitda:
-        cycle_bottom: 6.0
-        cycle_normal: 8.0
-        cycle_peak: 12.0
-      pe:
-        cycle_bottom: 10.0
-        cycle_normal: 15.0
-        cycle_peak: 25.0
-      pb:
-        cycle_bottom: 1.0
-        cycle_normal: 2.0
-        cycle_peak: 3.0
-
-    comparable_companies: []  # No default comparables
-
-# Industry keyword mapping (for classification from sector names)
-industry_keywords:
-  energy:
-    - "能源"
-    - "石油"
-    - "天然气"
-    - "煤炭"
-    - "电力"
-  new_energy_mfg:
-    - "新能源"
-    - "电池"
-    - "光伏"
-    - "风电"
-    - "锂电"
-  data_center:
-    - "数据中心"
-    - "IDC"
-    - "信息技术服务"
-    - "云计算"
-    - "算力"
-    - "互联网数据中心"
-  consumer:
-    - "消费"
-    - "零售"
-    - "食品"
-    - "饮料"
-    - "服装"
-    - "家电"
-  tech:
-    - "科技"
-    - "软件"
-    - "互联网"
-    - "电子"
-    - "通信"
-    - "半导体"
-  banking:
-    - "银行"
-    - "金融"
-  manufacturing:
-    - "制造"
-    - "机械"
-    - "汽车"
-    - "钢铁"
-    - "化工"
-  healthcare:
-    - "医药"
-    - "生物"
-    - "医疗"
-    - "保健"
-  real_estate:
-    - "房地产"
-    - "地产"
+  # === Fallback ===
+  generic:
+    display_name: "综合行业"
+    confidence: 0.40
+    ev_ebitda_multiple: 8.0
+    methods: ["ev_ebitda", "pb", "graham_number"]
