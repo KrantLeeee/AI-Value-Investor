@@ -201,6 +201,80 @@ def _extract_profit_warning_info(warnings: list[ProfitWarning]) -> tuple[str | N
     return warning_type, details
 
 
+def _get_company_name(ticker: str) -> str | None:
+    """
+    Get company name from watchlist or company info for better news search.
+
+    Returns:
+        Company name string or None if not found
+    """
+    try:
+        from src.data.fetcher import _COMPANY_INFO_FALLBACK
+        info = _COMPANY_INFO_FALLBACK.get(ticker, {})
+        name = info.get("name") or info.get("company_name")
+        if name:
+            return name
+    except ImportError:
+        pass
+
+    # Try watchlist
+    try:
+        from src.utils.config import load_watchlist
+        watchlist = load_watchlist()
+        for item in watchlist:
+            if item.get("ticker") == ticker:
+                return item.get("name")
+    except Exception:
+        pass
+
+    return None
+
+
+def _validate_news_relevance(news_items: list[dict], ticker: str, company_name: str | None) -> tuple[list[dict], int]:
+    """
+    BUG-B FIX: Validate that fetched news actually relates to the target company.
+
+    Args:
+        news_items: List of news items from search
+        ticker: Stock ticker (e.g., "603881.SH")
+        company_name: Company name (e.g., "数据港")
+
+    Returns:
+        Tuple of (relevant_news_items, irrelevant_count)
+    """
+    if not news_items:
+        return [], 0
+
+    code = ticker.split(".")[0]
+    relevant = []
+    irrelevant_count = 0
+
+    # Build relevance keywords
+    keywords = [code]
+    if company_name:
+        keywords.append(company_name)
+        # Add partial matches for company names (e.g., "数据港" from "上海数据港")
+        if len(company_name) >= 4:
+            keywords.append(company_name[:4])
+
+    for item in news_items:
+        text = f"{item.get('title', '')} {item.get('content', '')}".lower()
+
+        # Check if any keyword appears in the news
+        is_relevant = any(kw.lower() in text for kw in keywords)
+
+        if is_relevant:
+            relevant.append(item)
+        else:
+            irrelevant_count += 1
+            logger.debug(
+                "[Sentiment] Filtered irrelevant news: %s",
+                item.get("title", "")[:50]
+            )
+
+    return relevant, irrelevant_count
+
+
 def run(
     ticker: str,
     market: str,
@@ -216,16 +290,36 @@ def run(
     2. Structured profit warning data from AKShare (业绩预告)
     3. Rule-based sentiment scoring (P1-2)
     """
+    # BUG-B FIX: Get company name for better search and relevance validation
+    company_name = _get_company_name(ticker)
+
     # P1-1: Try Tavily first for financial news (better quality)
     news_items = []
     news_source = "none"
+    irrelevant_news_count = 0
 
     if use_tavily:
-        # Build search query from ticker
-        query = f"{ticker.split('.')[0]} 财报 业绩 股票"
-        news_items = _get_news_from_tavily(query)
-        if news_items:
-            news_source = "tavily"
+        # BUG-B FIX: Include company name in search query for better precision
+        code = ticker.split('.')[0]
+        if company_name:
+            query = f"{company_name} {code} 财报 业绩"
+        else:
+            query = f"{code} 财报 业绩 股票"
+
+        raw_news = _get_news_from_tavily(query)
+
+        # BUG-B FIX: Validate news relevance - filter out sector-level news
+        if raw_news:
+            news_items, irrelevant_news_count = _validate_news_relevance(
+                raw_news, ticker, company_name
+            )
+            if news_items:
+                news_source = "tavily"
+            elif irrelevant_news_count > 0:
+                logger.warning(
+                    "[Sentiment] %s: All %d news items filtered as irrelevant (likely sector news)",
+                    ticker, irrelevant_news_count
+                )
 
     # Fallback to AKShare
     if not news_items:
@@ -256,8 +350,16 @@ def run(
     # P1-2: Calculate rule-based sentiment score
     rule_based_score = calculate_rule_based_sentiment(news_items)
 
-    # Determine data availability status
-    data_status = "available" if news_items else "insufficient"
+    # BUG-B FIX: Enhanced data availability status
+    # "available" = relevant news found
+    # "irrelevant" = news found but not about this specific company
+    # "insufficient" = no news found at all
+    if news_items:
+        data_status = "available"
+    elif irrelevant_news_count > 0:
+        data_status = "irrelevant"  # Had news but none were about the target company
+    else:
+        data_status = "insufficient"
 
     metrics_snapshot: dict = {
         "news_count": len(news_headlines),
@@ -267,6 +369,8 @@ def run(
         "profit_warning": profit_warning_type,
         "profit_warning_details": profit_warning_details,
         "rule_based_score": round(rule_based_score, 3),
+        "company_name": company_name,  # BUG-B: Track company name used for search
+        "irrelevant_news_filtered": irrelevant_news_count,  # BUG-B: Track filtered news
     }
 
     logger.info(
@@ -274,18 +378,30 @@ def run(
         ticker, profit_warning_type, rule_based_score, news_source, data_status
     )
 
-    # Handle case: no news available
+    # Handle case: no relevant news available
     if not news_items:
+        # BUG-B FIX: Distinguish between "no news" and "news exists but irrelevant"
+        if data_status == "irrelevant":
+            reasoning = (
+                f"⚠️ 情绪数据不可用：搜索到 {irrelevant_news_count} 条新闻，"
+                f"但均为行业/板块资讯，未发现与{company_name or ticker}直接相关的个股新闻。"
+                "情绪分析结果不可靠，建议通过其他渠道验证。"
+            )
+            confidence = 0.10  # Even lower confidence for irrelevant data
+        else:
+            reasoning = "⚠️ 情绪数据不可用：近期新闻数据不足，无法进行有效的情绪分析。建议关注后续公告和新闻动态。"
+            confidence = 0.15
+
         agent_signal = AgentSignal(
             ticker=ticker,
             agent_name=AGENT_NAME,
             signal="neutral",
-            confidence=0.15,  # Very low confidence when no data
-            reasoning="⚠️ 情绪数据不可用：近期新闻数据不足，无法进行有效的情绪分析。建议关注后续公告和新闻动态。",
+            confidence=confidence,
+            reasoning=reasoning,
             metrics=metrics_snapshot,
         )
         insert_agent_signal(agent_signal)
-        logger.info("[Sentiment] %s: no news data, returning neutral", ticker)
+        logger.info("[Sentiment] %s: %s, returning neutral with low confidence", ticker, data_status)
         return agent_signal
 
     # P1-2: Use rule-based score as baseline (0.0-1.0 → -1.0 to 1.0 for compatibility)

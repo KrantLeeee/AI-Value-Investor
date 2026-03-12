@@ -91,8 +91,11 @@ def calculate_percentile_position(
         sorted_v = sorted(values)
         mid = len(sorted_v) // 2
         if len(sorted_v) % 2 == 0:
-            return (sorted_v[mid - 1] + sorted_v[mid]) / 2
-        return sorted_v[mid]
+            result = (sorted_v[mid - 1] + sorted_v[mid]) / 2
+        else:
+            result = sorted_v[mid]
+        # Fix floating point precision issue (e.g., 184.98000000000002 → 184.98)
+        return round(result, 2)
 
     return {
         "pe_percentile": _percentile(pe, pe_values),

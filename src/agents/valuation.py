@@ -838,7 +838,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 "fcf_growth_base": FCF_GROWTH_BASE * 100,
                 "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
             })
-            detail_lines.append(f"DCF基于{fcf_source} (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元")
+            # DCF display: clarify that these are enterprise values (OUTPUT), not FCF (INPUT)
+            detail_lines.append(
+                f"DCF企业价值 (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元 "
+                f"(输入: {fcf_source}={base_fcf/1e8:.2f}亿)"
+            )
 
             # Generate sensitivity matrix (P2-⑦)
             if shares and shares > 0:
