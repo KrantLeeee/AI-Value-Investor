@@ -1012,3 +1012,86 @@ def test_brand_moat_pe_valuation():
     assert result['pe_range'] == (30, 40)
     # Target should be EPS * PE_mid = 50 * 35 = 1750
     assert 1500 < result['target_price'] < 2000
+
+
+# ── Task 3.5 & 3.6: Outlier Threshold Adjustment + DCF Exclusion ──────────────
+
+
+def test_get_outlier_threshold():
+    """Test industry-specific outlier thresholds"""
+    from src.agents.valuation import get_outlier_threshold
+
+    # Growth industries get higher threshold
+    assert get_outlier_threshold('auto_new_energy') == 1.5
+    assert get_outlier_threshold('new_energy_mfg') == 1.5
+    assert get_outlier_threshold('growth_tech') == 2.0
+
+    # Default for others
+    assert get_outlier_threshold('bank') == 0.6
+    assert get_outlier_threshold('generic') == 0.6
+
+
+def test_dcf_exclusion_high_growth():
+    """Test high-growth companies use relaxed DCF threshold"""
+    from src.agents.valuation import should_exclude_dcf
+
+    # High growth: 1.5 threshold
+    assert should_exclude_dcf(dcf_value=200, median_value=100, growth_rate=25) is False  # 100% deviation < 150%
+    assert should_exclude_dcf(dcf_value=300, median_value=100, growth_rate=25) is True   # 200% deviation > 150%
+
+    # Low growth: 0.6 threshold
+    assert should_exclude_dcf(dcf_value=150, median_value=100, growth_rate=5) is False   # 50% deviation < 60%
+    assert should_exclude_dcf(dcf_value=180, median_value=100, growth_rate=5) is True    # 80% deviation > 60%
+
+
+def test_validate_valuation_result_uses_industry_threshold():
+    """
+    Task 3.5-3.6 Integration Test: Verify _validate_valuation_result uses
+    industry-specific outlier thresholds from get_outlier_threshold.
+    """
+    from src.agents.valuation import _validate_valuation_result
+
+    # Test case: 100% deviation from median
+    # For default industry (0.6 threshold): should be EXCLUDED
+    # For auto_new_energy (1.5 threshold): should be RETAINED
+    #
+    # Important: Set current_price so that methods are on different sides
+    # of market price (not all above or all below), to avoid directional
+    # consensus exception which would retain all methods.
+
+    target_price = 200.0  # 100% higher than median
+    current_price = 150.0  # Between 100 and 200 - no directional consensus
+    all_results = [100.0, 100.0, 200.0]  # median=100, target deviates 100%
+
+    # Default industry (0.6 threshold) - 100% deviation exceeds 60%
+    result_default = _validate_valuation_result(
+        method_name="DCF",
+        target_price=target_price,
+        current_price=current_price,
+        all_results=all_results,
+        industry_type="default"
+    )
+    assert result_default["exclude_from_weighted"] is True, \
+        "Default industry should exclude 100% deviation (threshold 60%)"
+
+    # Auto new energy industry (1.5 threshold) - 100% deviation below 150%
+    result_new_energy = _validate_valuation_result(
+        method_name="DCF",
+        target_price=target_price,
+        current_price=current_price,
+        all_results=all_results,
+        industry_type="auto_new_energy"
+    )
+    assert result_new_energy["exclude_from_weighted"] is False, \
+        "Auto new energy should retain 100% deviation (threshold 150%)"
+
+    # Growth tech (2.0 threshold) - 100% deviation well below 200%
+    result_growth_tech = _validate_valuation_result(
+        method_name="DCF",
+        target_price=target_price,
+        current_price=current_price,
+        all_results=all_results,
+        industry_type="growth_tech"
+    )
+    assert result_growth_tech["exclude_from_weighted"] is False, \
+        "Growth tech should retain 100% deviation (threshold 200%)"

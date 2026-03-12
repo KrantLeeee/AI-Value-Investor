@@ -23,7 +23,7 @@ from src.data.database import (
     insert_agent_signal,
 )
 from src.data.models import AgentSignal
-from src.data.industry_mapping import REAL_ESTATE_CONFIG
+from src.data.industry_mapping import REAL_ESTATE_CONFIG, get_industry_type
 from src.agents.wacc import (
     calculate_wacc,
     generate_sensitivity_matrix,
@@ -542,6 +542,57 @@ def distressed_valuation(metrics: dict, company_info: dict) -> dict:
     return results
 
 
+# ── Task 3.5 & 3.6: Outlier Threshold Adjustment + DCF Exclusion ──────────────
+
+
+def get_outlier_threshold(industry_type: str) -> float:
+    """
+    Get outlier threshold based on industry type.
+
+    Growth and new energy industries get relaxed thresholds because their
+    valuations are inherently more variable due to high growth expectations.
+
+    Args:
+        industry_type: Industry classification string
+
+    Returns:
+        Outlier threshold multiplier (e.g., 0.6 means 60% deviation from median)
+    """
+    thresholds = {
+        'auto_new_energy': 1.5,   # EV makers like BYD have wide valuation ranges
+        'new_energy_mfg': 1.5,    # Battery/solar manufacturers
+        'growth_tech': 2.0,       # High-growth tech (most volatile)
+        'default': 0.6,           # Standard 60% threshold for others
+    }
+    return thresholds.get(industry_type, thresholds['default'])
+
+
+def should_exclude_dcf(dcf_value: float, median_value: float, growth_rate: float) -> bool:
+    """
+    Determine if DCF should be excluded based on deviation from median.
+
+    High-growth companies (>20% growth) get relaxed 1.5x threshold because
+    DCF valuations for growth companies are inherently more sensitive to
+    growth rate assumptions.
+
+    Low-growth companies use stricter 0.6x threshold.
+
+    Args:
+        dcf_value: DCF valuation result
+        median_value: Median of all valuation methods
+        growth_rate: Company's growth rate (percentage, e.g., 25 for 25%)
+
+    Returns:
+        True if DCF should be excluded, False otherwise
+    """
+    if median_value == 0:
+        return True
+
+    deviation = abs(dcf_value - median_value) / median_value
+    threshold = 1.5 if growth_rate > 20 else 0.6
+    return deviation > threshold
+
+
 def _safe(x) -> float | None:
     if x is None:
         return None
@@ -574,7 +625,8 @@ def _validate_valuation_result(
     method_name: str,
     target_price: float,
     current_price: float,
-    all_results: list[float]
+    all_results: list[float],
+    industry_type: str = "default"
 ) -> dict:
     """
     Validate a valuation result against outlier detection rules.
@@ -593,6 +645,7 @@ def _validate_valuation_result(
         target_price: Target price from this method
         current_price: Current market price
         all_results: List of all target prices (for median calculation)
+        industry_type: Industry type for threshold lookup (e.g., "auto_new_energy", "default")
 
     Returns:
         dict with:
@@ -626,15 +679,16 @@ def _validate_valuation_result(
             median_price = statistics.median(valid_prices)
             deviation_from_median = abs(target_price - median_price) / median_price if median_price > 0 else 0
 
-            # BUG-02 FIX: Use 60% threshold (was 50%), and skip if directional consensus
-            if deviation_from_median > 0.60 and not directional_consensus:
+            # Task 3.5: Use industry-specific outlier threshold instead of hardcoded 60%
+            threshold = get_outlier_threshold(industry_type)
+            if deviation_from_median > threshold and not directional_consensus:
                 warnings.append(
                     f"{method_name}: deviation from median "
-                    f"{deviation_from_median*100:.1f}% exceeds 60% threshold "
+                    f"{deviation_from_median*100:.1f}% exceeds {threshold*100:.0f}% threshold "
                     f"(target=¥{target_price:.2f} vs median=¥{median_price:.2f})"
                 )
                 valid = False
-            elif deviation_from_median > 0.60 and directional_consensus:
+            elif deviation_from_median > threshold and directional_consensus:
                 # Log but don't exclude - all methods agree on direction
                 warnings.append(
                     f"{method_name}: deviation {deviation_from_median*100:.1f}% but retained "
@@ -1870,12 +1924,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     validated_results = []
     all_target_prices = [price for _, price in valuation_methods if price and price > 0]
 
+    # Task 3.5: Get industry type for outlier threshold lookup
+    industry_type_for_threshold = get_industry_type("", industry or "") if industry else "default"
+
     for method_name, target_price in valuation_methods:
         validation = _validate_valuation_result(
             method_name=method_name,
             target_price=target_price,
             current_price=current_price or 0,
-            all_results=all_target_prices
+            all_results=all_target_prices,
+            industry_type=industry_type_for_threshold
         )
         validated_results.append(validation)
 
