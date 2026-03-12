@@ -79,6 +79,39 @@ def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
     return {'pb_capped': pb_value, 'warning': None}
 
 
+def calculate_ev_ebitda_value(ebitda: float, multiple: float, shares: int, revenue: float) -> tuple[float | None, str | None]:
+    """
+    Calculate per-share value using EV/EBITDA method with validation.
+
+    Args:
+        ebitda: Company's EBITDA (Earnings Before Interest, Taxes, Depreciation, Amortization)
+        multiple: EV/EBITDA multiple to apply
+        shares: Total number of shares outstanding
+        revenue: Company's total revenue (for sanity check)
+
+    Returns:
+        Tuple of (per_share_value, error_message)
+        - If valid: (calculated_value, None)
+        - If invalid: (None, error_description)
+    """
+    # Validate EBITDA is positive
+    if ebitda is None or ebitda <= 0:
+        return None, "EBITDA无效：EBITDA必须为正数"
+
+    # Calculate Enterprise Value
+    ev = ebitda * multiple
+
+    # Sanity check: EV should be at least 10% of revenue
+    min_ev = revenue * 0.1
+    if ev < min_ev:
+        return None, f"EV异常：计算的EV({ev:,.0f})低于营收的10%({min_ev:,.0f})，数据可能有误"
+
+    # Calculate per-share value
+    per_share_value = ev / shares
+
+    return per_share_value, None
+
+
 def _get_industry_position_safe(ticker: str) -> dict | None:
     """
     P2-1: Get industry valuation positioning with error handling.
@@ -960,21 +993,37 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     _skip_generic_ev_detail = _is_utility_stock(ticker)
 
     if ebitda and ebitda > 0:
-        ev_ebitda_total = ebitda * _ev_multiple
-        results["ev_ebitda_value"] = ev_ebitda_total
-        results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
-        ev_ebitda_value = ev_ebitda_total
+        # Get revenue for validation (extracted earlier at line 684)
+        revenue = _safe(income_rows[0].get("revenue")) if income_rows else None
 
-        # Only add generic detail lines for non-utility stocks
-        if not _skip_generic_ev_detail:
-            detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+        # Use the new calculate_ev_ebitda_value() function with validation
+        ev_ebitda_per_share, ev_error = calculate_ev_ebitda_value(
+            ebitda=ebitda,
+            multiple=_ev_multiple,
+            shares=shares,
+            revenue=revenue or 0  # Default to 0 if revenue unavailable
+        )
 
-        # Per-share estimate
-        if shares and shares > 0:
-            ev_ebitda_per_share = ev_ebitda_total / shares
-            results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
+        if ev_error:
+            # Validation failed - add warning to detail_lines
+            detail_lines.append(f"⚠ EV/EBITDA 估值失败: {ev_error}")
+            results["ev_ebitda_per_share"] = None
+        else:
+            # Validation succeeded - calculate and store total EV
+            ev_ebitda_total = ebitda * _ev_multiple
+            results["ev_ebitda_value"] = ev_ebitda_total
+            results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
+            ev_ebitda_value = ev_ebitda_total
+
+            # Only add generic detail lines for non-utility stocks
             if not _skip_generic_ev_detail:
-                detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
+                detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+
+            # Per-share estimate
+            if ev_ebitda_per_share is not None:
+                results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
+                if not _skip_generic_ev_detail:
+                    detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
 
         # P/B per share target - also skip for utility stocks (they have their own)
         if bvps and not _skip_generic_ev_detail:

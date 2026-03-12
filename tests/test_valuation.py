@@ -911,3 +911,41 @@ class TestRealEstatePbCap:
 
         assert result['pb_capped'] == 0.3
         assert result.get('warning') is None
+
+
+# ── Task 1.4: EBITDA Validation and Exclusion ─────────────────────────────────
+
+
+class TestEbitdaValidation:
+    """Tests for EBITDA validation and exclusion (Task 1.4)."""
+
+    def test_ebitda_invalid_excluded(self):
+        """Negative or zero EBITDA should be excluded"""
+        from src.agents.valuation import calculate_ev_ebitda_value
+
+        value, error = calculate_ev_ebitda_value(ebitda=-100, multiple=8, shares=1000000, revenue=5000000)
+        assert value is None
+        assert "EBITDA无效" in error
+
+    def test_ebitda_abnormal_excluded(self):
+        """EV less than 10% of revenue should be excluded as abnormal"""
+        from src.agents.valuation import calculate_ev_ebitda_value
+
+        # EV = ebitda * multiple = 100 * 8 = 800
+        # 10% of revenue = 500000
+        # 800 < 500000, so should be excluded
+        value, error = calculate_ev_ebitda_value(ebitda=100, multiple=8, shares=1000000, revenue=5000000)
+        assert value is None
+        assert "EV异常" in error
+
+    def test_ebitda_valid_calculated(self):
+        """Valid EBITDA should calculate per-share value"""
+        from src.agents.valuation import calculate_ev_ebitda_value
+
+        # EV = 1000000 * 8 = 8000000
+        # 10% of revenue = 1000000
+        # 8000000 > 1000000, so valid
+        # per_share = 8000000 / 1000000 = 8.0
+        value, error = calculate_ev_ebitda_value(ebitda=1000000, multiple=8, shares=1000000, revenue=10000000)
+        assert value == 8.0
+        assert error is None
