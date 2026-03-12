@@ -162,6 +162,38 @@ def _signal_emoji(s: str) -> str:
     return {"bullish": "🟢", "neutral": "🟡", "bearish": "🔴"}.get(s, "❓")
 
 
+def generate_data_warning(contradictions: list, confidence: float) -> str:
+    """
+    Generate data warning when confidence < 0.5.
+    """
+    if confidence >= 0.5:
+        return None
+
+    severity_map = {'high': '高', 'medium': '中', 'low': '低'}
+    type_map = {
+        'net_margin_eps_mismatch': '净利率/EPS不匹配',
+        'roe_historical_jump': 'ROE历史跳变',
+        'ni_ocf_divergence': '净利/OCF背离',
+        'ni_ocf_divergence_persistent': '净利/OCF持续背离',
+        'eps_inconsistency': 'EPS数据不一致'
+    }
+
+    warning = f"""## ⚠️ 数据可信度警告
+
+本报告使用的财务数据存在以下内部矛盾，可信度评分：**{confidence:.0%}**
+
+| 矛盾类型 | 严重程度 | 详情 |
+|:---------|:---------|:-----|
+"""
+    for c in contradictions:
+        type_name = type_map.get(c['type'], c['type'])
+        severity = severity_map.get(c['severity'], c['severity'])
+        warning += f"| {type_name} | {severity} | {c['detail']} |\n"
+
+    warning += "\n**建议**：以下分析结论仅供参考，请核实原始财报数据后再做决策。\n"
+    return warning
+
+
 def generate_conservative_warning(company_name: str, confidence: float,
                                    threshold: float = 0.5) -> str:
     """

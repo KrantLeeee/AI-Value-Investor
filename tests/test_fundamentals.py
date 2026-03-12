@@ -90,3 +90,53 @@ def test_evaluate_fcf_loss_company():
 
     assert result['fcf_type'] == 'loss_company'
     assert result['score_impact'] == -5  # Light penalty
+
+
+def test_detect_data_contradictions_ni_ocf():
+    """Test detection of NI vs OCF divergence"""
+    from src.agents.fundamentals import detect_data_contradictions
+
+    metrics = {
+        'net_income': 1_000_000_000,  # Positive NI
+        'ocf': -500_000_000,          # Negative OCF
+        'ocf_prev_year': -300_000_000  # Also negative last year
+    }
+
+    contradictions = detect_data_contradictions(metrics)
+
+    assert len(contradictions) > 0
+    assert any(c['type'] == 'ni_ocf_divergence_persistent' for c in contradictions)
+
+
+def test_detect_data_contradictions_roe_jump():
+    """Test detection of ROE historical jump"""
+    from src.agents.fundamentals import detect_data_contradictions
+
+    metrics = {
+        'roe': 5.0,
+        'roe_5yr_avg': 30.0  # 25 point difference
+    }
+
+    contradictions = detect_data_contradictions(metrics)
+
+    assert any(c['type'] == 'roe_historical_jump' for c in contradictions)
+
+
+def test_get_data_confidence_score():
+    """Test data confidence scoring"""
+    from src.agents.fundamentals import get_data_confidence_score
+
+    # High severity issues
+    contradictions = [
+        {'severity': 'high', 'type': 'test', 'detail': 'test'}
+    ]
+    score = get_data_confidence_score(contradictions)
+    assert score == 0.7  # 1.0 - 0.3
+
+    # Multiple issues
+    contradictions = [
+        {'severity': 'high', 'type': 'test', 'detail': 'test'},
+        {'severity': 'medium', 'type': 'test', 'detail': 'test'}
+    ]
+    score = get_data_confidence_score(contradictions)
+    assert score == 0.55  # 1.0 - 0.3 - 0.15

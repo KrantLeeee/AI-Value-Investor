@@ -566,6 +566,84 @@ def evaluate_fcf(fcf, net_income, capex, revenue_growth, industry_type):
     return {'score_impact': 0, 'fcf_type': 'neutral', 'note': ''}
 
 
+def detect_data_contradictions(metrics: dict) -> list:
+    """
+    Detect internal contradictions in financial data.
+
+    Returns list of contradictions with type, severity, detail.
+    """
+    contradictions = []
+
+    # Contradiction 1: Net margin vs EPS mismatch
+    net_margin = metrics.get('net_margin')
+    eps = metrics.get('eps')
+    revenue = metrics.get('revenue')
+    shares = metrics.get('shares')
+
+    if all(v is not None for v in [net_margin, eps, revenue, shares]) and shares > 0:
+        implied_net_income = revenue * net_margin / 100
+        reported_net_income = eps * shares
+
+        if implied_net_income > 0 and reported_net_income > 0:
+            deviation = abs(implied_net_income - reported_net_income) / max(implied_net_income, 1)
+            if deviation > 0.5:
+                contradictions.append({
+                    'type': 'net_margin_eps_mismatch',
+                    'severity': 'high',
+                    'detail': f"净利率{net_margin:.1f}%隐含净利{implied_net_income/1e8:.1f}亿，"
+                             f"但EPS隐含净利{reported_net_income/1e8:.1f}亿，偏差{deviation:.0%}"
+                })
+
+    # Contradiction 2: ROE historical jump
+    roe_current = metrics.get('roe')
+    roe_5yr_avg = metrics.get('roe_5yr_avg')
+
+    if roe_current is not None and roe_5yr_avg is not None:
+        if abs(roe_current - roe_5yr_avg) > 20:
+            contradictions.append({
+                'type': 'roe_historical_jump',
+                'severity': 'medium',
+                'detail': f"当年ROE={roe_current:.1f}%与5年均值{roe_5yr_avg:.1f}%差异过大"
+            })
+
+    # Contradiction 3: Positive NI but negative OCF (consecutive)
+    net_income = metrics.get('net_income')
+    ocf = metrics.get('ocf')
+    ocf_prev = metrics.get('ocf_prev_year')
+
+    if net_income is not None and net_income > 0:
+        if ocf is not None and ocf < 0:
+            if ocf_prev is not None and ocf_prev < 0:
+                contradictions.append({
+                    'type': 'ni_ocf_divergence_persistent',
+                    'severity': 'high',
+                    'detail': f"净利润{net_income/1e8:.1f}亿为正，但经营现金流连续两年为负"
+                             f"（今年{ocf/1e8:.1f}亿，去年{ocf_prev/1e8:.1f}亿）"
+                })
+            else:
+                contradictions.append({
+                    'type': 'ni_ocf_divergence',
+                    'severity': 'medium',
+                    'detail': f"净利润{net_income/1e8:.1f}亿为正，但经营现金流{ocf/1e8:.1f}亿为负"
+                })
+
+    return contradictions
+
+
+def get_data_confidence_score(contradictions: list) -> float:
+    """
+    Calculate data confidence score based on contradictions.
+
+    Severity weights:
+    - high: -0.3
+    - medium: -0.15
+    - low: -0.05
+    """
+    severity_weights = {'high': 0.3, 'medium': 0.15, 'low': 0.05}
+    penalty = sum(severity_weights.get(c['severity'], 0.1) for c in contradictions)
+    return max(0.0, 1.0 - penalty)
+
+
 def calculate_fundamentals_score(metrics: dict, industry_config: dict) -> dict:
     """
     Calculate fundamentals score with cycle adjustment for cyclical industries.
