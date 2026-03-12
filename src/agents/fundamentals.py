@@ -488,3 +488,50 @@ def run(ticker: str, market: str) -> AgentSignal:
     insert_agent_signal(agent_signal)
     logger.info("[Fundamentals] %s: score=%d signal=%s", ticker, score, signal)
     return agent_signal
+
+
+def calculate_fundamentals_score(metrics: dict, industry_config: dict) -> dict:
+    """
+    Calculate fundamentals score with cycle adjustment for cyclical industries.
+
+    Args:
+        metrics: Financial metrics dict
+        industry_config: Industry configuration dict
+
+    Returns:
+        dict with scoring metrics and adjustments
+    """
+    adjustments = []
+    result = {}
+
+    # Check if cycle-adjusted mode
+    if industry_config.get('scoring_mode') == 'cycle_adjusted':
+        # Use 5-year averages for cyclical industries
+        roe_for_scoring = metrics.get('roe_5yr_avg', metrics.get('roe'))
+        net_margin_for_scoring = metrics.get('net_margin_5yr_avg', metrics.get('net_margin'))
+
+        if roe_for_scoring != metrics.get('roe'):
+            adjustments.append({
+                'metric': 'ROE',
+                'original': metrics.get('roe'),
+                'adjusted': roe_for_scoring,
+                'reason': '周期行业使用5年均值评分'
+            })
+
+        if net_margin_for_scoring != metrics.get('net_margin'):
+            adjustments.append({
+                'metric': 'Net Margin',
+                'original': metrics.get('net_margin'),
+                'adjusted': net_margin_for_scoring,
+                'reason': '周期行业使用5年均值评分'
+            })
+
+        result['roe_for_scoring'] = roe_for_scoring
+        result['net_margin_for_scoring'] = net_margin_for_scoring
+    else:
+        # Use current values for non-cyclical
+        result['roe_for_scoring'] = metrics.get('roe')
+        result['net_margin_for_scoring'] = metrics.get('net_margin')
+
+    result['adjustments'] = adjustments
+    return result
