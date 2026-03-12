@@ -11,11 +11,24 @@ Based on PROJECT_ROADMAP.md P1-⑤
 import yaml
 from pathlib import Path
 from typing import TypedDict
+from dataclasses import dataclass
+from typing import Dict, List
 
 from src.utils.config import get_project_root
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class IndustryClassificationResult:
+    """Result of industry classification with confidence scoring."""
+    industry_type: str           # Industry type code
+    display_name: str            # Display name
+    confidence: float            # 0.0-1.0
+    confidence_factors: Dict     # Confidence breakdown
+    conservative_mode: bool      # Whether conservative mode triggered
+    classification_path: List    # Decision path for debugging
 
 
 class IndustryWeights(TypedDict):
@@ -54,9 +67,63 @@ PRIORITY_KEYWORDS = {
     'auto_new_energy': ['新能源汽车', '电动汽车', '纯电动', '整车制造'],
 }
 
+# Task 2.3: Industry classification confidence mechanism
+CONFIDENCE_THRESHOLD = 0.5  # Conservative mode threshold
+
+INDUSTRY_KEYWORDS = {
+    'bank': {
+        'primary': ['银行', '商业银行'],
+        'secondary': ['信贷', '存贷'],
+        'negative': ['投资银行'],
+    },
+    'insurance': {
+        'primary': ['保险', '人寿', '财险', '再保险'],
+        'secondary': ['保费', '承保'],
+        'negative': ['保险经纪'],
+    },
+    'new_energy_mfg': {
+        'primary': ['锂电池', '动力电池', '储能电池', '新能源'],
+        'secondary': ['锂电', '电芯', '正极', '负极', '隔膜'],
+        'negative': ['新能源汽车'],
+    },
+    'auto_new_energy': {
+        'primary': ['新能源汽车', '电动汽车', '纯电动'],
+        'secondary': ['整车', '造车'],
+        'negative': [],
+    },
+    'cyclical_materials': {
+        'primary': ['钢铁', '水泥', '铝业', '铜业', '化工'],
+        'secondary': ['冶炼', '矿业', '有色'],
+        'negative': [],
+    },
+    'defense_equipment': {
+        'primary': ['航空发动机', '军工', '国防', '航天'],
+        'secondary': ['导弹', '舰船', '雷达'],
+        'negative': [],
+    },
+    'telecom_operator': {
+        'primary': ['电信', '移动通信', '运营商'],
+        'secondary': ['基站', '5G网络'],
+        'negative': ['设备'],
+    },
+    'telecom_equipment': {
+        'primary': ['通信设备', '网络设备', '基站设备'],
+        'secondary': ['交换机', '路由器'],
+        'negative': [],
+    },
+    'low_margin_mfg': {
+        'primary': ['代工', 'ODM', 'OEM', '电子制造'],
+        'secondary': ['组装', '精密制造'],
+        'negative': [],
+    },
+}
+
 
 def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
-    """Load industry profiles from YAML config."""
+    """Load industry profiles from YAML config.
+
+    Supports both v2.1 format (industries key) and legacy format (industry_profiles key).
+    """
     global _PROFILES_CACHE, _KEYWORDS_CACHE
 
     if _PROFILES_CACHE is not None and _KEYWORDS_CACHE is not None:
@@ -64,10 +131,59 @@ def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
 
     config_path = get_project_root() / "config" / "industry_profiles.yaml"
 
+    # Default profile template for v2.1 format conversion
+    default_weights = {
+        "fundamentals": 0.25,
+        "valuation": 0.25,
+        "warren_buffett": 0.20,
+        "ben_graham": 0.15,
+        "sentiment": 0.15,
+    }
+    default_scoring = {
+        "roe_thresholds": [20, 15, 10],
+        "net_margin_thresholds": [15, 10, 5],
+        "de_thresholds": [0.5, 1.0, 1.5],
+        "growth_weight": 0.25,
+        "cash_quality_weight": 0.25,
+    }
+
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
+        # Support v2.1 format (industries key)
+        if "industries" in config:
+            _PROFILES_CACHE = {}
+            _KEYWORDS_CACHE = {}
+
+            for industry_key, industry_data in config["industries"].items():
+                # Convert v2.1 format to IndustryProfile format
+                profile: IndustryProfile = {
+                    "weights": industry_data.get("method_weights", default_weights),
+                    "rationale": industry_data.get("display_name", industry_key),
+                    "validated": industry_data.get("confidence", 0.5) >= 0.8,
+                    "scoring": default_scoring.copy(),
+                    # Store v2.1 specific fields
+                    "display_name": industry_data.get("display_name", industry_key),
+                    "confidence": industry_data.get("confidence", 0.5),
+                    "methods": industry_data.get("methods", []),
+                    "ev_ebitda_multiple": industry_data.get("ev_ebitda_multiple"),
+                    "exempt_metrics": industry_data.get("exempt_metrics", []),
+                    "disable_methods": industry_data.get("disable_methods", []),
+                    "scoring_mode": industry_data.get("scoring_mode"),
+                    "comparables": industry_data.get("example_companies", []),
+                }
+                _PROFILES_CACHE[industry_key] = profile
+
+                # Build keywords cache from applies_to if present
+                applies_to = industry_data.get("applies_to", [])
+                if applies_to:
+                    _KEYWORDS_CACHE[industry_key] = applies_to
+
+            logger.info(f"[Industry] Loaded {len(_PROFILES_CACHE)} industry profiles (v2.1 format)")
+            return _PROFILES_CACHE, _KEYWORDS_CACHE
+
+        # Legacy format support
         _PROFILES_CACHE = config["industry_profiles"]
         _KEYWORDS_CACHE = config["industry_keywords"]
 
@@ -78,26 +194,131 @@ def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
         logger.error(f"[Industry] Failed to load profiles: {e}")
         # Return minimal default
         default_profile: IndustryProfile = {
-            "weights": {
-                "fundamentals": 0.25,
-                "valuation": 0.25,
-                "warren_buffett": 0.20,
-                "ben_graham": 0.15,
-                "sentiment": 0.15,
-            },
+            "weights": default_weights,
             "rationale": "Default fallback",
             "validated": False,
-            "scoring": {
-                "roe_thresholds": [20, 15, 10],
-                "net_margin_thresholds": [15, 10, 5],
-                "de_thresholds": [0.5, 1.0, 1.5],
-                "growth_weight": 0.25,
-                "cash_quality_weight": 0.25,
-            },
+            "scoring": default_scoring,
         }
         _PROFILES_CACHE = {"default": default_profile}
         _KEYWORDS_CACHE = {}
         return _PROFILES_CACHE, _KEYWORDS_CACHE
+
+
+def match_keywords(company_name: str, business_desc: str,
+                   akshare_industry: str) -> tuple:
+    """
+    Match keywords to determine industry type.
+
+    Returns:
+        Tuple of (industry_type, confidence_score)
+
+    Confidence scoring (v1.2 revised):
+    - Primary keyword in company name: +0.45
+    - Primary keyword in business desc: +0.40
+    - Secondary keyword in company name: +0.30
+    - Secondary keyword in business desc: +0.25
+    - AKShare industry match: +0.20
+    """
+    combined_text = company_name + business_desc
+
+    best_match = None
+    best_score = 0.0
+
+    for industry_type, keywords in INDUSTRY_KEYWORDS.items():
+        # Check negative keywords first
+        if any(neg in combined_text for neg in keywords.get('negative', [])):
+            continue
+
+        score = 0.0
+
+        # Primary keyword matching (raised weights)
+        if any(kw in company_name for kw in keywords['primary']):
+            score = 0.45  # Company name primary → 0.45
+        elif any(kw in business_desc for kw in keywords['primary']):
+            score = 0.40  # Business desc primary → 0.40
+        elif any(kw in company_name for kw in keywords.get('secondary', [])):
+            score = 0.30  # Company name secondary → 0.30
+        elif any(kw in business_desc for kw in keywords.get('secondary', [])):
+            score = 0.25  # Business desc secondary → 0.25
+
+        # Check AKShare industry match (additional confidence boost)
+        if akshare_industry and any(kw in akshare_industry for kw in keywords['primary'] + keywords.get('secondary', [])):
+            score += 0.20  # AKShare industry confirmation
+
+        if score > best_score:
+            best_score = score
+            best_match = industry_type
+
+    return best_match, best_score
+
+
+def get_display_name(industry_type: str) -> str:
+    """Get display name for industry type."""
+    try:
+        config_path = get_project_root() / "config" / "industry_profiles.yaml"
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        return config.get('industries', {}).get(industry_type, {}).get('display_name', industry_type)
+    except Exception:
+        return industry_type
+
+
+def classify_industry_with_confidence(stock_code: str, company_info: dict,
+                                      metrics: dict) -> IndustryClassificationResult:
+    """
+    Multi-signal industry classification with confidence scoring.
+
+    Args:
+        stock_code: Stock code
+        company_info: Company information dict
+        metrics: Financial metrics dict
+
+    Returns:
+        IndustryClassificationResult with confidence scoring
+    """
+    confidence = 0.0
+    confidence_factors = {}
+    classification_path = []
+
+    # Extract company info
+    company_name = company_info.get('name', '')
+    business_desc = company_info.get('business_description', '')
+    akshare_industry = company_info.get('akshare_industry', '')
+
+    # Factor 1: Keyword matching
+    keyword_industry, keyword_score = match_keywords(
+        company_name, business_desc, akshare_industry
+    )
+    if keyword_industry:
+        confidence += keyword_score
+        confidence_factors['keyword'] = keyword_score
+        classification_path.append(f"关键词匹配: {keyword_industry} (+{keyword_score:.2f})")
+
+    # Determine final industry type
+    final_industry = keyword_industry if keyword_industry else 'generic'
+
+    # Check if confidence below threshold
+    if confidence < CONFIDENCE_THRESHOLD:
+        classification_path.append(
+            f"置信度{confidence:.2f}<{CONFIDENCE_THRESHOLD}，降级到generic"
+        )
+        return IndustryClassificationResult(
+            industry_type='generic',
+            display_name='综合行业',
+            confidence=confidence,
+            confidence_factors=confidence_factors,
+            conservative_mode=True,
+            classification_path=classification_path
+        )
+
+    return IndustryClassificationResult(
+        industry_type=final_industry,
+        display_name=get_display_name(final_industry),
+        confidence=min(confidence, 1.0),
+        confidence_factors=confidence_factors,
+        conservative_mode=False,
+        classification_path=classification_path
+    )
 
 
 def classify_by_business_description(company_name: str, business_desc: str) -> str | None:
@@ -245,26 +466,43 @@ def get_ev_ebitda_multiple(industry: str, cycle_phase: str = "normal") -> float:
     profiles, _ = _load_profiles()
 
     if industry not in profiles:
-        industry = "default"
+        industry = "generic"  # v2.1 uses 'generic' instead of 'default'
 
-    profile = profiles[industry]
+    profile = profiles.get(industry, profiles.get("generic", {}))
+
+    # v2.1 format: ev_ebitda_multiple can be a list [low, high] or single value
+    ev_multiple = profile.get("ev_ebitda_multiple")
+
+    if ev_multiple is not None:
+        if isinstance(ev_multiple, list):
+            # Return middle of range for normal, low for peak, high for bottom
+            if cycle_phase == "bottom":
+                return float(ev_multiple[1])  # Higher multiple at bottom
+            elif cycle_phase == "peak":
+                return float(ev_multiple[0])  # Lower multiple at peak
+            else:
+                return float(sum(ev_multiple) / len(ev_multiple))  # Average for normal
+        else:
+            return float(ev_multiple)
+
+    # Legacy format support
     multiples = profile.get("valuation_multiples", {}).get("ev_ebitda", {})
-
-    # Map cycle_phase to YAML key format
     key_mapping = {
         "bottom": "cycle_bottom",
         "normal": "cycle_normal",
         "peak": "cycle_peak",
     }
     key = key_mapping.get(cycle_phase, "cycle_normal")
-
-    # Get the multiple or fallback to default
     multiple = multiples.get(key)
 
     if multiple is None:
-        # Fallback to default industry
-        default_multiples = profiles.get("default", {}).get("valuation_multiples", {}).get("ev_ebitda", {})
-        multiple = default_multiples.get(key, 8.0)  # Ultimate fallback: 8x
+        # Fallback to generic
+        generic_profile = profiles.get("generic", {})
+        generic_multiple = generic_profile.get("ev_ebitda_multiple", 8.0)
+        if isinstance(generic_multiple, list):
+            multiple = sum(generic_multiple) / len(generic_multiple)
+        else:
+            multiple = generic_multiple
 
     logger.debug(f"[Industry] EV/EBITDA multiple for {industry} ({cycle_phase}): {multiple}x")
     return float(multiple)
@@ -382,9 +620,22 @@ def get_industry_comparables(industry: str) -> list[dict]:
     profiles, _ = _load_profiles()
 
     if industry not in profiles:
-        industry = "default"
+        industry = "generic"  # v2.1 uses 'generic' instead of 'default'
 
-    profile = profiles[industry]
+    profile = profiles.get(industry, profiles.get("generic", {}))
+
+    # v2.1 format: comparables stored in 'comparables' field (list of tickers)
+    comparables = profile.get("comparables", [])
+    if comparables:
+        # Convert ticker list to dict format
+        return [{"ticker": t, "name": "", "note": ""} for t in comparables]
+
+    # Also check example_companies (v2.1 format)
+    example_companies = profile.get("example_companies", [])
+    if example_companies:
+        return [{"ticker": t, "name": "", "note": ""} for t in example_companies]
+
+    # Legacy format support
     comparables = profile.get("comparable_companies", [])
 
     logger.debug(f"[Industry] Found {len(comparables)} comparables for {industry}")
