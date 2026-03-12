@@ -324,6 +324,224 @@ PE_MULTIPLE_HEALTHCARE = 30.0      # Mature healthcare PE multiple (higher than 
 EV_EBITDA_HEALTHCARE = 18.0        # Healthcare EV/EBITDA (higher than general)
 
 
+# ── Task 3.4: Distressed Company Valuation Framework ──────────────────────────
+
+
+DISTRESSED_CATEGORIES = {
+    'asset_intensive': {
+        'keywords': ['超市', '零售', '门店', '制造', '工厂', '餐饮'],
+        'valuation_method': 'asset_replacement',
+        'ev_sales_multiple': 0.2,
+        'note': '以门店/设备重置成本为底线'
+    },
+    'contract_based': {
+        'keywords': ['工程', '环保', 'PPP', '建筑', '施工', 'BOT'],
+        'valuation_method': 'backlog_value',
+        'ev_sales_multiple': None,
+        'note': '以在手合同/订单折现价值为锚点'
+    },
+    'receivables_heavy': {
+        'keywords': ['政府项目', '市政', '国企客户', '央企客户'],
+        'valuation_method': 'receivables_recovery',
+        'ev_sales_multiple': None,
+        'note': '以应收账款预期回收率为关键变量'
+    },
+    'generic_distressed': {
+        'valuation_method': 'ev_sales',
+        'ev_sales_multiple': 0.3,
+        'note': '通用困境折价'
+    }
+}
+
+
+def detect_distressed_company(metrics: dict) -> bool:
+    """
+    Detect if company is distressed.
+    Need 2+ signals to classify as distressed.
+    """
+    signals = [
+        metrics.get('net_margin', 0) < -20,           # Deep loss
+        metrics.get('roe', 0) < -15,                  # Negative ROE
+        metrics.get('fcf', 0) < 0 and metrics.get('ocf', 0) < 0,  # Double negative
+        metrics.get('debt_equity', 0) > 300,          # High leverage
+    ]
+    return sum(signals) >= 2
+
+
+def classify_distressed_type(company_info: dict, metrics: dict) -> str:
+    """Classify distressed company type."""
+    business_desc = company_info.get('business_description', '')
+    company_name = company_info.get('name', '')
+    combined = business_desc + company_name
+
+    # Check keyword matches
+    for category, config in DISTRESSED_CATEGORIES.items():
+        if category == 'generic_distressed':
+            continue
+        keywords = config.get('keywords', [])
+        if any(kw in combined for kw in keywords):
+            return category
+
+    # Check financial characteristics
+    receivables = metrics.get('accounts_receivable', 0)
+    revenue = metrics.get('revenue', 1)
+    if receivables / revenue > 0.5:
+        return 'receivables_heavy'
+
+    return 'generic_distressed'
+
+
+def is_delisting_risk(metrics: dict) -> dict:
+    """
+    Assess delisting risk based on A-share rules.
+
+    Rules:
+    - 2 consecutive loss years: *ST
+    - 3 consecutive loss years: suspend trading
+    - Negative net assets: delisting warning
+    """
+    risk_factors = []
+    risk_level = 'LOW'
+
+    # Check consecutive losses
+    net_income_history = metrics.get('net_income_history', [])
+    consecutive_losses = 0
+    for ni in reversed(net_income_history):
+        if ni < 0:
+            consecutive_losses += 1
+        else:
+            break
+
+    if consecutive_losses >= 3:
+        risk_factors.append('连续三年亏损')
+        risk_level = 'HIGH'
+    elif consecutive_losses >= 2:
+        risk_factors.append('连续两年亏损')
+        risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+
+    # Check net assets (only if explicitly provided)
+    net_assets = metrics.get('net_assets')
+    if net_assets is not None:
+        if net_assets <= 0:
+            risk_factors.append('净资产为负')
+            risk_level = 'HIGH'
+        elif net_assets < metrics.get('total_assets', 1) * 0.1:
+            risk_factors.append('净资产占比过低')
+            risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+
+    # Check audit opinion
+    audit_opinion = metrics.get('audit_opinion', '标准无保留')
+    if audit_opinion in ['无法表示意见', '否定意见']:
+        risk_factors.append(f'审计意见: {audit_opinion}')
+        risk_level = 'HIGH'
+    elif audit_opinion in ['保留意见', '带强调事项段']:
+        risk_factors.append(f'审计意见: {audit_opinion}')
+        risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+
+    return {
+        'level': risk_level,
+        'factors': risk_factors,
+        'consecutive_losses': consecutive_losses
+    }
+
+
+def distressed_valuation(metrics: dict, company_info: dict) -> dict:
+    """
+    Distressed company valuation framework.
+    Selects method based on distressed type.
+    """
+    results = {}
+
+    # 1. Determine type
+    distressed_type = classify_distressed_type(company_info, metrics)
+    config = DISTRESSED_CATEGORIES[distressed_type]
+    results['distressed_type'] = distressed_type
+    results['valuation_note'] = config['note']
+
+    shares = metrics.get('shares', 1)
+
+    # 2. Apply type-specific valuation
+    if config['valuation_method'] == 'asset_replacement':
+        fixed_assets = metrics.get('fixed_assets', 0)
+        inventory = metrics.get('inventory', 0)
+        # 50% discount on fixed assets, 30% discount on inventory
+        replacement_value = fixed_assets * 0.5 + inventory * 0.7
+        results['asset_replacement'] = {
+            'value': replacement_value / shares,
+            'fixed_assets': fixed_assets,
+            'inventory': inventory,
+            'note': '资产重置价值（固定资产50%折价 + 存货70%折价）'
+        }
+        # EV/Sales as reference
+        if metrics.get('revenue', 0) > 0:
+            ev = metrics['revenue'] * config['ev_sales_multiple']
+            results['ev_sales_ref'] = {
+                'value': ev / shares,
+                'multiple': config['ev_sales_multiple'],
+                'note': '仅供参考'
+            }
+
+    elif config['valuation_method'] == 'backlog_value':
+        backlog = metrics.get('order_backlog', 0)
+        if backlog > 0:
+            gross_margin = metrics.get('gross_margin', 15) / 100
+            backlog_pv = backlog * gross_margin * 0.85
+            results['backlog_value'] = {
+                'value': backlog_pv / shares,
+                'order_backlog': backlog,
+                'assumed_margin': gross_margin,
+                'note': f'在手订单{backlog/1e8:.1f}亿，假设毛利率{gross_margin:.0%}，3年折现'
+            }
+        else:
+            results['backlog_value'] = {
+                'error': '无法获取在手订单数据',
+                'fallback': 'ev_sales'
+            }
+            if metrics.get('revenue', 0) > 0:
+                results['ev_sales'] = {
+                    'value': metrics['revenue'] * 0.4 / shares,
+                    'multiple': 0.4,
+                    'note': '回退到EV/Sales（无订单数据）'
+                }
+
+    elif config['valuation_method'] == 'receivables_recovery':
+        receivables = metrics.get('accounts_receivable', 0)
+        recovery_low = receivables * 0.5
+        recovery_high = receivables * 0.7
+        results['receivables_recovery'] = {
+            'value_range': (recovery_low / shares, recovery_high / shares),
+            'receivables': receivables,
+            'recovery_rate': '50%-70%',
+            'note': f'应收账款{receivables/1e8:.1f}亿，预期回收率50%-70%'
+        }
+
+    else:  # generic_distressed
+        if metrics.get('revenue', 0) > 0:
+            ev = metrics['revenue'] * config['ev_sales_multiple']
+            results['ev_sales'] = {
+                'value': ev / shares,
+                'multiple': config['ev_sales_multiple'],
+                'note': config['note']
+            }
+
+    # 3. Net-Net analysis (all types)
+    current_assets = metrics.get('current_assets', 0)
+    total_liabilities = metrics.get('total_liabilities', 0)
+    if current_assets > total_liabilities:
+        results['net_net'] = {
+            'value': (current_assets - total_liabilities) / shares,
+            'current_assets': current_assets,
+            'total_liabilities': total_liabilities
+        }
+
+    # 4. Delisting risk
+    delisting_risk = is_delisting_risk(metrics)
+    if delisting_risk['level'] in ['MEDIUM', 'HIGH']:
+        results['delisting_risk'] = delisting_risk
+
+    return results
+
+
 def _safe(x) -> float | None:
     if x is None:
         return None
