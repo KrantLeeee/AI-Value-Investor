@@ -224,6 +224,7 @@ def _build_financial_quality_table(
             margin_trend = trends.get('margin_trend', 'no_data')
             avg_roe = trends.get('avg_roe_5y')
             avg_roic = trends.get('avg_roic_5y')
+            avg_margin = trends.get('avg_margin_5y')
 
             lines.append("| 指标 | 趋势 | 5年平均 |")
             lines.append("|:-----|:-----|:--------|")
@@ -233,7 +234,7 @@ def _build_financial_quality_table(
             else:
                 lines.append("| ROIC | — | 数据源暂未提供 |")
             if margin_trend != 'no_data':
-                lines.append(f"| 毛利率 | {trend_labels.get(margin_trend, '—')} | — |")
+                lines.append(f"| 毛利率 | {trend_labels.get(margin_trend, '—')} | {avg_margin:.1f}% |" if avg_margin else f"| 毛利率 | {trend_labels.get(margin_trend, '—')} | — |")
             lines.append("")
 
             # P0-1 Enhancement: Add trend interpretation
@@ -954,16 +955,28 @@ def _build_chapter_user_prompt(
         # Check data availability status
         data_status = sent.metrics.get("data_status", "available") if sent else "unavailable"
         news_count = sent.metrics.get("news_count", 0) if sent else 0
+        sentiment_score_raw = sent.metrics.get("sentiment_score") if sent else None
 
         # Build data status note for LLM
+        # BUG-B FIX: Also flag when sentiment_score is 0 (indicates neutral/uncertain)
         if data_status == "insufficient" or news_count == 0:
             data_note = "⚠️ 注意：情绪数据不可用或不足，以下分析基于有限信息，请谨慎参考。"
         else:
             data_note = ""
 
+        # BUG-B FIX: Don't show raw 0.00 scores - convert to descriptive text
+        if sentiment_score_raw is None:
+            sentiment_score_display = "N/A"
+        elif sentiment_score_raw == 0 or abs(sentiment_score_raw) < 0.05:
+            sentiment_score_display = "中性（0附近）"
+        elif sentiment_score_raw > 0:
+            sentiment_score_display = f"偏正面 (+{sentiment_score_raw:.2f})"
+        else:
+            sentiment_score_display = f"偏负面 ({sentiment_score_raw:.2f})"
+
         return user_template.format(
             sentiment_signal=sent.signal if sent else "未运行",
-            sentiment_score=f"{sent.metrics.get('sentiment_score', 0):.2f}" if sent else "N/A",
+            sentiment_score=sentiment_score_display,
             sentiment_reasoning=sent.reasoning if sent else "暂无新闻数据",
             news_summary=sent.reasoning[:500] if sent else "（无）",
             data_status_note=data_note,

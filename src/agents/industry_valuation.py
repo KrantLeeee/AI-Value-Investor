@@ -145,25 +145,39 @@ def get_industry_position(ticker: str) -> dict:
     )
 
     # 6. Build comparison table (leaders, median, target, lowest)
-    pe_sorted = sorted([v for v in valuations if v.get("pe") and v["pe"] > 0], key=lambda x: x["pe"])
+    # BUG-D FIX: Exclude target from peer selections to avoid duplicates
+    target_ticker_clean = clean_ticker
+
+    # Filter out target from peers for comparison
+    peers_without_target = [v for v in valuations if v["ticker"].split(".")[0] != target_ticker_clean]
+    pe_sorted_peers = sorted([v for v in peers_without_target if v.get("pe") and v["pe"] > 0], key=lambda x: x["pe"])
+
     comparison = []
+    seen_tickers = set()  # Track added tickers to avoid duplicates
 
-    # Top 2 by market (first in list assumed)
-    for v in valuations[:2]:
-        if v.get("pe"):
+    # Top 2 peers by market position (first in list assumed to be leaders)
+    for v in peers_without_target[:3]:  # Check top 3 in case some lack PE
+        if v.get("pe") and v["ticker"] not in seen_tickers:
             comparison.append({**v, "category": "行业代表"})
+            seen_tickers.add(v["ticker"])
+            if len([c for c in comparison if c["category"] == "行业代表"]) >= 2:
+                break
 
-    # Median
-    if pe_sorted:
-        mid_idx = len(pe_sorted) // 2
-        comparison.append({**pe_sorted[mid_idx], "category": "行业中位"})
+    # Median (from peers excluding target)
+    if pe_sorted_peers:
+        mid_idx = len(pe_sorted_peers) // 2
+        median_stock = pe_sorted_peers[mid_idx]
+        if median_stock["ticker"] not in seen_tickers:
+            comparison.append({**median_stock, "category": "行业中位"})
+            seen_tickers.add(median_stock["ticker"])
 
-    # Target
+    # Target (always add)
     comparison.append({**target_val, "category": "本标的"})
+    seen_tickers.add(target_val["ticker"])
 
-    # Lowest PE
-    if pe_sorted:
-        comparison.append({**pe_sorted[0], "category": "最低估值"})
+    # Lowest PE (from peers excluding target)
+    if pe_sorted_peers and pe_sorted_peers[0]["ticker"] not in seen_tickers:
+        comparison.append({**pe_sorted_peers[0], "category": "最低估值"})
 
     return {
         "industry": industry,

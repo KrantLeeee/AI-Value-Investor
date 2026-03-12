@@ -75,6 +75,7 @@ def _compute_5_year_trends(metrics_history: list[dict]) -> dict:
         "margin_trend": _get_trend(margin_values) if margin_values else "no_data",
         "avg_roe_5y": round(sum(roe_values) / len(roe_values), 2) if roe_values else None,
         "avg_roic_5y": round(sum(roic_values) / len(roic_values), 2) if roic_values else None,
+        "avg_margin_5y": round(sum(margin_values) / len(margin_values), 2) if margin_values else None,
     }
 
 # Financial stock tickers - high D/E is normal for banks/insurance
@@ -217,7 +218,19 @@ def run(ticker: str, market: str) -> AgentSignal:
     if net_margin_direct is None and income_rows:
         rev = _safe(income_rows[0].get("revenue"))
         ni  = _safe(income_rows[0].get("net_income"))
-        net_margin = (ni / rev) if (rev and ni and rev != 0) else None
+        if rev and ni and rev != 0:
+            net_margin = tracer.trace_calculation(
+                metric_name="净利率",
+                formula="net_income / revenue * 100",
+                inputs={
+                    "net_income": {"value": ni, "source": "database", "period": income_rows[0].get("period_end_date")},
+                    "revenue": {"value": rev, "source": "database", "period": income_rows[0].get("period_end_date")},
+                },
+                result=(ni / rev) * 100,
+                unit="%",
+            )
+        else:
+            net_margin = None
     else:
         net_margin = net_margin_direct
 
@@ -290,13 +303,37 @@ def run(ticker: str, market: str) -> AgentSignal:
     if de is None and balance_rows:
         total_debt   = _safe(balance_rows[0].get("total_debt"))
         total_equity = _safe(balance_rows[0].get("total_equity"))
-        de = (total_debt / total_equity) if (total_debt and total_equity and total_equity != 0) else None
+        if total_debt and total_equity and total_equity != 0:
+            de = tracer.trace_calculation(
+                metric_name="D/E比率",
+                formula="total_debt / total_equity",
+                inputs={
+                    "total_debt": {"value": total_debt, "source": "database", "period": balance_rows[0].get("period_end_date")},
+                    "total_equity": {"value": total_equity, "source": "database", "period": balance_rows[0].get("period_end_date")},
+                },
+                result=total_debt / total_equity,
+                unit="x",
+            )
+        else:
+            de = None
 
     # Estimate current ratio from balance sheet
     if cr is None and balance_rows:
         ca = _safe(balance_rows[0].get("current_assets"))
         cl = _safe(balance_rows[0].get("current_liabilities"))
-        cr = (ca / cl) if (ca and cl and cl != 0) else None
+        if ca and cl and cl != 0:
+            cr = tracer.trace_calculation(
+                metric_name="流动比率",
+                formula="current_assets / current_liabilities",
+                inputs={
+                    "current_assets": {"value": ca, "source": "database", "period": balance_rows[0].get("period_end_date")},
+                    "current_liabilities": {"value": cl, "source": "database", "period": balance_rows[0].get("period_end_date")},
+                },
+                result=ca / cl,
+                unit="x",
+            )
+        else:
+            cr = None
 
     if de is not None:
         # BUG-FIX: Financial/utility stocks have high D/E by design - don't penalize
@@ -351,7 +388,16 @@ def run(ticker: str, market: str) -> AgentSignal:
             detail_lines.append("✗ FCF/OCF ≤0 (+0)")
 
         if fcf is not None and latest_ni is not None and latest_ni != 0:
-            fcf_cover = fcf / abs(latest_ni)
+            fcf_cover = tracer.trace_calculation(
+                metric_name="FCF/净利覆盖率",
+                formula="free_cash_flow / abs(net_income)",
+                inputs={
+                    "free_cash_flow": {"value": fcf, "source": "database", "period": cashflow_rows[0].get("period_end_date")},
+                    "net_income": {"value": latest_ni, "source": "database", "period": income_rows[0].get("period_end_date") if income_rows else "unknown"},
+                },
+                result=fcf / abs(latest_ni),
+                unit="x",
+            )
             if fcf_cover >= 0.8:
                 score += 10; detail_lines.append(f"✓ FCF/净利={fcf_cover:.2f} (≥0.8, +10)")
             elif fcf_cover >= 0.5:
