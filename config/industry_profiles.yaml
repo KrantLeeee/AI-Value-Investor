@@ -359,6 +359,58 @@ industry_profiles:
         name: "金科股份"
         note: "民营房企"
 
+  new_energy_mfg:
+    weights:
+      fundamentals: 0.24
+      valuation: 0.26
+      warren_buffett: 0.18
+      ben_graham: 0.18
+      sentiment: 0.14
+    rationale: "新能源制造业（电池/光伏）：成长性强但竞争激烈，基本面+估值并重，政策敏感"
+    validated: false
+
+    scoring:
+      roe_thresholds: [20, 15, 10]  # Growth manufacturing
+      net_margin_thresholds: [15, 8, 4]  # Competitive margin pressure
+      de_thresholds: [0.4, 0.8, 1.2]  # Lower leverage for high-growth mfg
+      growth_weight: 0.35  # Growth critical for new energy
+      cash_quality_weight: 0.22  # Cash flow important
+      wacc_range: [0.08, 0.10]  # New energy: growth + policy risk
+      default_beta: 1.25  # Higher volatility in sector
+
+    valuation_multiples:
+      ev_ebitda:
+        cycle_bottom: 8.0
+        cycle_normal: 15.0
+        cycle_peak: 25.0
+      pe:
+        growth_stage: 35.0
+        mature_stage: 25.0
+      ps:
+        growth_stage: 5.0
+        mature_stage: 3.0
+      pb:
+        cycle_bottom: 1.2
+        cycle_normal: 2.0
+        cycle_peak: 3.5
+
+    comparable_companies:
+      - ticker: "300750.SZ"
+        name: "宁德时代"
+        note: "动力电池龙头"
+      - ticker: "601012.SH"
+        name: "隆基绿能"
+        note: "光伏龙头"
+      - ticker: "600438.SH"
+        name: "通威股份"
+        note: "光伏硅料"
+      - ticker: "300772.SZ"
+        name: "运达股份"
+        note: "风电叶片"
+      - ticker: "002080.SZ"
+        name: "中电环保"
+        note: "新能源配套"
+
   data_center:
     weights:
       fundamentals: 0.22
@@ -449,6 +501,12 @@ industry_keywords:
     - "天然气"
     - "煤炭"
     - "电力"
+  new_energy_mfg:
+    - "新能源"
+    - "电池"
+    - "光伏"
+    - "风电"
+    - "锂电"
   data_center:
     - "数据中心"
     - "IDC"

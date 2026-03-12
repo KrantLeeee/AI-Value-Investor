@@ -348,3 +348,32 @@ def test_get_industry_comparables_default():
     comparables = get_industry_comparables("default")
 
     assert comparables == []
+
+
+# ── BUG-03: CATL (宁德时代) Classification Fix Tests ───────────────────────
+
+
+def test_catl_classified_as_new_energy():
+    """Test 宁德时代 is classified as new_energy_mfg, not pharma."""
+    from src.agents.industry_classifier import classify_by_business_description
+
+    result = classify_by_business_description(
+        company_name='宁德时代新能源科技股份有限公司',
+        business_desc='动力电池、储能电池研发生产'
+    )
+
+    assert result == 'new_energy_mfg'
+    assert result != 'pharma'
+
+
+def test_new_energy_keywords_priority():
+    """Test new energy keywords take priority over pharma."""
+    from src.agents.industry_classifier import classify_by_business_description
+
+    # Even if company has '能' which might partially match pharma keywords
+    result = classify_by_business_description(
+        company_name='XXX新能源科技',
+        business_desc='锂电池生产'
+    )
+
+    assert result == 'new_energy_mfg'

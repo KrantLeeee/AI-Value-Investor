@@ -47,6 +47,13 @@ class IndustryProfile(TypedDict):
 _PROFILES_CACHE: dict[str, IndustryProfile] | None = None
 _KEYWORDS_CACHE: dict[str, list[str]] | None = None
 
+# BUG-03: Priority keywords checked first to avoid misclassification
+# (e.g., 宁德时代 should be new_energy_mfg, not pharma)
+PRIORITY_KEYWORDS = {
+    'new_energy_mfg': ['锂电', '动力电池', '储能', '新能源', '光伏', '风电', '电芯'],
+    'auto_new_energy': ['新能源汽车', '电动汽车', '纯电动', '整车制造'],
+}
+
 
 def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
     """Load industry profiles from YAML config."""
@@ -91,6 +98,46 @@ def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
         _PROFILES_CACHE = {"default": default_profile}
         _KEYWORDS_CACHE = {}
         return _PROFILES_CACHE, _KEYWORDS_CACHE
+
+
+def classify_by_business_description(company_name: str, business_desc: str) -> str | None:
+    """
+    Classify industry based on company name and business description.
+
+    BUG-03: Priority keywords are checked first to avoid misclassification.
+    For example, 宁德时代 (CATL) should be classified as new_energy_mfg
+    even if some characters might partially match pharma keywords.
+
+    Args:
+        company_name: Company name
+        business_desc: Business description
+
+    Returns:
+        Industry type string or None if no match
+    """
+    combined_text = company_name + business_desc
+
+    # Check priority keywords first (new energy, etc.)
+    for industry_type, keywords in PRIORITY_KEYWORDS.items():
+        if any(kw in combined_text for kw in keywords):
+            logger.info(
+                f"[Industry] Classified '{company_name}' as '{industry_type}' "
+                f"(matched priority keyword)"
+            )
+            return industry_type
+
+    # Check regular keywords from YAML config
+    _, keywords = _load_profiles()
+    for industry_type, keyword_list in keywords.items():
+        if any(kw in combined_text for kw in keyword_list):
+            logger.info(
+                f"[Industry] Classified '{company_name}' as '{industry_type}' "
+                f"(matched regular keyword)"
+            )
+            return industry_type
+
+    logger.debug(f"[Industry] No match for '{company_name}', returning None")
+    return None
 
 
 def classify_industry(sector: str | None, sub_industry: str | None = None) -> str:
