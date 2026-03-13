@@ -13,12 +13,7 @@ from datetime import date, timedelta
 from src.data.akshare_source import AKShareSource
 from src.data.baostock_source import BaoStockSource
 from src.data.base_source import BaseDataSource
-from src.data.qveris_source import QVerisSource, fetch_company_basics as _qveris_company_basics
-from src.data.sina_source import SinaRealtimeSource
-from src.data.tushare_source import TushareSource
 from src.data.database import (
-    get_balance_sheets,
-    get_cash_flows,
     get_financial_metrics,
     get_income_statements,
     get_latest_prices,
@@ -30,6 +25,10 @@ from src.data.database import (
 )
 from src.data.fmp_source import FMPSource
 from src.data.models import MarketType
+from src.data.qveris_source import QVerisSource
+from src.data.qveris_source import fetch_company_basics as _qveris_company_basics
+from src.data.sina_source import SinaRealtimeSource
+from src.data.tushare_source import TushareSource
 from src.data.yfinance_source import YFinanceSource
 from src.utils.logger import get_logger, log_event
 
@@ -340,25 +339,15 @@ class Fetcher:
 
         import os
 
-        # ── Priority 1: Tavily Web Search (fast and accurate) ──────────────────
+        # ── Priority 1: Tavily Web Search + LLM Parse (fast and accurate) ────────
         tavily_key = os.getenv("TAVILY_API_KEY")
         if tavily_key:
             try:
-                from src.data.tavily_source import TavilySource
-                tavily = TavilySource()
-
-                code = ticker.split(".")[0]
-                query = f"{code} 股票 公司名称 主营业务 行业"
-                tavily.search_news(query, max_results=3, time_range=None, include_answer=True)
-
-                summary = tavily.get_last_summary()
-                if summary:
-                    parsed = self._parse_company_info_from_text(ticker, summary)
-                    if parsed and parsed.get("company_name"):
-                        parsed["source"] = "tavily"
-                        logger.info("[Fetcher] %s company basics from Tavily: %s",
-                                   ticker, parsed.get("company_name"))
-                        return parsed
+                parsed = self._tavily_search_company_info(ticker, tavily_key)
+                if parsed and parsed.get("company_name"):
+                    logger.info("[Fetcher] %s company basics from Tavily: %s",
+                               ticker, parsed.get("company_name"))
+                    return parsed
             except Exception as e:
                 logger.debug("[Fetcher] Tavily web search failed for %s: %s", ticker, e)
 
@@ -425,8 +414,146 @@ class Fetcher:
         logger.warning("[Fetcher] %s company basics not available (all sources exhausted)", ticker)
         return None
 
+    def _tavily_search_company_info(self, ticker: str, api_key: str) -> dict | None:
+        """
+        Search company info using Tavily API directly with httpx.
+
+        Bypasses the Tavily SDK which has SSL issues in some network environments.
+        Uses Tavily's built-in LLM answer feature for structured extraction.
+        """
+
+        import httpx
+
+        code = ticker.split(".")[0]
+        query = f"{code} 股票 公司简称 主营业务 所属行业"
+
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "search_depth": "basic",
+                        "max_results": 5,
+                        "include_answer": True,
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                # Get Tavily's LLM-generated answer
+                answer = data.get("answer", "")
+                results = data.get("results", [])
+
+                logger.debug("[Fetcher] Tavily search for %s: answer=%s, results=%d",
+                            ticker, answer[:100] if answer else "None", len(results))
+
+                if answer:
+                    # Use LLM to parse the Tavily answer into structured data
+                    parsed = self._llm_parse_company_info(ticker, answer)
+                    if parsed and parsed.get("company_name"):
+                        parsed["source"] = "tavily"
+                        return parsed
+
+                # Fallback: try to extract from search results titles/content
+                if results:
+                    combined_text = " ".join([
+                        r.get("title", "") + " " + r.get("content", "")[:200]
+                        for r in results[:3]
+                    ])
+                    parsed = self._llm_parse_company_info(ticker, combined_text)
+                    if parsed and parsed.get("company_name"):
+                        parsed["source"] = "tavily"
+                        return parsed
+
+        except httpx.HTTPStatusError as e:
+            logger.debug("[Fetcher] Tavily API error for %s: %s", ticker, e)
+        except Exception as e:
+            logger.debug("[Fetcher] Tavily search failed for %s: %s", ticker, e)
+
+        return None
+
+    def _llm_parse_company_info(self, ticker: str, text: str) -> dict | None:
+        """
+        Use LLM to parse company info from unstructured text.
+
+        This is more reliable than regex-based parsing for Chinese text.
+        """
+        import json
+        import os
+
+        from src.utils.network import create_openai_client
+
+        # Try OpenAI first, then DeepSeek
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = None
+        model = "gpt-4o-mini"
+
+        if not api_key:
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            base_url = "https://api.deepseek.com/v1"
+            model = "deepseek-chat"
+
+        if not api_key:
+            return None
+
+        client = create_openai_client(api_key=api_key, base_url=base_url)
+
+        prompt = f"""从以下文本中提取股票 {ticker} 的公司信息。
+
+文本内容：
+{text[:1000]}
+
+请以JSON格式返回（不要添加其他文字）：
+{{
+    "company_name": "公司简称（如：碧水源、贵州茅台，2-4个字）",
+    "industry": "所属行业（如：环保/水处理、白酒、电力设备）",
+    "main_business": "主营业务简述（20字以内）",
+    "is_financial": false
+}}
+
+注意：company_name 应该是股票简称，不是公司全称。如果无法确定某个字段，返回null。"""
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是一个准确的股票信息提取助手。只返回JSON，不要其他内容。"},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0,
+            )
+
+            content = response.choices[0].message.content or ""
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+
+            data = json.loads(content)
+
+            if data.get("company_name"):
+                return {
+                    "company_name": data.get("company_name"),
+                    "main_business": data.get("main_business"),
+                    "industry": data.get("industry"),
+                    "concepts": data.get("industry"),
+                    "is_financial": data.get("is_financial", False),
+                }
+        except Exception as e:
+            logger.debug("[Fetcher] LLM parse failed for %s: %s", ticker, e)
+
+        return None
+
     def _parse_company_info_from_text(self, ticker: str, text: str) -> dict | None:
-        """Parse company info from web search text using simple heuristics."""
+        """Parse company info from web search text using simple heuristics.
+
+        Note: This is a fallback method. Prefer _llm_parse_company_info for better accuracy.
+        """
         if not text:
             return None
 
@@ -461,6 +588,7 @@ class Fetcher:
             "医药": "医药", "医疗": "医疗器械",
             "房地产": "房地产", "地产": "房地产",
             "电力": "电力/公用事业", "发电": "电力/公用事业",
+            "环保": "环保/水处理", "水处理": "环保/水处理", "污水": "环保/水处理",
         }
 
         for keyword, ind in industry_keywords.items():
@@ -481,9 +609,13 @@ class Fetcher:
         return None
 
     def _llm_lookup_company_info(self, ticker: str) -> dict | None:
-        """Use LLM to look up company information based on stock code."""
-        import os
+        """
+        Use LLM to look up company information based on stock code.
+
+        Includes cross-validation with web search to catch LLM knowledge errors.
+        """
         import json
+        import os
 
         from src.utils.network import create_openai_client
 
@@ -536,10 +668,28 @@ class Fetcher:
                 content = content.strip()
 
             data = json.loads(content)
+            llm_company_name = data.get("company_name")
 
-            if data.get("company_name"):
+            if llm_company_name:
+                # ── Cross-validation: verify LLM result with web search ──────────
+                tavily_key = os.getenv("TAVILY_API_KEY")
+                if tavily_key:
+                    try:
+                        validated = self._validate_company_name_with_search(
+                            ticker, llm_company_name, tavily_key
+                        )
+                        if not validated:
+                            logger.warning(
+                                "[Fetcher] LLM lookup for %s returned '%s' but failed validation",
+                                ticker, llm_company_name
+                            )
+                            return None
+                    except Exception as e:
+                        logger.debug("[Fetcher] Validation failed for %s: %s", ticker, e)
+                        # Continue without validation if search fails
+
                 return {
-                    "company_name": data.get("company_name"),
+                    "company_name": llm_company_name,
                     "main_business": data.get("main_business"),
                     "industry": data.get("industry"),
                     "concepts": data.get("industry"),
@@ -550,6 +700,65 @@ class Fetcher:
             logger.debug("[Fetcher] LLM JSON parse failed for %s: %s", ticker, e)
 
         return None
+
+    def _validate_company_name_with_search(
+        self, ticker: str, company_name: str, tavily_key: str
+    ) -> bool:
+        """
+        Validate company name against web search results.
+
+        Returns True if the company name appears in search results for the ticker.
+        This helps catch LLM hallucinations about stock codes.
+        """
+        import httpx
+
+        code = ticker.split(".")[0]
+        query = f"{code} 股票 公司简称"
+
+        try:
+            with httpx.Client(timeout=15) as client:
+                response = client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": tavily_key,
+                        "query": query,
+                        "search_depth": "basic",
+                        "max_results": 3,
+                        "include_answer": True,
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                # Check if company name appears in answer or results
+                answer = data.get("answer", "")
+                results = data.get("results", [])
+
+                # Combine all searchable text
+                search_text = answer
+                for r in results:
+                    search_text += " " + r.get("title", "") + " " + r.get("content", "")
+
+                # Check if company name is mentioned
+                if company_name in search_text:
+                    logger.debug("[Fetcher] Validated %s = %s via web search", ticker, company_name)
+                    return True
+
+                # Also check for partial matches (first 2 characters)
+                if len(company_name) >= 2 and company_name[:2] in search_text:
+                    logger.debug("[Fetcher] Partially validated %s = %s via web search", ticker, company_name)
+                    return True
+
+                logger.debug(
+                    "[Fetcher] Company name '%s' not found in search results for %s",
+                    company_name, ticker
+                )
+                return False
+
+        except Exception as e:
+            logger.debug("[Fetcher] Validation search failed for %s: %s", ticker, e)
+            # Return True to not block on validation failures
+            return True
 
     def get_data_summary(self, ticker: str) -> dict:
         """Return a summary of locally available data for a ticker."""
