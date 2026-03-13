@@ -112,11 +112,24 @@ def _get_source(name: str) -> BaseDataSource:
 
 
 def _with_retry(fn, *args, **kwargs):
-    """Call fn with retries and exponential backoff."""
+    """Call fn with retries and exponential backoff.
+
+    Certain exceptions are NOT retried because they will always fail:
+    - NotImplementedError: Method not supported by source
+    - ImportError: Required package not installed
+    - AttributeError: Method doesn't exist on source
+    """
+    # Exceptions that should NOT be retried (permanent failures)
+    NO_RETRY_EXCEPTIONS = (NotImplementedError, ImportError, AttributeError)
+
     for attempt in range(MAX_RETRIES):
         try:
             result = fn(*args, **kwargs)
             return result
+        except NO_RETRY_EXCEPTIONS as e:
+            # Don't retry these - they will always fail
+            logger.debug("Permanent failure (no retry): %s", e)
+            raise
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
                 delay = RETRY_DELAYS[attempt]

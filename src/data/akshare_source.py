@@ -15,11 +15,21 @@ Key facts from source code:
   - stock_financial_analysis_indicator_em: requires symbol WITH market suffix
     * symbol format: "601808.SH" (not "601808")
     * returns raw numeric floats, NO unit suffixes
+
+Note: AKShare depends on eastmoney.com API which may be blocked from
+international IPs. Use AKSHARE_SKIP=true to bypass when network issues occur.
 """
 
+import os
 from datetime import date
+from functools import lru_cache
 
 import pandas as pd
+
+# Configure network environment BEFORE importing akshare
+# This helps with proxy/SSL issues for eastmoney domains
+from src.utils.network import setup_akshare_environment
+setup_akshare_environment()
 
 from src.data.base_source import BaseDataSource
 from src.data.models import (
@@ -35,6 +45,53 @@ from src.data.models import (
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Connectivity check ─────────────────────────────────────────────────────────
+
+@lru_cache(maxsize=1)
+def _check_eastmoney_connectivity() -> bool:
+    """
+    Quick connectivity check to eastmoney.com (AKShare's main data source).
+
+    Returns True if eastmoney is reachable with valid HTTPS, False otherwise.
+    Result is cached for the session to avoid repeated slow checks.
+
+    Can be bypassed by setting AKSHARE_SKIP=true environment variable.
+    """
+    # Allow user to force-skip AKShare
+    if os.getenv("AKSHARE_SKIP", "").lower() == "true":
+        logger.info("[AKShare] Skipped by AKSHARE_SKIP=true")
+        return False
+
+    # Allow user to force-enable AKShare (skip connectivity check)
+    if os.getenv("AKSHARE_FORCE", "").lower() == "true":
+        logger.info("[AKShare] Force-enabled by AKSHARE_FORCE=true")
+        return True
+
+    import requests
+    try:
+        # Quick HTTPS request with short timeout (5 seconds)
+        # This verifies both network connectivity AND SSL handshake
+        resp = requests.get(
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.000001",
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        # Any response (even error) means connection works
+        return resp.status_code in (200, 400, 403)
+    except requests.exceptions.SSLError as e:
+        logger.warning("[AKShare] SSL error connecting to eastmoney.com - source disabled: %s", str(e)[:100])
+        return False
+    except requests.exceptions.ConnectionError as e:
+        logger.warning("[AKShare] Connection error to eastmoney.com - source disabled: %s", str(e)[:100])
+        return False
+    except requests.exceptions.Timeout:
+        logger.warning("[AKShare] Timeout connecting to eastmoney.com - source disabled")
+        return False
+    except Exception as e:
+        logger.warning("[AKShare] Error checking eastmoney connectivity: %s", str(e)[:100])
+        return False
 
 
 # ── Ticker format helpers ──────────────────────────────────────────────────────
@@ -130,9 +187,15 @@ class AKShareSource(BaseDataSource):
     source_name = "akshare"
 
     def supports_market(self, market: MarketType) -> bool:
+        # Quick check: if eastmoney is unreachable, don't even try
+        if not _check_eastmoney_connectivity():
+            return False
         return market in ("a_share", "hk")
 
     def health_check(self) -> bool:
+        # Quick check: if eastmoney is unreachable, skip AKShare
+        if not _check_eastmoney_connectivity():
+            return False
         try:
             import akshare as ak
             ak.tool_trade_date_hist_sina()
@@ -147,6 +210,9 @@ class AKShareSource(BaseDataSource):
         self, ticker: str, market: MarketType,
         start_date: date, end_date: date,
     ) -> list[DailyPrice]:
+        # Quick connectivity check - skip if eastmoney is unreachable
+        if not _check_eastmoney_connectivity():
+            return []
         import akshare as ak
 
         code = _clean_ticker(ticker, market)
@@ -209,6 +275,8 @@ class AKShareSource(BaseDataSource):
           销售费用, 管理费用, 研发费用, 财务费用, （一）基本每股收益
         """
         if market != "a_share":
+            return []
+        if not _check_eastmoney_connectivity():
             return []
         import akshare as ak
 
@@ -296,6 +364,8 @@ class AKShareSource(BaseDataSource):
         structure and field names. They don't use "流动资产/流动负债" concepts.
         """
         if market != "a_share":
+            return []
+        if not _check_eastmoney_connectivity():
             return []
         import akshare as ak
 
@@ -414,6 +484,8 @@ class AKShareSource(BaseDataSource):
         """
         if market != "a_share":
             return []
+        if not _check_eastmoney_connectivity():
+            return []
         import akshare as ak
 
         code = _clean_ticker(ticker, market)
@@ -471,6 +543,8 @@ class AKShareSource(BaseDataSource):
         Falls back silently if EM is unavailable (rate-limited).
         """
         if market != "a_share":
+            return []
+        if not _check_eastmoney_connectivity():
             return []
         import akshare as ak
 
@@ -571,6 +645,8 @@ class AKShareSource(BaseDataSource):
         """East Money stock news: stock_news_em (A-share only)."""
         if market != "a_share":
             return []
+        if not _check_eastmoney_connectivity():
+            return []
         import akshare as ak
 
         code = _clean_ticker(ticker, market)
@@ -603,6 +679,8 @@ class AKShareSource(BaseDataSource):
         Returns recent profit warnings sorted by report date (newest first).
         """
         if market != "a_share":
+            return []
+        if not _check_eastmoney_connectivity():
             return []
         import akshare as ak
 

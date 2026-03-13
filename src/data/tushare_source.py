@@ -38,15 +38,33 @@ TUSHARE_TOKEN = os.environ.get(
 
 
 class TushareSource(BaseDataSource):
-    """Tushare Pro data source (A-share only, premium quality)."""
+    """Tushare Pro data source (A-share only, premium quality).
+
+    Note: Tushare is an optional dependency. If not installed, all methods
+    return empty results gracefully.
+    """
 
     source_name = "tushare"
 
     def __init__(self):
         self._api = None
+        self._available = None  # Cached availability check
+
+    def _is_available(self) -> bool:
+        """Check if tushare package is installed."""
+        if self._available is None:
+            try:
+                import tushare  # noqa: F401
+                self._available = True
+            except ImportError:
+                self._available = False
+                logger.debug("[Tushare] Package not installed - source disabled")
+        return self._available
 
     def _get_api(self):
         """Lazy init Tushare API connection."""
+        if not self._is_available():
+            return None
         if self._api is None:
             try:
                 import tushare as ts
@@ -54,17 +72,21 @@ class TushareSource(BaseDataSource):
                 self._api = ts.pro_api()
             except Exception as e:
                 logger.error("[Tushare] Failed to initialize API: %s", e)
-                raise
+                return None
         return self._api
 
     def supports_market(self, market: MarketType) -> bool:
-        """Only supports A-share market."""
-        return market == "a_share"
+        """Only supports A-share market (and only if tushare is installed)."""
+        return market == "a_share" and self._is_available()
 
     def health_check(self) -> bool:
         """Test API connectivity with a lightweight call."""
+        if not self._is_available():
+            return False
         try:
             api = self._get_api()
+            if api is None:
+                return False
             # Test with a simple query (1pt)
             df = api.trade_cal(exchange='SSE', start_date='20240101', end_date='20240102')
             return df is not None and not df.empty
@@ -81,6 +103,8 @@ class TushareSource(BaseDataSource):
             return []
 
         api = self._get_api()
+        if api is None:
+            return []
         ts_code = ticker  # e.g. "601808.SH" (already in Tushare format)
         start_str = start_date.strftime("%Y%m%d")
         end_str = end_date.strftime("%Y%m%d")
@@ -129,6 +153,8 @@ class TushareSource(BaseDataSource):
             return []
 
         api = self._get_api()
+        if api is None:
+            return []
         ts_code = ticker
         results: list[IncomeStatement] = []
 
@@ -202,6 +228,8 @@ class TushareSource(BaseDataSource):
             return []
 
         api = self._get_api()
+        if api is None:
+            return []
         ts_code = ticker
         results: list[BalanceSheet] = []
 
@@ -259,6 +287,8 @@ class TushareSource(BaseDataSource):
             return []
 
         api = self._get_api()
+        if api is None:
+            return []
         ts_code = ticker
         results: list[CashFlow] = []
 
@@ -305,3 +335,9 @@ class TushareSource(BaseDataSource):
             logger.warning("[Tushare] get_cash_flows failed for %s: %s", ticker, e)
 
         return results
+
+    def get_financial_metrics(
+        self, ticker: str, market: MarketType, limit: int = 10,
+    ) -> list:
+        """Tushare financial metrics not implemented - return empty list."""
+        return []

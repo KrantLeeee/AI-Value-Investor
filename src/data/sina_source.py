@@ -171,19 +171,25 @@ class SinaRealtimeSource(BaseDataSource):
         self, ticker: str, market: MarketType,
         period_type: str = "annual", limit: int = 10,
     ) -> list[IncomeStatement]:
-        """Sina does not provide financial statements."""
-        raise NotImplementedError("[Sina] Financial statements not available from realtime price source")
+        """Sina does not provide financial statements - return empty list."""
+        return []
 
     def get_balance_sheets(
         self, ticker: str, market: MarketType,
         period_type: str = "annual", limit: int = 10,
     ) -> list[BalanceSheet]:
-        """Sina does not provide financial statements."""
-        raise NotImplementedError("[Sina] Financial statements not available from realtime price source")
+        """Sina does not provide financial statements - return empty list."""
+        return []
 
     def get_cash_flows(
         self, ticker: str, market: MarketType,
         period_type: str = "annual", limit: int = 10,
     ) -> list[CashFlow]:
-        """Sina does not provide financial statements."""
-        raise NotImplementedError("[Sina] Financial statements not available from realtime price source")
+        """Sina does not provide financial statements - return empty list."""
+        return []
+
+    def get_financial_metrics(
+        self, ticker: str, market: MarketType, limit: int = 10,
+    ) -> list:
+        """Sina does not provide financial metrics - return empty list."""
+        return []

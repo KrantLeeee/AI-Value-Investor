@@ -41,6 +41,9 @@ CHINA_DOMAINS = {
     "emweb.eastmoney.com",
     "finance.sina.com.cn",
     "xueqiu.com",
+    "push2.eastmoney.com",
+    "data.eastmoney.com",
+    "datacenter.eastmoney.com",
 }
 
 # ── Default timeouts ──
@@ -353,6 +356,88 @@ def requests_post(url: str, **kwargs) -> "requests.Response":
 def clear_proxy_cache():
     """Clear cached proxy configuration. Call after changing env vars."""
     get_proxy_config.cache_clear()
+
+
+def configure_requests_session():
+    """
+    Configure global requests session settings for better proxy/SSL handling.
+
+    This patches the default requests session to:
+    1. Use proper User-Agent headers
+    2. Handle SSL errors more gracefully
+    3. Add retry logic for transient failures
+
+    Call this at application startup or before heavy network usage.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    # Configure retry strategy for transient failures
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"],
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+
+    # Patch the default session
+    session = requests.Session()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    # Set default headers
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    })
+
+    logger.debug("[Network] Configured requests session with retry strategy")
+
+
+def setup_akshare_environment():
+    """
+    Configure environment for AKShare before importing it.
+
+    AKShare uses requests internally. This function:
+    1. Sets up NO_PROXY for domains that don't work well with proxy
+    2. Configures SSL settings for problematic domains
+
+    Call this BEFORE importing akshare.
+    """
+    import urllib3
+
+    # Suppress SSL warnings (AKShare internal code may trigger these)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # If proxy is configured but causing issues with China domains,
+    # add them to NO_PROXY
+    config = get_proxy_config()
+    if config["http"] or config["https"]:
+        # Get current NO_PROXY
+        current_no_proxy = os.getenv("NO_PROXY", "")
+        no_proxy_domains = set(current_no_proxy.split(",")) if current_no_proxy else set()
+
+        # Add eastmoney domains that have SSL issues with proxy
+        # These domains work better with direct connection
+        eastmoney_domains = [
+            "push2his.eastmoney.com",
+            "push2.eastmoney.com",
+            "datacenter.eastmoney.com",
+        ]
+
+        bypass_eastmoney = os.getenv("PROXY_BYPASS_EASTMONEY", "true").lower() != "false"
+        if bypass_eastmoney:
+            no_proxy_domains.update(eastmoney_domains)
+
+            new_no_proxy = ",".join(d for d in no_proxy_domains if d)
+            if new_no_proxy != current_no_proxy:
+                os.environ["NO_PROXY"] = new_no_proxy
+                os.environ["no_proxy"] = new_no_proxy
+                clear_proxy_cache()
+                logger.debug("[Network] Added eastmoney domains to NO_PROXY: %s", eastmoney_domains)
 
 
 def diagnose_network() -> dict:

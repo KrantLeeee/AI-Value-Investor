@@ -20,6 +20,9 @@ Key API facts:
         dupontNitoni, dupontRoe, dupontAssets
   - BaoStock provides RATIO data, not raw financial statement amounts
   - For actual amounts (revenue, total assets, etc.) use AKShare THS instead
+
+Note: BaoStock is an optional dependency. If not installed, all methods
+return empty results gracefully.
 """
 
 from datetime import date
@@ -39,18 +42,90 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+import os
+import socket
+from functools import lru_cache
+
 _bs_logged_in = False
+_bs_available = None  # Cached availability check
+_bs_server_reachable = None  # Cached server connectivity check
+
+
+def _is_baostock_available() -> bool:
+    """Check if baostock package is installed."""
+    global _bs_available
+    if _bs_available is None:
+        try:
+            import baostock  # noqa: F401
+            _bs_available = True
+        except ImportError:
+            _bs_available = False
+            logger.debug("[BaoStock] Package not installed - source disabled")
+    return _bs_available
+
+
+@lru_cache(maxsize=1)
+def _check_baostock_server_reachable() -> bool:
+    """
+    Quick connectivity check to BaoStock server.
+
+    BaoStock uses data.baostock.com:8000 for data.
+    Returns True if server is reachable, False otherwise.
+    Result is cached for the session.
+
+    Can be bypassed by setting BAOSTOCK_SKIP=true or BAOSTOCK_FORCE=true.
+    """
+    # Allow user to force-skip BaoStock
+    if os.getenv("BAOSTOCK_SKIP", "").lower() == "true":
+        logger.info("[BaoStock] Skipped by BAOSTOCK_SKIP=true")
+        return False
+
+    # Allow user to force-enable BaoStock (skip connectivity check)
+    if os.getenv("BAOSTOCK_FORCE", "").lower() == "true":
+        logger.info("[BaoStock] Force-enabled by BAOSTOCK_FORCE=true")
+        return True
+
+    try:
+        # Quick socket connection test with 5 second timeout
+        # BaoStock uses data.baostock.com:8000
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        result = sock.connect_ex(("data.baostock.com", 8000))
+        sock.close()
+        if result == 0:
+            logger.debug("[BaoStock] Server reachable")
+            return True
+        else:
+            logger.warning("[BaoStock] Server unreachable (connection refused) - source disabled")
+            return False
+    except socket.timeout:
+        logger.warning("[BaoStock] Server timeout connecting to data.baostock.com - source disabled")
+        return False
+    except socket.gaierror as e:
+        logger.warning("[BaoStock] DNS resolution failed for data.baostock.com: %s - source disabled", e)
+        return False
+    except Exception as e:
+        logger.warning("[BaoStock] Error checking server connectivity: %s - source disabled", e)
+        return False
 
 
 def _ensure_login():
+    """Ensure baostock is logged in. Returns False if unavailable or login fails."""
     global _bs_logged_in
+    if not _is_baostock_available():
+        return False
+    # Check server reachability before attempting login (which can block)
+    if not _check_baostock_server_reachable():
+        return False
     if not _bs_logged_in:
         import baostock as bs
         result = bs.login()
         if result.error_code == "0":
             _bs_logged_in = True
         else:
-            raise RuntimeError(f"BaoStock login failed: {result.error_msg}")
+            logger.warning("[BaoStock] Login failed: %s", result.error_msg)
+            return False
+    return True
 
 
 def _to_bs_code(ticker: str) -> str:
@@ -104,8 +179,9 @@ def _query_bs_quarters(
     Returns a list of row dicts (field→value), newest first, up to `limit`.
     Skips quarters that return no data or errors silently.
     """
+    if not _ensure_login():
+        return []
     import baostock as bs
-    _ensure_login()
     seen_dates: set[str] = set()
     collected: list[dict] = []
 
@@ -137,9 +213,12 @@ class BaoStockSource(BaseDataSource):
     source_name = "baostock"
 
     def supports_market(self, market: MarketType) -> bool:
-        return market == "a_share"
+        """Only supports A-share market (and only if baostock is installed)."""
+        return market == "a_share" and _is_baostock_available()
 
     def health_check(self) -> bool:
+        if not _is_baostock_available():
+            return False
         try:
             _ensure_login()
             return True
@@ -160,9 +239,10 @@ class BaoStockSource(BaseDataSource):
         """
         if market != "a_share":
             return []
+        if not _ensure_login():
+            return []
         import baostock as bs
 
-        _ensure_login()
         bs_code = _to_bs_code(ticker)
         results: list[DailyPrice] = []
 
@@ -209,6 +289,8 @@ class BaoStockSource(BaseDataSource):
         Note: netProfit and MBRevenue are absolute (yuan), others are ratios.
         """
         if market != "a_share":
+            return []
+        if not _is_baostock_available():
             return []
         import baostock as bs
 
@@ -262,6 +344,8 @@ class BaoStockSource(BaseDataSource):
         """
         if market != "a_share":
             return []
+        if not _is_baostock_available():
+            return []
         import baostock as bs
 
         bs_code = _to_bs_code(ticker)
@@ -307,6 +391,8 @@ class BaoStockSource(BaseDataSource):
         Note: These are ratios (CFO/Revenue, CFO/Net Profit, etc.), not absolute.
         """
         if market != "a_share":
+            return []
+        if not _is_baostock_available():
             return []
         import baostock as bs
 
@@ -358,6 +444,8 @@ class BaoStockSource(BaseDataSource):
           roeAvg, npMargin (net profit margin), gpMargin (gross profit margin)
         """
         if market != "a_share":
+            return []
+        if not _is_baostock_available():
             return []
         import baostock as bs
 
