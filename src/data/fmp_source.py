@@ -3,8 +3,6 @@
 import time
 from datetime import date
 
-import requests
-
 from src.data.base_source import BaseDataSource
 from src.data.models import (
     BalanceSheet,
@@ -17,6 +15,7 @@ from src.data.models import (
 )
 from src.utils.config import get_settings
 from src.utils.logger import get_logger
+from src.utils.network import requests_get
 
 logger = get_logger(__name__)
 
@@ -44,7 +43,8 @@ class FMPSource(BaseDataSource):
         url = f"{FMP_BASE}{endpoint}"
         p = {"apikey": self._api_key, **(params or {})}
         try:
-            resp = requests.get(url, params=p, timeout=15)
+            # Use network-aware requests_get (auto proxy config)
+            resp = requests_get(url, params=p, timeout=15)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:

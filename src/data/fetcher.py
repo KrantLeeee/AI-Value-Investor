@@ -67,12 +67,18 @@ _COMPANY_INFO_FALLBACK: dict[str, dict] = {
     # Healthcare
     "600276.SH": {"name": "恒瑞医药", "industry": "医药", "main_business": "创新药研发与销售"},
     "300760.SZ": {"name": "迈瑞医疗", "industry": "医疗器械", "main_business": "医疗器械研发与销售"},
+    "300896.SZ": {"name": "爱美客", "industry": "医美/化妆品", "main_business": "玻尿酸等医美产品研发与销售"},
     # Auto
     "002594.SZ": {"name": "比亚迪", "industry": "新能源汽车", "main_business": "新能源汽车及电池生产"},
     "600104.SH": {"name": "上汽集团", "industry": "汽车", "main_business": "汽车研发生产销售"},
     # Utilities
     "600900.SH": {"name": "长江电力", "industry": "电力/公用事业", "main_business": "水力发电及电力销售"},
     "601985.SH": {"name": "中国核电", "industry": "电力/公用事业", "main_business": "核电发电及销售"},
+    # Advertising/Media
+    "002027.SZ": {"name": "分众传媒", "industry": "广告/传媒", "main_business": "楼宇电梯广告媒体运营"},
+    # Retail
+    "601933.SH": {"name": "永辉超市", "industry": "零售/超市", "main_business": "连锁超市零售业务"},
+    "601888.SH": {"name": "中国中免", "industry": "零售/免税", "main_business": "免税商品零售"},
 }
 
 # Retry configuration for network calls
@@ -306,9 +312,12 @@ class Fetcher:
         """
         Fetch company basic information.
 
-        Priority:
-        1. QVeris iFinD (paid source, comprehensive data)
-        2. Local fallback mapping (for common A-share stocks when QVeris exhausted)
+        Priority (optimized for reliability and cost):
+        1. Tavily Web Search (fast, accurate, uses web + LLM)
+        2. Local fallback mapping (instant, curated list)
+        3. AKShare API (free, but network-dependent)
+        4. LLM Lookup (reliable, uses GPT-4o-mini or DeepSeek)
+        5. QVeris iFinD (paid source, last resort due to quota limits)
 
         Returns dict with company_name, main_business, industry, etc. or None.
         Only available for A-share tickers.
@@ -316,13 +325,31 @@ class Fetcher:
         if market != "a_share":
             return None
 
-        # Try QVeris first
-        basics = _qveris_company_basics(ticker)
-        if basics:
-            logger.info("[Fetcher] %s company basics from QVeris: %s", ticker, basics.get("company_name"))
-            return basics
+        import os
 
-        # Fallback to local mapping
+        # ── Priority 1: Tavily Web Search (fast and accurate) ──────────────────
+        tavily_key = os.getenv("TAVILY_API_KEY")
+        if tavily_key:
+            try:
+                from src.data.tavily_source import TavilySource
+                tavily = TavilySource()
+
+                code = ticker.split(".")[0]
+                query = f"{code} 股票 公司名称 主营业务 行业"
+                tavily.search_news(query, max_results=3, time_range=None, include_answer=True)
+
+                summary = tavily.get_last_summary()
+                if summary:
+                    parsed = self._parse_company_info_from_text(ticker, summary)
+                    if parsed and parsed.get("company_name"):
+                        parsed["source"] = "tavily"
+                        logger.info("[Fetcher] %s company basics from Tavily: %s",
+                                   ticker, parsed.get("company_name"))
+                        return parsed
+            except Exception as e:
+                logger.debug("[Fetcher] Tavily web search failed for %s: %s", ticker, e)
+
+        # ── Priority 2: Local fallback mapping (instant, curated) ──────────────
         fallback = _COMPANY_INFO_FALLBACK.get(ticker)
         if fallback:
             logger.info("[Fetcher] %s company basics from fallback: %s", ticker, fallback.get("name"))
@@ -330,17 +357,17 @@ class Fetcher:
                 "company_name": fallback.get("name"),
                 "main_business": fallback.get("main_business"),
                 "industry": fallback.get("industry"),
-                "concepts": fallback.get("industry"),  # Use industry as concept fallback
+                "concepts": fallback.get("industry"),
                 "is_financial": fallback.get("is_financial", False),
+                "source": "local_fallback",
             }
 
-        # Fallback to AKShare stock_individual_info_em (free, always available)
+        # ── Priority 3: AKShare API (free, network-dependent) ──────────────────
         try:
             import akshare as ak
             code = ticker.split(".")[0]
             df = ak.stock_individual_info_em(symbol=code)
             if df is not None and not df.empty:
-                # Convert DataFrame to dict {item: value}
                 info_dict = dict(zip(df["item"], df["value"]))
                 company_name = info_dict.get("股票简称") or info_dict.get("公司名称")
                 industry = info_dict.get("行业") or info_dict.get("所属行业")
@@ -354,11 +381,161 @@ class Fetcher:
                         "industry": industry,
                         "concepts": industry,
                         "is_financial": industry and any(k in industry for k in ["银行", "保险", "证券", "金融"]),
+                        "source": "akshare",
                     }
         except Exception as e:
             logger.debug("[Fetcher] AKShare stock_individual_info_em failed for %s: %s", ticker, e)
 
+        # ── Priority 4: LLM Lookup (reliable, uses GPT-4o-mini or DeepSeek) ────
+        openai_key = os.getenv("OPENAI_API_KEY")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        if openai_key or deepseek_key:
+            try:
+                parsed = self._llm_lookup_company_info(ticker)
+                if parsed and parsed.get("company_name"):
+                    logger.info("[Fetcher] %s company basics from LLM lookup: %s",
+                               ticker, parsed.get("company_name"))
+                    return parsed
+            except Exception as e:
+                logger.debug("[Fetcher] LLM lookup failed for %s: %s", ticker, e)
+
+        # ── Priority 5: QVeris iFinD (paid, last resort due to quota) ──────────
+        try:
+            basics = _qveris_company_basics(ticker)
+            if basics and basics.get("company_name"):
+                basics["source"] = "qveris"
+                logger.info("[Fetcher] %s company basics from QVeris: %s", ticker, basics.get("company_name"))
+                return basics
+        except Exception as e:
+            logger.debug("[Fetcher] QVeris failed for %s: %s", ticker, e)
+
         logger.warning("[Fetcher] %s company basics not available (all sources exhausted)", ticker)
+        return None
+
+    def _parse_company_info_from_text(self, ticker: str, text: str) -> dict | None:
+        """Parse company info from web search text using simple heuristics."""
+        if not text:
+            return None
+
+        # Common Chinese stock name patterns
+        import re
+
+        # Try to find company name (stock short name)
+        company_name = None
+        industry = None
+        main_business = None
+
+        # Pattern: "XXX（股票代码）" or "XXX（代码：XXX）"
+        name_patterns = [
+            r'([^\s,，。、]+)(?:股份|集团|公司)',  # Match company-like names
+            r'简称[：:]\s*([^\s,，。、]+)',         # "简称：XXX"
+        ]
+
+        for pattern in name_patterns:
+            match = re.search(pattern, text)
+            if match:
+                company_name = match.group(1)
+                break
+
+        # Industry detection
+        industry_keywords = {
+            "医美": "医美/化妆品", "玻尿酸": "医美/化妆品", "化妆品": "医美/化妆品",
+            "广告": "广告/传媒", "传媒": "广告/传媒", "媒体": "广告/传媒",
+            "超市": "零售/超市", "零售": "零售/超市", "连锁": "零售/超市",
+            "银行": "银行", "保险": "保险", "证券": "证券", "金融": "金融",
+            "白酒": "白酒", "酒类": "白酒", "茅台": "白酒",
+            "汽车": "汽车", "新能源": "新能源汽车",
+            "医药": "医药", "医疗": "医疗器械",
+            "房地产": "房地产", "地产": "房地产",
+            "电力": "电力/公用事业", "发电": "电力/公用事业",
+        }
+
+        for keyword, ind in industry_keywords.items():
+            if keyword in text:
+                industry = ind
+                break
+
+        if company_name or industry:
+            return {
+                "company_name": company_name,
+                "main_business": main_business,
+                "industry": industry,
+                "concepts": industry,
+                "is_financial": industry and any(k in (industry or "") for k in ["银行", "保险", "证券", "金融"]),
+                "source": "web_search",
+            }
+
+        return None
+
+    def _llm_lookup_company_info(self, ticker: str) -> dict | None:
+        """Use LLM to look up company information based on stock code."""
+        import os
+        import json
+
+        from src.utils.network import create_openai_client
+
+        # Try OpenAI first, then DeepSeek
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = None
+        model = "gpt-4o-mini"
+
+        if not api_key:
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            base_url = "https://api.deepseek.com/v1"
+            model = "deepseek-chat"
+
+        if not api_key:
+            return None
+
+        # Use network-aware client (bypasses proxy for LLM APIs)
+        client = create_openai_client(api_key=api_key, base_url=base_url)
+
+        prompt = f"""你是一个中国A股股票信息助手。请根据股票代码 {ticker} 提供以下信息：
+
+请以JSON格式返回（不要添加其他文字）：
+{{
+    "company_name": "公司简称（如：贵州茅台）",
+    "industry": "所属行业（如：白酒、医美/化妆品、广告/传媒）",
+    "main_business": "主营业务简述（20字以内）",
+    "is_financial": false
+}}
+
+如果无法确定某个字段，返回null。请确保信息准确。"""
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是一个准确的股票信息查询助手。只返回JSON，不要其他内容。"},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0,
+            )
+
+            content = response.choices[0].message.content or ""
+            # Strip markdown code block if present
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+
+            data = json.loads(content)
+
+            if data.get("company_name"):
+                return {
+                    "company_name": data.get("company_name"),
+                    "main_business": data.get("main_business"),
+                    "industry": data.get("industry"),
+                    "concepts": data.get("industry"),
+                    "is_financial": data.get("is_financial", False),
+                    "source": "llm_lookup",
+                }
+        except Exception as e:
+            logger.debug("[Fetcher] LLM JSON parse failed for %s: %s", ticker, e)
+
         return None
 
     def get_data_summary(self, ticker: str) -> dict:

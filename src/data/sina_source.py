@@ -15,8 +15,6 @@ Fields: [0]name, [1]open, [2]prev_close, [3]current, [4]high, [5]low, [6]bid, [7
 import re
 from datetime import date, datetime
 
-import requests
-
 from src.data.base_source import BaseDataSource
 from src.data.models import (
     BalanceSheet,
@@ -26,6 +24,7 @@ from src.data.models import (
     MarketType,
 )
 from src.utils.logger import get_logger
+from src.utils.network import requests_get
 
 logger = get_logger(__name__)
 
@@ -45,7 +44,8 @@ class SinaRealtimeSource(BaseDataSource):
         """Test API connectivity with SSE index query."""
         try:
             # Test with Shanghai Composite Index (000001)
-            response = requests.get(f"{SINA_API_URL}s_sh000001", timeout=5)
+            # Use network-aware requests_get (auto proxy config for China domains)
+            response = requests_get(f"{SINA_API_URL}s_sh000001", timeout=5)
             return response.status_code == 200 and len(response.text) > 50
         except Exception as e:
             logger.warning("[Sina] health_check failed: %s", e)
@@ -151,7 +151,8 @@ class SinaRealtimeSource(BaseDataSource):
         results: list[DailyPrice] = []
 
         try:
-            response = requests.get(f"{SINA_API_URL}{sina_symbol}", timeout=10)
+            # Use network-aware requests_get (auto proxy config for China domains)
+            response = requests_get(f"{SINA_API_URL}{sina_symbol}", timeout=10)
             response.raise_for_status()
 
             price = self._parse_response(response.text, ticker, market)

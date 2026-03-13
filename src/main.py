@@ -174,6 +174,45 @@ def scan(notify):
 
 # ─── report ───────────────────────────────────────────────────────────────────
 
+def _preflight_company_check(ticker: str, market: str) -> dict | None:
+    """
+    Pre-flight check: verify company info is available before proceeding.
+
+    This prevents generating reports with "hallucinated" company/industry info
+    when the data sources fail to return actual company information.
+    """
+    from src.data.fetcher import Fetcher
+
+    fetcher = Fetcher()
+    basics = fetcher.fetch_company_basics(ticker, market)
+    return basics
+
+
+def _display_company_info(basics: dict, ticker: str) -> None:
+    """Display company info in a formatted box for user confirmation."""
+    from rich.panel import Panel
+
+    company_name = basics.get("company_name") or "未知"
+    industry = basics.get("industry") or "未知"
+    main_business = basics.get("main_business") or "未提供"
+    source = basics.get("source", "API")
+    is_financial = basics.get("is_financial", False)
+
+    # Truncate main_business if too long
+    if main_business and len(main_business) > 60:
+        main_business = main_business[:57] + "..."
+
+    info_text = (
+        f"[bold cyan]公司名称:[/bold cyan] {company_name}\n"
+        f"[bold cyan]所属行业:[/bold cyan] {industry}"
+        + (f" [dim](金融股)[/dim]" if is_financial else "") + "\n"
+        f"[bold cyan]主营业务:[/bold cyan] {main_business}\n"
+        f"[dim]数据来源: {source}[/dim]"
+    )
+
+    console.print(Panel(info_text, title=f"[bold]{ticker} 公司信息确认[/bold]", border_style="green"))
+
+
 @cli.command("report")
 @click.option("--ticker", "-t", default=None, help="Ticker, e.g. 601808.SH")
 @click.option("--quick", is_flag=True, help="Data-only report (no LLM, faster)")
@@ -181,12 +220,20 @@ def scan(notify):
 @click.option("--watchlist-top", "watchlist_top", default=None, type=int,
               help="Generate reports for top N watchlist tickers (for automation)")
 @click.option("--notify", is_flag=True, help="Email the generated report(s) via Brevo")
-def report(ticker, quick, model, watchlist_top, notify):
+@click.option("--skip-confirm", "skip_confirm", is_flag=True,
+              help="Skip company info confirmation (for automation)")
+@click.option("--company-name", "override_company", default=None,
+              help="Override company name when auto-detection fails")
+@click.option("--industry", "override_industry", default=None,
+              help="Override industry when auto-detection fails")
+def report(ticker, quick, model, watchlist_top, notify, skip_confirm, override_company, override_industry):
     """Generate a deep research report for one ticker or top-N watchlist tickers.
 
     Use --quick for fast data-only report without LLM.
     Use --watchlist-top N for automated weekly reports (GitHub Actions).
     Use --notify to email the report via Brevo.
+    Use --skip-confirm to skip company info confirmation (automation mode).
+    Use --company-name and --industry to override when auto-detection fails.
     Requires data to be fetched first: invest fetch --ticker TICKER
     """
     from src.agents.registry import run_all_agents
@@ -202,9 +249,19 @@ def report(ticker, quick, model, watchlist_top, notify):
                 tickers_markets.append((t, market_key))
         tickers_markets = tickers_markets[:watchlist_top]
         console.print(f"[bold]Generating reports for top {watchlist_top} watchlist tickers...[/bold]")
+
+        failed_tickers = []
         for t, m in tickers_markets:
             mode = "[yellow]quick[/yellow]" if quick else "[cyan]full LLM[/cyan]"
             console.print(f"  → {t} ({mode})")
+
+            # Pre-flight check for watchlist mode (silent, auto-skip if fails)
+            basics = _preflight_company_check(t, m)
+            if not basics or not basics.get("company_name"):
+                console.print(f"    [yellow]⚠ 公司信息不可用，跳过[/yellow]")
+                failed_tickers.append(t)
+                continue
+
             try:
                 sigs, rpath = run_all_agents(t, m, quick=quick)
                 if notify:
@@ -214,6 +271,10 @@ def report(ticker, quick, model, watchlist_top, notify):
                     console.print(f"    [green]✓ {rpath}[/green]")
             except Exception as e:
                 console.print(f"    [red]✗ {e}[/red]")
+                failed_tickers.append(t)
+
+        if failed_tickers:
+            console.print(f"\n[yellow]⚠ {len(failed_tickers)} 只股票因数据问题跳过: {', '.join(failed_tickers)}[/yellow]")
         return
 
     # ── single ticker mode ────────────────────────────────────────────────────
@@ -225,8 +286,44 @@ def report(ticker, quick, model, watchlist_top, notify):
         raise click.UsageError(f"Cannot auto-detect market for '{ticker}'. "
                                "Use standard format: 601808.SH / 0700.HK / AAPL")
 
+    # ── Phase 0: Pre-flight Company Info Check ────────────────────────────────
+    console.print(f"\n[bold]🔍 Pre-flight Check: {ticker}[/bold]")
+
+    basics = _preflight_company_check(ticker, market)
+
+    # Handle manual override
+    if override_company or override_industry:
+        if not basics:
+            basics = {}
+        if override_company:
+            basics["company_name"] = override_company
+        if override_industry:
+            basics["industry"] = override_industry
+        basics["source"] = "manual_override"
+
+    # Check if we have valid company info
+    if not basics or not basics.get("company_name"):
+        console.print("\n[red]❌ 无法获取公司基本信息[/red]")
+        console.print("[dim]已尝试的数据源: QVeris iFinD → 本地缓存 → AKShare → Web Search → LLM[/dim]")
+        console.print("\n[yellow]解决方案:[/yellow]")
+        console.print("  1. 检查网络/代理设置")
+        console.print("  2. 使用 --company-name 和 --industry 参数手动指定:")
+        console.print(f"     invest report -t {ticker} --company-name \"公司名\" --industry \"行业\"")
+        console.print("  3. 联系开发者添加到本地映射表")
+        raise SystemExit(1)
+
+    # Display company info for confirmation
+    _display_company_info(basics, ticker)
+
+    # User confirmation (unless skipped)
+    if not skip_confirm:
+        if not click.confirm("\n信息正确？继续生成报告？", default=True):
+            console.print("[yellow]已取消报告生成[/yellow]")
+            return
+
+    # ── Phase 1: Generate Report ──────────────────────────────────────────────
     mode_label = "[yellow]快速数据版[/yellow]" if quick else "[cyan]完整版（含LLM分析）[/cyan]"
-    console.print(f"[bold]Generating report for {ticker}[/bold] ({mode_label})")
+    console.print(f"\n[bold]Generating report for {ticker}[/bold] ({mode_label})")
     if not quick:
         console.print("[dim]需要 OPENAI_API_KEY / DEEPSEEK_API_KEY 环境变量。无 Key 请加 --quick[/dim]")
 
@@ -237,7 +334,7 @@ def report(ticker, quick, model, watchlist_top, notify):
         os.environ["LLM_MODEL_OVERRIDE"] = model
 
     try:
-        signals, report_path = run_all_agents(ticker, market, quick=quick)
+        signals, report_path = run_all_agents(ticker, market, quick=quick, company_context_override=basics)
     except Exception as e:
         console.print(f"[red]Report generation failed: {e}[/red]")
         raise SystemExit(1)
@@ -384,6 +481,91 @@ def status():
             console.print(f"  {icon} {name}")
         except Exception:
             console.print(f"  [red]✗[/red] {name}")
+
+
+# ─── network ─────────────────────────────────────────────────────────────────
+
+@cli.command("network")
+@click.option("--test", "-t", is_flag=True, help="Run connectivity tests")
+def network_cmd(test: bool):
+    """Diagnose network configuration and proxy settings.
+
+    Shows current proxy configuration and which domains bypass proxy.
+    Use --test to run connectivity tests against LLM APIs and data sources.
+    """
+    from src.utils.network import diagnose_network, should_bypass_proxy
+    from rich.panel import Panel
+
+    console.print("[bold]Network Configuration[/bold]\n")
+
+    diag = diagnose_network()
+
+    # Show proxy config
+    proxy_config = diag["proxy_config"]
+    if proxy_config["http_proxy"] or proxy_config["https_proxy"]:
+        console.print("[cyan]Proxy Settings:[/cyan]")
+        console.print(f"  HTTP_PROXY:  {proxy_config['http_proxy'] or '(not set)'}")
+        console.print(f"  HTTPS_PROXY: {proxy_config['https_proxy'] or '(not set)'}")
+        console.print(f"  NO_PROXY:    {proxy_config['no_proxy'] or '(not set)'}")
+    else:
+        console.print("[cyan]Proxy:[/cyan] Not configured (direct connections)")
+
+    # Show bypass domains
+    console.print("\n[cyan]LLM API Domains (bypass proxy):[/cyan]")
+    for domain in diag["llm_bypass_domains"]:
+        console.print(f"  [green]✓[/green] {domain}")
+
+    if test:
+        console.print("\n[bold]Connectivity Tests:[/bold]")
+        import httpx
+
+        # Test LLM APIs
+        test_urls = [
+            ("OpenAI", "https://api.openai.com/v1/models"),
+            ("Anthropic", "https://api.anthropic.com"),
+            ("DeepSeek", "https://api.deepseek.com/v1/models"),
+            ("Tavily", "https://api.tavily.com"),
+        ]
+
+        for name, url in test_urls:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            bypass = should_bypass_proxy(domain)
+            try:
+                # Use httpx directly with explicit proxy handling
+                from src.utils.network import get_httpx_proxy
+                proxy = get_httpx_proxy(domain)
+                with httpx.Client(proxy=proxy, timeout=10) as client:
+                    resp = client.get(url)
+                    status = resp.status_code
+                    icon = "[green]✓[/green]" if status < 500 else "[yellow]⚠[/yellow]"
+                    proxy_note = "(direct)" if bypass else "(via proxy)"
+                    console.print(f"  {icon} {name}: HTTP {status} {proxy_note}")
+            except Exception as e:
+                console.print(f"  [red]✗[/red] {name}: {str(e)[:50]}")
+
+        # Test Chinese data sources
+        console.print("\n[cyan]Data Source Tests:[/cyan]")
+        china_tests = [
+            ("Sina Finance", "http://hq.sinajs.cn/list=s_sh000001"),
+        ]
+
+        for name, url in china_tests:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            bypass = should_bypass_proxy(domain)
+            try:
+                from src.utils.network import requests_get
+                resp = requests_get(url, timeout=10)
+                status = resp.status_code
+                icon = "[green]✓[/green]" if status == 200 else "[yellow]⚠[/yellow]"
+                proxy_note = "(direct)" if bypass else "(via proxy)"
+                console.print(f"  {icon} {name}: HTTP {status} {proxy_note}")
+            except Exception as e:
+                console.print(f"  [red]✗[/red] {name}: {str(e)[:50]}")
+
+    console.print("\n[dim]Tip: Set HTTP_PROXY/HTTPS_PROXY env vars for proxy. "
+                  "LLM APIs bypass proxy by default.[/dim]")
 
 
 # ─── backtest ─────────────────────────────────────────────────────────────────

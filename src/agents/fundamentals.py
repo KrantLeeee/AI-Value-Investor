@@ -395,15 +395,45 @@ def run(ticker: str, market: str) -> AgentSignal:
             detail_lines.append("- 流动比率数据缺失")
 
     # ── 4. Cash Quality (20 pts) ──────────────────────────────────────────────
+    # FCF exemptions for special stock types:
+    # - Financial stocks: FCF definition differs (deposits/lending aren't CapEx)
+    # - Growth-stage companies: High CapEx for expansion is a feature, not a bug
+    fcf_exempt_financial = is_financial
+    fcf_exempt_growth = False
+
+    # Get latest net income for cash quality checks
+    latest_ni_for_fcf = _safe(income_rows[0].get("net_income")) if income_rows else None
+
+    # Detect growth-stage company: high revenue growth + positive net income
+    if rev_yoy is not None and rev_yoy > 0.15 and latest_ni_for_fcf is not None and latest_ni_for_fcf > 0:
+        # Also check if CapEx is high relative to net income (investing in growth)
+        if cashflow_rows:
+            capex = _safe(cashflow_rows[0].get("capital_expenditure"))
+            if capex is not None:
+                capex_abs = abs(capex) if capex < 0 else capex
+                if latest_ni_for_fcf > 0 and capex_abs > latest_ni_for_fcf * 0.3:
+                    fcf_exempt_growth = True
+                    logger.info("[Fundamentals] %s: Growth-stage FCF exempt (rev_yoy=%.1f%%, capex/NI=%.1f%%)",
+                                ticker, rev_yoy * 100, capex_abs / latest_ni_for_fcf * 100)
+
     if cashflow_rows:
         ocf = _safe(cashflow_rows[0].get("operating_cash_flow"))
         fcf = _safe(cashflow_rows[0].get("free_cash_flow"))
-        latest_ni = _safe(income_rows[0].get("net_income")) if income_rows else None
+        latest_ni = latest_ni_for_fcf  # Use the pre-computed value
 
         if fcf is not None and fcf > 0:
             score += 10; detail_lines.append(f"✓ FCF={fcf/1e8:.1f}亿 (>0, +10)")
         elif ocf is not None and ocf > 0:
-            score += 5;  detail_lines.append(f"△ OCF={ocf/1e8:.1f}亿>0但FCF未知 (+5)")
+            # Financial/growth stocks get more credit for positive OCF even without FCF
+            if fcf_exempt_financial:
+                score += 10
+                detail_lines.append(f"✓ OCF={ocf/1e8:.1f}亿 (金融股：经营现金流为正即合格, +10)")
+            elif fcf_exempt_growth:
+                score += 8
+                detail_lines.append(f"△ OCF={ocf/1e8:.1f}亿 (成长期投资：高增长+高CapEx, +8)")
+            else:
+                score += 5
+                detail_lines.append(f"△ OCF={ocf/1e8:.1f}亿>0但FCF未知 (+5)")
         else:
             detail_lines.append("✗ FCF/OCF ≤0 (+0)")
 
@@ -418,13 +448,25 @@ def run(ticker: str, market: str) -> AgentSignal:
                 result=fcf / abs(latest_ni),
                 unit="x",
             )
-            if fcf_cover >= 0.8:
+            # FCF exemptions: give full points for exempt stocks
+            if fcf_exempt_financial:
+                score += 10
+                detail_lines.append(f"✓ 金融股FCF豁免: FCF/净利={fcf_cover:.2f} (行业特性，满分+10)")
+            elif fcf_exempt_growth and fcf_cover < 0.5 and fcf_cover > -1.0:
+                # Growth companies with negative FCF but reasonable ratio get partial credit
+                score += 6
+                detail_lines.append(f"△ 成长期FCF豁免: FCF/净利={fcf_cover:.2f} (高CapEx投资期, +6)")
+            elif fcf_cover >= 0.8:
                 score += 10; detail_lines.append(f"✓ FCF/净利={fcf_cover:.2f} (≥0.8, +10)")
             elif fcf_cover >= 0.5:
                 score += 6;  detail_lines.append(f"△ FCF/净利={fcf_cover:.2f} (≥0.5, +6)")
             else:
                 detail_lines.append(f"✗ FCF/净利={fcf_cover:.2f} (<0.5, +0)")
             metrics_snapshot["fcf_to_net_income"] = round(fcf_cover, 3)
+        elif fcf_exempt_financial:
+            # Financial stocks without FCF data still get partial credit
+            score += 5
+            detail_lines.append("△ 金融股：FCF数据缺失但行业特性不扣分 (+5)")
         else:
             detail_lines.append("- FCF/净利比率数据不足")
     else:

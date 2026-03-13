@@ -377,11 +377,18 @@ def detect_distressed_company(metrics: dict) -> bool:
     Detect if company is distressed.
     Need 2+ signals to classify as distressed.
     """
+    # Safely get values with proper None handling
+    net_margin = metrics.get('net_margin')
+    roe = metrics.get('roe')
+    fcf = metrics.get('fcf')
+    ocf = metrics.get('ocf')
+    debt_equity = metrics.get('debt_equity')
+
     signals = [
-        metrics.get('net_margin', 0) < -20,           # Deep loss
-        metrics.get('roe', 0) < -15,                  # Negative ROE
-        metrics.get('fcf', 0) < 0 and metrics.get('ocf', 0) < 0,  # Double negative
-        metrics.get('debt_equity', 0) > 300,          # High leverage
+        net_margin is not None and net_margin < -20,           # Deep loss
+        roe is not None and roe < -15,                         # Negative ROE
+        (fcf is not None and fcf < 0) and (ocf is not None and ocf < 0),  # Double negative
+        debt_equity is not None and debt_equity > 300,         # High leverage
     ]
     return sum(signals) >= 2
 
@@ -1103,6 +1110,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     net_margin = None
     revenue_growth = None
     net_income = None  # Initialize to None for healthcare detection fallback
+    revenue = None  # Initialize to None for fallback
 
     if income_rows and len(income_rows) >= 1:
         revenue = _safe(income_rows[0].get("revenue"))
@@ -1293,6 +1301,123 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             "⚡ 公用事业股：使用DDM股息折现模型为主要估值方法（稳定股息，"
             "监管收益可预测），禁用高增长DCF假设"
         )
+
+    # ── Task 3.1: Detect brand moat stocks ─────────────────────────────────────
+    # Premium brands with high gross margin + high ROE use P/E anchor valuation
+    # Graham Number is disabled for brand moat stocks (designed for defensive undervalued stocks)
+    is_brand_moat = False
+    brand_moat_tier = None
+
+    # Build metrics dict for brand moat detection
+    gross_margin = None
+    if metric_rows:
+        gross_margin_raw = _safe(metric_rows[0].get("gross_margin"))
+        if gross_margin_raw is not None:
+            gross_margin = gross_margin_raw if gross_margin_raw > 1 else gross_margin_raw * 100
+
+    # Get 5-year average ROE from metrics history
+    roe_5yr_avg = None
+    if metric_rows and len(metric_rows) >= 3:
+        roe_values = [_safe(m.get("roe")) for m in metric_rows if _safe(m.get("roe")) is not None]
+        if roe_values:
+            roe_5yr_avg = sum(roe_values) / len(roe_values)
+            # Normalize to percentage
+            if roe_5yr_avg < 1:
+                roe_5yr_avg = roe_5yr_avg * 100
+
+    # Get FCF history for moat detection
+    fcf_history = []
+    if cashflow_rows:
+        for cf in cashflow_rows:
+            fcf_val = _safe(cf.get("free_cash_flow"))
+            if fcf_val is not None:
+                fcf_history.append(fcf_val)
+
+    # Get EPS early for brand moat detection
+    eps_for_moat = _safe(income_rows[0].get("eps")) if income_rows else None
+
+    # Build metrics dict
+    moat_metrics = {
+        'gross_margin': gross_margin,
+        'roe_5yr_avg': roe_5yr_avg,
+        'fcf_history': fcf_history,
+        'revenue_growth_5yr': [],  # TODO: Calculate from income history
+        'eps': eps_for_moat,
+        'eps_3yr_avg': None,  # TODO: Calculate from income history
+    }
+
+    # Check brand moat if not already classified as special type
+    # Brand moat detection criteria:
+    # - Premium: gross_margin >= 80% AND (current ROE >= 20% OR 5yr avg ROE >= 20%)
+    # - Strong: gross_margin >= 60% AND (current ROE >= 15% OR 5yr avg ROE >= 15%)
+    # - Moderate: gross_margin >= 50% AND (current ROE >= 12% OR 5yr avg ROE >= 12%)
+    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock and not is_utility_stock:
+        # Get current ROE from metrics (decimal form, need to convert to percentage)
+        current_roe_pct = roe * 100 if roe is not None else None
+
+        # Use the higher of current ROE or 5yr avg ROE
+        best_roe = None
+        if current_roe_pct is not None and roe_5yr_avg is not None:
+            best_roe = max(current_roe_pct, roe_5yr_avg)
+        elif current_roe_pct is not None:
+            best_roe = current_roe_pct
+        elif roe_5yr_avg is not None:
+            best_roe = roe_5yr_avg
+
+        # Brand moat detection: high gross margin + reasonable ROE
+        if gross_margin is not None and best_roe is not None:
+            if gross_margin >= 50 and best_roe >= 12:  # Moderate tier baseline
+                is_brand_moat = True
+                # Determine tier based on gross margin and ROE
+                if gross_margin >= 80 and best_roe >= 20:
+                    brand_moat_tier = 'premium'
+                elif gross_margin >= 60 and best_roe >= 15:
+                    brand_moat_tier = 'strong'
+                else:
+                    brand_moat_tier = 'moderate'
+
+                results["is_brand_moat"] = True
+                results["brand_moat_tier"] = brand_moat_tier
+                results["valuation_mode"] = "brand_moat"
+                results["brand_moat_gross_margin"] = round(gross_margin, 2)
+                results["brand_moat_roe"] = round(best_roe, 2)
+
+                pe_range = BRAND_MOAT_PE_ANCHORS.get(brand_moat_tier, BRAND_MOAT_PE_ANCHORS['moderate'])['pe_range']
+                detail_lines.append(
+                    f"🏆 护城河品牌股：毛利率{gross_margin:.1f}% + ROE{best_roe:.1f}% → {brand_moat_tier}档，"
+                    f"使用P/E锚点估值（{pe_range[0]}-{pe_range[1]}x），禁用Graham Number"
+                )
+
+    # ── Task 3.4: Detect distressed companies ──────────────────────────────────
+    # Distressed companies need special valuation: asset replacement, net-net, etc.
+    is_distressed = False
+    distressed_type = None
+
+    # Build distressed detection metrics
+    distressed_metrics = {
+        'net_margin': net_margin * 100 if net_margin else None,
+        'roe': roe * 100 if roe else None,
+        'fcf': _safe(cashflow_rows[0].get("free_cash_flow")) if cashflow_rows else None,
+        'ocf': _safe(cashflow_rows[0].get("operating_cash_flow")) if cashflow_rows else None,
+        'debt_equity': _safe(metric_rows[0].get("debt_to_equity")) * 100 if metric_rows and _safe(metric_rows[0].get("debt_to_equity")) else None,
+    }
+
+    # Check if distressed (not if already classified as special type)
+    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock and not is_utility_stock and not is_brand_moat:
+        if detect_distressed_company(distressed_metrics):
+            is_distressed = True
+            results["is_distressed"] = True
+            results["valuation_mode"] = "distressed"
+
+            # Get company info for distressed type classification
+            company_info = {'name': ticker, 'business_description': industry or ''}
+            distressed_type = classify_distressed_type(company_info, distressed_metrics)
+            results["distressed_type"] = distressed_type
+
+            distressed_config = DISTRESSED_CATEGORIES.get(distressed_type, DISTRESSED_CATEGORIES['generic_distressed'])
+            detail_lines.append(
+                f"⚠️ 困境企业：{distressed_config['note']}，使用{distressed_config['valuation_method']}估值方法"
+            )
 
     if cashflow_rows:
         # Use FCF for DCF; fall back to OCF if FCF is negative or unavailable
@@ -1925,6 +2050,102 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # NOTE: Graham Number is DISABLED for utilities
         # (Graham Number is designed for undervalued stocks, not regulated utilities)
 
+    elif is_brand_moat:
+        # Task 3.1: Brand moat stock valuation methods
+        # Uses P/E anchor (tier-based), DCF, disables Graham Number
+        pe_anchor_per_share = None
+
+        # P/E anchor valuation - primary method for brand moat stocks
+        pe_range = BRAND_MOAT_PE_ANCHORS.get(brand_moat_tier, BRAND_MOAT_PE_ANCHORS['moderate'])['pe_range']
+        pe_mid = (pe_range[0] + pe_range[1]) / 2
+
+        # Use the early-defined EPS for brand moat calculation (defined at moat detection)
+        if eps_for_moat and eps_for_moat > 0:
+            pe_anchor_per_share = eps_for_moat * pe_mid
+            results["pe_anchor_per_share"] = round(pe_anchor_per_share, 2)
+            results["pe_anchor_range"] = pe_range
+            valuation_methods.append(("P/E_Moat", pe_anchor_per_share))
+            detail_lines.append(
+                f"护城河P/E锚点 ({pe_range[0]}-{pe_range[1]}x, 使用{pe_mid:.0f}x): ¥{pe_anchor_per_share:.2f}/股"
+            )
+
+        # DCF base case (per share) - secondary method
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
+
+        # EV/EBITDA per share - tertiary method
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+
+        # P/B as floor value only
+        if bvps:
+            _pb = 3.0  # Higher P/B for brand moat stocks
+            pb_target_per_share = bvps * _pb
+            results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
+            detail_lines.append(f"P/B目标价 ({_pb}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股")
+
+        # NOTE: Graham Number is DISABLED for brand moat stocks
+        # (Graham designed for undervalued stocks, not premium brands)
+
+    elif is_distressed:
+        # Task 3.4: Distressed company valuation methods
+        # Uses asset replacement value, net-net, EV/Sales based on distressed type
+
+        # Get company info for distressed valuation
+        company_info = {'name': ticker, 'business_description': industry or ''}
+
+        # Build full metrics for distressed valuation
+        full_metrics = {
+            'shares': shares,
+            'revenue': revenue,
+            'fixed_assets': _safe(balance_rows[0].get("fixed_assets")) if balance_rows else None,
+            'inventory': _safe(balance_rows[0].get("inventory")) if balance_rows else None,
+            'current_assets': _safe(balance_rows[0].get("current_assets")) if balance_rows else None,
+            'total_liabilities': _safe(balance_rows[0].get("total_liabilities")) if balance_rows else None,
+            'accounts_receivable': _safe(balance_rows[0].get("accounts_receivable")) if balance_rows else None,
+            'order_backlog': None,  # Usually not available
+            'gross_margin': gross_margin,
+        }
+
+        distressed_results = distressed_valuation(full_metrics, company_info)
+        results["distressed_valuation"] = distressed_results
+
+        # Asset replacement value (for asset_intensive type)
+        if 'asset_replacement' in distressed_results:
+            asset_val = distressed_results['asset_replacement']['value']
+            valuation_methods.append(("Asset_Replacement", asset_val))
+            detail_lines.append(f"资产重置估值: ¥{asset_val:.2f}/股")
+
+        # EV/Sales (generic distressed or reference)
+        if 'ev_sales' in distressed_results or 'ev_sales_ref' in distressed_results:
+            ev_sales_data = distressed_results.get('ev_sales') or distressed_results.get('ev_sales_ref')
+            if ev_sales_data and 'value' in ev_sales_data:
+                ev_sales_val = ev_sales_data['value']
+                valuation_methods.append(("EV/Sales_Distressed", ev_sales_val))
+                detail_lines.append(
+                    f"困境EV/Sales ({ev_sales_data.get('multiple', 0.3)}x): ¥{ev_sales_val:.2f}/股"
+                )
+
+        # Net-Net value (Graham's net-net for deep value)
+        if 'net_net' in distressed_results:
+            net_net_val = distressed_results['net_net']['value']
+            valuation_methods.append(("Net_Net", net_net_val))
+            detail_lines.append(f"Net-Net价值: ¥{net_net_val:.2f}/股")
+
+        # P/B at distressed multiple (0.5-0.7x)
+        if bvps and bvps > 0:
+            distressed_pb = 0.5
+            pb_distressed = bvps * distressed_pb
+            results["pb_target"] = round(pb_distressed, 2)
+            valuation_methods.append(("P/B_Distressed", pb_distressed))
+            detail_lines.append(f"困境P/B目标价 ({distressed_pb}x): ¥{pb_distressed:.2f}/股")
+
+        # NOTE: Graham Number and standard DCF are NOT applicable for distressed
+        # (Earnings-based methods fail when earnings are negative)
+
     else:
         # Standard valuation methods for traditional value stocks
         # DCF base case (per share)
@@ -2020,6 +2241,36 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             "P/B": 0.10,              # Floor value
         }
         logger.info("[Valuation] %s: Using utility stock weights: %s", ticker, default_weights)
+    elif is_brand_moat:
+        # Task 3.1: Use brand moat stock weights (P/E anchor focused, no Graham)
+        default_weights = {
+            "P/E_Moat": 0.50,         # Primary - P/E anchor based on moat tier
+            "DCF": 0.30,              # Secondary - supports high valuation
+            "EV/EBITDA": 0.15,        # Tertiary - cross-check
+            "P/B": 0.05,              # Floor value only
+        }
+        logger.info("[Valuation] %s: Using brand moat stock weights: %s", ticker, default_weights)
+    elif is_distressed:
+        # Task 3.4: Use distressed company weights based on type
+        if distressed_type == 'asset_intensive':
+            default_weights = {
+                "Asset_Replacement": 0.50,  # Primary - replacement value
+                "Net_Net": 0.30,            # Secondary - Graham deep value
+                "P/B_Distressed": 0.20,     # Tertiary - floor value
+            }
+        elif distressed_type in ['contract_based', 'receivables_heavy']:
+            default_weights = {
+                "EV/Sales_Distressed": 0.40,  # Primary - revenue-based
+                "Net_Net": 0.35,              # Secondary - deep value
+                "P/B_Distressed": 0.25,       # Tertiary - floor value
+            }
+        else:  # generic_distressed
+            default_weights = {
+                "EV/Sales_Distressed": 0.40,  # Primary - generic EV/Sales
+                "Net_Net": 0.30,              # Secondary - deep value
+                "P/B_Distressed": 0.30,       # Tertiary - book value
+            }
+        logger.info("[Valuation] %s: Using distressed stock weights (%s): %s", ticker, distressed_type, default_weights)
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)

@@ -13,6 +13,9 @@ Config-driven via config/llm_config.yaml:
 
 Fallback chain: OpenAI → Anthropic → DeepSeek (configurable).
 Retries once with 10s backoff before trying fallback providers.
+
+Network: Uses src.utils.network for proxy-aware HTTP clients.
+LLM API domains bypass proxy by default (faster, more reliable).
 """
 
 import os
@@ -21,6 +24,7 @@ from typing import Any
 
 from src.utils.config import load_llm_config, get_settings
 from src.utils.logger import get_logger
+from src.utils.network import create_openai_client, create_anthropic_client
 
 logger = get_logger(__name__)
 
@@ -62,11 +66,11 @@ def _load_config() -> tuple[dict, dict, dict]:
 
 def _call_openai(model: str, system_prompt: str, user_prompt: str,
                   max_tokens: int, temperature: float) -> str:
-    from openai import OpenAI
     api_key = get_settings().openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise LLMError("OPENAI_API_KEY not set")
-    client = OpenAI(api_key=api_key)
+    # Use network-aware client (bypasses proxy for api.openai.com)
+    client = create_openai_client(api_key=api_key)
     resp = client.chat.completions.create(
         model=model,
         messages=[
@@ -81,11 +85,14 @@ def _call_openai(model: str, system_prompt: str, user_prompt: str,
 
 def _call_deepseek(model: str, system_prompt: str, user_prompt: str,
                     max_tokens: int, temperature: float) -> str:
-    from openai import OpenAI
     api_key = get_settings().deepseek_api_key or os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         raise LLMError("DEEPSEEK_API_KEY not set")
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    # Use network-aware client (bypasses proxy for api.deepseek.com)
+    client = create_openai_client(
+        api_key=api_key,
+        base_url="https://api.deepseek.com/v1",
+    )
     resp = client.chat.completions.create(
         model=model,
         messages=[
@@ -100,11 +107,11 @@ def _call_deepseek(model: str, system_prompt: str, user_prompt: str,
 
 def _call_anthropic(model: str, system_prompt: str, user_prompt: str,
                      max_tokens: int, temperature: float) -> str:
-    import anthropic
     api_key = get_settings().anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise LLMError("ANTHROPIC_API_KEY not set")
-    client = anthropic.Anthropic(api_key=api_key)
+    # Use network-aware client (bypasses proxy for api.anthropic.com)
+    client = create_anthropic_client(api_key=api_key)
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,

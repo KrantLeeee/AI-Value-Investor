@@ -35,6 +35,11 @@ class InsufficientDataError(Exception):
     pass
 
 
+class MissingCompanyInfoError(Exception):
+    """Raised when company basic info (name, industry) is not available."""
+    pass
+
+
 def run_all_agents(
     ticker: str,
     market: str,
@@ -42,6 +47,7 @@ def run_all_agents(
     quick: bool = False,
     use_llm: bool = True,
     analysis_date: str | None = None,
+    company_context_override: dict | None = None,
 ) -> tuple[dict[str, AgentSignal], Path]:
     """
     Orchestrate all agents for a given ticker.
@@ -52,6 +58,7 @@ def run_all_agents(
         quick:     If True, skip all LLM calls (data-only report)
         use_llm:   Set to False to force no-LLM mode even for non-quick runs
         analysis_date: Override report date (default: today)
+        company_context_override: Pre-fetched company info from main.py pre-flight check
 
     Returns:
         (signals dict, report file Path)
@@ -138,22 +145,53 @@ def run_all_agents(
     # ── Phase -1: Company Context (runs BEFORE all agents) ───────────────────
     # Fetch company basics from QVeris iFinD so all downstream agents know
     # the company name, industry, main business before analysis begins.
+    #
+    # HARD GATE: If company info is not available, refuse to generate report.
+    # This prevents LLM "hallucination" where it invents company/industry info.
     company_context: dict = {}
-    try:
-        from src.data.fetcher import Fetcher
-        fetcher = Fetcher()
-        basics = fetcher.fetch_company_basics(ticker, market)
-        if basics:
-            company_context = basics
-            logger.info(
-                "[Registry] Company context: %s | business: %s",
-                basics.get('company_name', ticker),
-                (basics.get('main_business') or '')[:30],
-            )
-        else:
-            logger.warning("[Registry] Company basics not available (QVeris returned None)")
-    except Exception as e:
-        logger.warning("[Registry] Company context fetch failed: %s", e)
+
+    # Use override from pre-flight check if provided
+    if company_context_override and company_context_override.get("company_name"):
+        company_context = company_context_override
+        logger.info(
+            "[Registry] Company context (from pre-flight): %s | industry: %s",
+            company_context.get('company_name', ticker),
+            company_context.get('industry', 'unknown'),
+        )
+    else:
+        # Fetch company info (this should not happen if main.py pre-flight works)
+        try:
+            from src.data.fetcher import Fetcher
+            fetcher = Fetcher()
+            basics = fetcher.fetch_company_basics(ticker, market)
+            if basics and basics.get("company_name"):
+                company_context = basics
+                logger.info(
+                    "[Registry] Company context: %s | business: %s",
+                    basics.get('company_name', ticker),
+                    (basics.get('main_business') or '')[:30],
+                )
+            else:
+                logger.warning("[Registry] Company basics not available (all sources returned None)")
+        except Exception as e:
+            logger.warning("[Registry] Company context fetch failed: %s", e)
+
+    # ── HARD GATE: Company Info Required ──────────────────────────────────────
+    # Refuse to generate report without valid company info to prevent LLM hallucinations
+    if not company_context or not company_context.get("company_name"):
+        logger.error(
+            "[Registry] %s: Company info not available. "
+            "Report generation blocked to prevent LLM hallucinations.",
+            ticker,
+        )
+        raise MissingCompanyInfoError(
+            f"{ticker} 公司基本信息不可用。\n"
+            f"无法获取公司名称、行业等基本信息，系统拒绝生成报告以防止 LLM 产生错误分析。\n"
+            f"解决方案：\n"
+            f"  1. 检查网络/代理设置\n"
+            f"  2. 使用 --company-name 和 --industry 参数手动指定\n"
+            f"  3. 联系开发者添加到本地映射表"
+        )
 
 
     try:
