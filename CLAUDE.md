@@ -4,9 +4,19 @@
 ## 📌 项目简介
 **AI 驱动的 A 股价值投资研究助手。** 多 Agent 协作（7个分析Agent + 1个辩证Agent）→ 生成中文深度研报 → Telegram 推送。
 
-## 🗺️ 必读文档（开始任何工作前，先读 PROJECT_MAP）
-**`PROJECT_MAP.md`** — 模块地图 + 改动场景快速索引 + 数据流图  
-改代码前先看"改动场景快速索引"表，30 秒定位到正确文件。
+## 🎯 改动场景快速索引
+| 我想做的事 | 直接改这些文件 | 先读 |
+|-----------|---------------|------|
+| 添加/修改估值方法 | `src/agents/valuation.py` | `src/agents/README.md` |
+| 修改报告章节结构 | `src/agents/report_generator.py` | `src/agents/README.md` |
+| 添加新 Agent | `src/agents/` 新建 + `registry.py` | `src/agents/README.md` |
+| 修改 LLM Prompt | `src/llm/prompts.py` | `src/llm/README.md` |
+| 添加 LLM 任务 | `config/llm_config.yaml` | `src/llm/README.md` |
+| 添加新数据源 | `src/data/xxx_source.py` + `fetcher.py` | `src/data/README.md` |
+| 调整行业参数 | `config/industry_profiles.yaml` | `config/README.md` |
+| 添加新 CLI 命令 | `src/main.py` | — |
+
+> 📚 **架构级任务**：需要理解完整模块关系时，读 `PROJECT_MAP.md`
 
 ## 🔥 当前开发重心（2026-Q1）
 - **Contrarian Agent 完善** → `src/agents/contrarian.py`

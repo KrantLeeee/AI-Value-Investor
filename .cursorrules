@@ -3,7 +3,18 @@
 ## Project Overview
 Multi-agent A-share value investing research assistant. 7 analysis agents + 1 dialectical agent → Chinese research report → Telegram push.
 
-**ALWAYS read `PROJECT_MAP.md` before editing code. Use the "scenario index" table to find files in 30 seconds.**
+## Quick File Locator (no need to read PROJECT_MAP)
+| Task | Files |
+|------|-------|
+| Add/modify valuation | `src/agents/valuation.py` |
+| Modify report structure | `src/agents/report_generator.py` |
+| Modify LLM prompts | `src/llm/prompts.py` |
+| Adjust industry params | `config/industry_profiles.yaml` |
+| Add data source | `src/data/xxx_source.py` + `fetcher.py` |
+| Modify Contrarian | `src/agents/contrarian.py` |
+| Add CLI command | `src/main.py` |
+
+> For full architecture understanding: read `PROJECT_MAP.md`
 
 ## Current Development Focus (2026-Q1)
 - Contrarian Agent: `src/agents/contrarian.py`
