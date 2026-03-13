@@ -219,12 +219,13 @@ def run(ticker: str, market: str) -> AgentSignal:
 
     net_margin_direct = _safe(metric_rows[0].get("operating_margin")) if metric_rows else None
 
-    # Estimate net margin from income statement if not in metrics
-    if net_margin_direct is None and income_rows:
+    # Always calculate net margin from income statement for verification
+    net_margin_calculated = None
+    if income_rows:
         rev = _safe(income_rows[0].get("revenue"))
         ni  = _safe(income_rows[0].get("net_income"))
         if rev and ni and rev != 0:
-            net_margin = tracer.trace_calculation(
+            net_margin_calculated = tracer.trace_calculation(
                 metric_name="净利率",
                 formula="net_income / revenue * 100",
                 inputs={
@@ -234,10 +235,24 @@ def run(ticker: str, market: str) -> AgentSignal:
                 result=(ni / rev) * 100,
                 unit="%",
             )
-        else:
-            net_margin = None
-    else:
+
+    # BUG-FIX: Prioritize calculated margin over stored metric to avoid data quality issues
+    # Stored metrics can have incorrect values (e.g., 83% when actual is 2%)
+    if net_margin_calculated is not None:
+        # Use calculated value - more reliable
+        net_margin = net_margin_calculated
+        # Sanity check: flag if stored metric differs significantly from calculated
+        if net_margin_direct is not None:
+            direct_pct = net_margin_direct if net_margin_direct > 1 else net_margin_direct * 100
+            if abs(direct_pct - net_margin_calculated) > 20:  # > 20% difference
+                logger.warning(
+                    "[Fundamentals] %s: Net margin mismatch - stored=%.1f%% vs calculated=%.1f%%, using calculated",
+                    ticker, direct_pct, net_margin_calculated
+                )
+    elif net_margin_direct is not None:
         net_margin = net_margin_direct
+    else:
+        net_margin = None
 
     if roe is not None:
         roe_pct = roe if roe > 1 else roe * 100  # normalise to %

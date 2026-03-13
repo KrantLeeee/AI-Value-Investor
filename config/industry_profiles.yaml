@@ -66,7 +66,7 @@ industries:
   cyclical_materials:
     display_name: "周期材料"
     confidence: 0.85
-    applies_to: ["有色金属", "钢铁", "水泥", "化工"]
+    applies_to: ["有色金属", "钢铁", "水泥", "化工", "工业金属", "金属矿业", "矿业"]
     ev_ebitda_multiple: [4.0, 6.0]
     methods: ["ev_ebitda_cycle", "pb_cycle"]
     disable_methods: ["graham_number"]
@@ -75,6 +75,7 @@ industries:
   telecom_operator:
     display_name: "通信运营商"
     confidence: 0.85
+    applies_to: ["通信服务", "电信运营", "通信运营", "移动通信"]
     ev_ebitda_multiple: [6.0, 7.0]
     methods: ["ddm", "ev_ebitda"]
     method_weights:
@@ -115,6 +116,7 @@ industries:
   cyclical_agri:
     display_name: "农业养殖"
     confidence: 0.80
+    applies_to: ["养殖业", "养殖", "农牧", "畜牧", "生猪", "家禽"]
     methods: ["normalized_pe"]
     disable_methods: ["graham_number"]
     scoring_mode: "cycle_adjusted"
@@ -123,6 +125,7 @@ industries:
   defense_equipment:
     display_name: "军工装备"
     confidence: 0.75
+    applies_to: ["航空装备", "军工", "国防", "航天", "航空航天", "军用"]
     methods: ["ps", "peg", "pb"]
     method_weights:
       ps: 0.5
@@ -133,6 +136,7 @@ industries:
   low_margin_mfg:
     display_name: "低利润率制造"
     confidence: 0.80
+    applies_to: ["消费电子", "电子制造", "代工", "电子元器件", "电子设备"]
     methods: ["ps", "ev_sales"]
     method_weights:
       ps: 0.5
@@ -151,6 +155,7 @@ industries:
     display_name: "创新药研发"
     parent: "pharma"
     confidence: 0.80
+    applies_to: ["生物医药", "创新药", "生物科技", "生物制药", "制药"]
     methods: ["ps", "ev_sales"]
     method_weights:
       ps: 0.6
