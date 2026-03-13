@@ -33,14 +33,181 @@ See `References/Docs/Tech Design/tech-design-v1.md` for full technical design.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `fetch` | Fetch market data and financial statements |
-| `ingest` | Parse manually uploaded documents |
-| `scan` | Run factor screening on watchlist |
-| `report` | Generate deep research report |
-| `invest` | Get position sizing recommendation |
-| `profile` | Manage investor profile |
-| `portfolio` | View current holdings |
-| `status` | Show system status and data freshness |
-| `backtest` | Run factor backtests |
+### fetch — 抓取市场数据
+抓取价格和财务报表，存入本地 SQLite。**生成报告前必须先执行。**
+
+```bash
+# 单只股票（自动识别市场）
+invest fetch -t 601808.SH        # A股
+invest fetch -t 0700.HK          # 港股
+invest fetch -t AAPL             # 美股
+
+# 指定市场
+invest fetch -t 601808.SH -m a_share
+
+# 抓取 watchlist 全部股票
+invest fetch --all
+
+# 指定历史天数（默认3年）
+invest fetch -t 601808.SH -d 365   # 只抓1年
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-t, --ticker` | 股票代码，如 `601808.SH` |
+| `-m, --market` | 市场类型：`a_share` / `hk` / `us` |
+| `--all` | 抓取 watchlist.yaml 中所有股票 |
+| `-d, --days` | 价格历史天数（默认 1095 = 3年）|
+
+---
+
+### report — 生成研报
+调用多 Agent 分析，生成中文深度研报。
+
+```bash
+# 完整版（含 LLM 分析，需 API Key）
+invest report -t 601808.SH
+
+# 快速版（纯数据，无 LLM，秒出）
+invest report -t 601808.SH --quick
+
+# 跳过公司信息确认（自动化场景）
+invest report -t 601808.SH --skip-confirm
+
+# 手动指定公司信息（当自动检测失败时）
+invest report -t 601808.SH --company-name "中海油服" --industry "油气服务"
+
+# 指定 LLM 模型
+invest report -t 601808.SH --model gpt-4o
+invest report -t 601808.SH --model deepseek-chat
+
+# 批量生成 watchlist 前 N 个
+invest report --watchlist-top 5
+
+# 生成后发送 Telegram 通知
+invest report -t 601808.SH --notify
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-t, --ticker` | 股票代码 |
+| `--quick` | 快速模式，不调用 LLM，纯数据报告 |
+| `--model` | 覆盖默认 LLM 模型 |
+| `--watchlist-top N` | 批量生成前 N 只股票的报告 |
+| `--notify` | 通过 Telegram 发送报告 |
+| `--skip-confirm` | 跳过公司信息确认步骤 |
+| `--company-name` | 手动指定公司名称 |
+| `--industry` | 手动指定行业 |
+
+---
+
+### scan — 因子筛选
+基于 `config/screening_rules.yaml` 规则扫描 watchlist，输出买入信号。
+
+```bash
+# 运行筛选
+invest scan
+
+# 筛选后发送邮件通知
+invest scan --notify
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--notify` | 有信号时发送邮件通知 |
+
+---
+
+### ingest — 解析手动文档
+解析 `data/manual/{ticker}/` 目录下的 PDF/文本文件，提取财务数据。
+
+```bash
+# 解析全部
+invest ingest
+
+# 只解析某只股票
+invest ingest -t 601808.SH
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-t, --ticker` | 只解析指定股票的文档 |
+
+---
+
+### status — 系统状态
+显示数据源健康状态、watchlist 大小。
+
+```bash
+invest status
+```
+
+---
+
+### network — 网络诊断
+检查代理配置和 API 连通性。
+
+```bash
+# 显示配置
+invest network
+
+# 运行连通性测试
+invest network --test
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-t, --test` | 测试 OpenAI/Anthropic/DeepSeek 等 API 连通性 |
+
+---
+
+### profile — 投资者画像
+管理投资者资金、风险偏好配置。
+
+```bash
+# 交互式设置
+invest profile --setup
+
+# 查看当前配置
+invest profile --show
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--setup` | 交互式设置资金、风险参数 |
+| `--show` | 显示当前投资者画像 |
+
+---
+
+### portfolio — 查看持仓
+显示当前持仓和可用资金。
+
+```bash
+invest portfolio
+```
+
+---
+
+### backtest — 因子回测
+对筛选规则进行历史回测。
+
+```bash
+# 回测 "安全边际" 规则，2020-2024，持有3年
+invest backtest --rule "安全边际" --start 2020 --end 2024 --hold 3
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--rule` | 规则名称（来自 screening_rules.yaml）|
+| `--start` | 起始年份 |
+| `--end` | 结束年份 |
+| `--hold` | 持有期（年），默认 3 |
+
+---
+
+### invest — 仓位建议
+⚠️ **尚未实现**（计划中）
+
+```bash
+invest invest -t 601808.SH
+```
