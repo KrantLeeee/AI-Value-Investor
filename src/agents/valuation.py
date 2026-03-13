@@ -53,6 +53,24 @@ logger = get_logger(__name__)
 
 AGENT_NAME = "valuation"
 
+# Real estate industry keywords for detection
+REAL_ESTATE_KEYWORDS = ['房地产', '地产', '住宅', '物业', '房产', '不动产']
+
+
+def is_real_estate_industry(industry: str) -> bool:
+    """
+    Check if an industry string indicates real estate sector.
+
+    Args:
+        industry: Industry classification string
+
+    Returns:
+        True if the industry is real estate related
+    """
+    if not industry:
+        return False
+    return any(keyword in industry for keyword in REAL_ESTATE_KEYWORDS)
+
 
 def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
     """
@@ -65,7 +83,7 @@ def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
     Returns:
         dict with pb_capped value and optional warning
     """
-    if industry_type != '房地产':
+    if not is_real_estate_industry(industry_type):
         return {'pb_capped': pb_value, 'warning': None}
 
     cap = REAL_ESTATE_CONFIG['pb_multiple_cap']
@@ -959,6 +977,19 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         except ImportError:
             pass
 
+    # BUG-03B: Use AKShare company basics for industry if still default
+    if industry == "default":
+        try:
+            from src.data.fetcher import Fetcher
+            fetcher = Fetcher()
+            company_info = fetcher.fetch_company_basics(ticker, market)
+            if company_info and company_info.get('industry'):
+                akshare_industry = company_info['industry']
+                logger.info(f"[Valuation] {ticker}: Using AKShare industry: {akshare_industry}")
+                industry = akshare_industry
+        except Exception as e:
+            logger.warning(f"[Valuation] {ticker}: AKShare industry fetch failed: {e}")
+
     # Calculate industry-adapted WACC (P2-⑦)
     wacc_result = calculate_wacc(ticker, market, industry, current_price)
     wacc = wacc_result["wacc"]
@@ -1402,21 +1433,28 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             detail_lines.append(f"⚠ EV/EBITDA 估值失败: {ev_error}")
             results["ev_ebitda_per_share"] = None
         else:
-            # Validation succeeded - calculate and store total EV
-            ev_ebitda_total = ebitda * _ev_multiple
-            results["ev_ebitda_value"] = ev_ebitda_total
-            results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
-            ev_ebitda_value = ev_ebitda_total
+            # BUG-18: Additional validation - EV/EBITDA per share should be reasonable
+            # If < 10% of current price, the EBITDA estimate is likely unreliable
+            if current_price and ev_ebitda_per_share < current_price * 0.1:
+                detail_lines.append(f"⚠ EV/EBITDA 不适用: 估值(¥{ev_ebitda_per_share:.2f})远低于市价的10%，EBITDA数据可能无效")
+                results["ev_ebitda_per_share"] = None
+                ev_ebitda_per_share = None
+            else:
+                # Validation succeeded - calculate and store total EV
+                ev_ebitda_total = ebitda * _ev_multiple
+                results["ev_ebitda_value"] = ev_ebitda_total
+                results["ev_ebitda_multiple"] = _ev_multiple  # Store for reporting
+                ev_ebitda_value = ev_ebitda_total
 
-            # Only add generic detail lines for non-utility stocks
-            if not _skip_generic_ev_detail:
-                detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
-
-            # Per-share estimate
-            if ev_ebitda_per_share is not None:
-                results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
+                # Only add generic detail lines for non-utility stocks
                 if not _skip_generic_ev_detail:
-                    detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
+                    detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+
+                # Per-share estimate
+                if ev_ebitda_per_share is not None:
+                    results["ev_ebitda_per_share"] = round(ev_ebitda_per_share, 2)
+                    if not _skip_generic_ev_detail:
+                        detail_lines.append(f"EV/EBITDA 每股隐含价值: ¥{ev_ebitda_per_share:.2f}")
 
         # P/B per share target - also skip for utility stocks (they have their own)
         if bvps and not _skip_generic_ev_detail:
@@ -1424,7 +1462,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * _pb
 
             # Apply real estate P/B cap (Task 1.2)
-            if industry == '房地产':
+            if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(_pb, industry)
                 _pb = cap_result['pb_capped']
                 pb_target_per_share = bvps * _pb
@@ -1680,7 +1718,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * _pb
 
             # Apply real estate P/B cap (Task 1.2)
-            if industry == '房地产':
+            if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
                 pb_target_per_share = cap_result['pb_capped'] * bvps
                 if cap_result.get('warning'):
@@ -1717,7 +1755,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * _pb
 
             # Apply real estate P/B cap (Task 1.2)
-            if industry == '房地产':
+            if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
                 pb_target_per_share = cap_result['pb_capped'] * bvps
                 if cap_result.get('warning'):
@@ -1801,7 +1839,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 pb_target_per_share = bvps * _pb
 
                 # Apply real estate P/B cap (Task 1.2)
-                if industry == '房地产':
+                if is_real_estate_industry(industry):
                     cap_result = apply_real_estate_cap(_pb, industry)
                     pb_target_per_share = cap_result['pb_capped'] * bvps
                     if cap_result.get('warning'):
@@ -1874,7 +1912,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * utility_pb_multiple
 
             # Apply real estate P/B cap (Task 1.2)
-            if industry == '房地产':
+            if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
                 pb_target_per_share = cap_result['pb_capped'] * bvps
                 if cap_result.get('warning'):
@@ -1909,7 +1947,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * _pb
 
             # Apply real estate P/B cap (Task 1.2)
-            if industry == '房地产':
+            if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
                 pb_target_per_share = cap_result['pb_capped'] * bvps
                 if cap_result.get('warning'):

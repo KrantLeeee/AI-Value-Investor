@@ -105,6 +105,7 @@ industries:
   new_energy_mfg:
     display_name: "新能源制造"
     confidence: 0.85
+    applies_to: ["电池", "锂电池", "储能", "光伏", "太阳能", "风电"]
     ev_ebitda_multiple: [12.0, 18.0]
     methods: ["ev_ebitda", "dcf"]
     disable_methods: ["graham_number"]

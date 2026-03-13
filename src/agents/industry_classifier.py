@@ -406,8 +406,8 @@ def get_industry_profile(industry: str) -> IndustryProfile:
     profiles, _ = _load_profiles()
 
     if industry not in profiles:
-        logger.warning(f"[Industry] Profile for '{industry}' not found, using default")
-        industry = "default"
+        logger.warning(f"[Industry] Profile for '{industry}' not found, using generic")
+        industry = "generic"
 
     profile = profiles[industry]
 
