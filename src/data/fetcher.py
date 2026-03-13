@@ -373,7 +373,19 @@ class Fetcher:
                 info_dict = dict(zip(df["item"], df["value"]))
                 company_name = info_dict.get("股票简称") or info_dict.get("公司名称")
                 industry = info_dict.get("行业") or info_dict.get("所属行业")
-                main_business = info_dict.get("经营范围", "")[:100] if info_dict.get("经营范围") else None
+                main_business = None
+
+                # stock_individual_info_em doesn't have main_business field,
+                # use stock_zyjs_ths (同花顺主营介绍) to get it
+                try:
+                    zyjs_df = ak.stock_zyjs_ths(symbol=code)
+                    if zyjs_df is not None and not zyjs_df.empty:
+                        main_business = zyjs_df["主营业务"].iloc[0] if "主营业务" in zyjs_df.columns else None
+                        if not main_business and "经营范围" in zyjs_df.columns:
+                            # Fallback to 经营范围 if 主营业务 is empty
+                            main_business = str(zyjs_df["经营范围"].iloc[0])[:100]
+                except Exception as e:
+                    logger.debug("[Fetcher] AKShare stock_zyjs_ths failed for %s: %s", ticker, e)
 
                 if company_name:
                     logger.info("[Fetcher] %s company basics from AKShare: %s", ticker, company_name)
