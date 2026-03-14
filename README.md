@@ -240,7 +240,8 @@ invest invest -t 601808.SH
 | `ANTHROPIC_API_KEY` | Anthropic Claude（备用）|
 | `DEEPSEEK_API_KEY` | DeepSeek（低成本任务，V3 行业路由）|
 | `TAVILY_API_KEY` | Tavily 新闻搜索 |
-| `TUSHARE_TOKEN` | Tushare A股数据（备用）|
+| `TUSHARE_TOKEN` | Tushare A股数据 |
+| `TUSHARE_API_URL` | Tushare 自定义端点（可选，用于镜像/代理）|
 | `QVERIS_API_KEY` | QVeris iFinD（付费精准数据）|
 | `TELEGRAM_BOT_TOKEN` | Telegram 推送 |
 | `TELEGRAM_CHAT_ID` | Telegram 目标会话 |

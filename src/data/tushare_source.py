@@ -40,6 +40,10 @@ logger = get_logger(__name__)
 # Register at https://tushare.pro to get your token
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
+# Optional: Custom Tushare API endpoint (for mirrors/proxies)
+# If not set, uses official Tushare API
+TUSHARE_API_URL = os.environ.get("TUSHARE_API_URL", "")
+
 
 class TushareSource(BaseDataSource):
     """Tushare Pro data source (A-share only, premium quality).
@@ -66,7 +70,11 @@ class TushareSource(BaseDataSource):
         return self._available
 
     def _get_api(self):
-        """Lazy init Tushare API connection."""
+        """Lazy init Tushare API connection.
+
+        Supports custom API endpoint via TUSHARE_API_URL env var.
+        This is useful for Tushare mirrors/proxies.
+        """
         if not self._is_available():
             return None
         if self._api is None:
@@ -74,6 +82,13 @@ class TushareSource(BaseDataSource):
                 import tushare as ts
                 ts.set_token(TUSHARE_TOKEN)
                 self._api = ts.pro_api()
+
+                # Support custom API endpoint (mirror/proxy)
+                if TUSHARE_API_URL:
+                    # Set private attributes as required by some Tushare mirrors
+                    self._api._DataApi__token = TUSHARE_TOKEN
+                    self._api._DataApi__http_url = TUSHARE_API_URL
+                    logger.info("[Tushare] Using custom API endpoint: %s", TUSHARE_API_URL)
             except Exception as e:
                 logger.error("[Tushare] Failed to initialize API: %s", e)
                 return None
