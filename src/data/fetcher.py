@@ -465,8 +465,18 @@ class Fetcher:
                     # Use LLM to parse the Tavily answer into structured data
                     parsed = self._llm_parse_company_info(ticker, answer)
                     if parsed and parsed.get("company_name"):
-                        parsed["source"] = "tavily"
-                        return parsed
+                        # ── Cross-validate with AKShare to prevent hallucinations ──
+                        validated_name = self._validate_with_akshare(ticker, parsed["company_name"])
+                        if validated_name:
+                            parsed["company_name"] = validated_name  # Use AKShare's accurate name
+                            parsed["source"] = "tavily"
+                            return parsed
+                        else:
+                            logger.warning(
+                                "[Fetcher] Tavily/LLM returned '%s' for %s but AKShare validation failed",
+                                parsed["company_name"], ticker
+                            )
+                            # Don't return - let it fall through to try other sources
 
                 # Fallback: try to extract from search results titles/content
                 if results:
@@ -476,8 +486,17 @@ class Fetcher:
                     ])
                     parsed = self._llm_parse_company_info(ticker, combined_text)
                     if parsed and parsed.get("company_name"):
-                        parsed["source"] = "tavily"
-                        return parsed
+                        # ── Cross-validate with AKShare to prevent hallucinations ──
+                        validated_name = self._validate_with_akshare(ticker, parsed["company_name"])
+                        if validated_name:
+                            parsed["company_name"] = validated_name
+                            parsed["source"] = "tavily"
+                            return parsed
+                        else:
+                            logger.warning(
+                                "[Fetcher] Tavily results returned '%s' for %s but AKShare validation failed",
+                                parsed["company_name"], ticker
+                            )
 
         except httpx.HTTPStatusError as e:
             logger.debug("[Fetcher] Tavily API error for %s: %s", ticker, e)
@@ -771,6 +790,76 @@ class Fetcher:
             logger.debug("[Fetcher] Validation search failed for %s: %s", ticker, e)
             # Return True to not block on validation failures
             return True
+
+    def _validate_with_akshare(self, ticker: str, candidate_name: str) -> str | None:
+        """
+        Validate company name using AKShare as ground truth.
+
+        AKShare's stock_individual_info_em returns accurate company names directly
+        from exchange data, making it a reliable validation source.
+
+        Returns:
+            - AKShare's company name if validation passes (candidate matches)
+            - None if validation fails (candidate doesn't match AKShare)
+        """
+        try:
+            import akshare as ak
+
+            code = ticker.split(".")[0]
+            df = ak.stock_individual_info_em(symbol=code)
+
+            if df is None or df.empty:
+                logger.debug("[Fetcher] AKShare returned no data for %s", ticker)
+                return None
+
+            info_dict = dict(zip(df["item"], df["value"]))
+            akshare_name = info_dict.get("股票简称") or info_dict.get("公司名称")
+
+            if not akshare_name:
+                logger.debug("[Fetcher] AKShare has no company name for %s", ticker)
+                return None
+
+            # Normalize names for comparison (remove common suffixes like -U, -W, etc.)
+            def normalize(name: str) -> str:
+                return name.replace("-U", "").replace("-W", "").replace("-D", "").strip()
+
+            norm_akshare = normalize(akshare_name)
+            norm_candidate = normalize(candidate_name)
+
+            # Check for exact match or high similarity
+            if norm_candidate == norm_akshare:
+                logger.debug("[Fetcher] Exact match: %s = %s", candidate_name, akshare_name)
+                return akshare_name
+
+            # Check if candidate is a substring or shares significant overlap
+            # e.g., "百济" matches "百济神州", "平安" matches "中国平安"
+            if len(norm_candidate) >= 2:
+                if norm_candidate in norm_akshare or norm_akshare in norm_candidate:
+                    logger.debug(
+                        "[Fetcher] Partial match: candidate '%s' ~ AKShare '%s'",
+                        candidate_name, akshare_name
+                    )
+                    return akshare_name
+
+                # Check first 2 characters match (common abbreviation pattern)
+                if norm_candidate[:2] == norm_akshare[:2]:
+                    logger.debug(
+                        "[Fetcher] Prefix match: candidate '%s' ~ AKShare '%s'",
+                        candidate_name, akshare_name
+                    )
+                    return akshare_name
+
+            # Validation failed - candidate doesn't match AKShare ground truth
+            logger.warning(
+                "[Fetcher] AKShare validation FAILED for %s: candidate='%s', AKShare='%s'",
+                ticker, candidate_name, akshare_name
+            )
+            return None
+
+        except Exception as e:
+            logger.debug("[Fetcher] AKShare validation error for %s: %s", ticker, e)
+            # On error, return None to fail safely (don't pass unvalidated data)
+            return None
 
     def get_data_summary(self, ticker: str) -> dict:
         """Return a summary of locally available data for a ticker."""
