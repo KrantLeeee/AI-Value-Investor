@@ -173,8 +173,9 @@ class BalanceSheet(BaseModel):
     has_insurance_reserve: bool = False      # 保险：保险准备金
 ```
 
-### 3.3 数据库 Schema 扩展
+### 3.3 数据库 Schema 扩展与迁移
 
+**新增字段**（通过迁移添加）：
 ```sql
 -- balance_sheets 表新增字段
 ALTER TABLE balance_sheets ADD COLUMN inventory REAL;
@@ -183,14 +184,99 @@ ALTER TABLE balance_sheets ADD COLUMN has_loan_loss_provision INTEGER DEFAULT 0;
 ALTER TABLE balance_sheets ADD COLUMN has_insurance_reserve INTEGER DEFAULT 0;
 ```
 
-### 3.4 AKShare 集成
+**迁移策略**：在 `database.py` 中新增迁移函数：
 
-在 `akshare_source.py` 的 `get_balance_sheets()` 方法中：
+```python
+# src/data/database.py
 
-1. 获取原始 DataFrame 后，提取所有科目名称
-2. 调用 `extract_industry_flags()` 获取标志位
-3. 提取 `inventory`（存货）和 `advance_receipts`（预收款项）
-4. 填充到 BalanceSheet 对象
+def _run_v3_migrations(conn: sqlite3.Connection) -> None:
+    """
+    V3.0 Schema 迁移：为 balance_sheets 表添加行业识别所需字段。
+
+    SQLite 支持 ALTER TABLE ADD COLUMN，但不支持 IF NOT EXISTS。
+    使用 PRAGMA table_info 检查字段是否存在。
+    """
+    cursor = conn.execute("PRAGMA table_info(balance_sheets)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    migrations = [
+        ("inventory", "REAL"),
+        ("advance_receipts", "REAL"),
+        ("has_loan_loss_provision", "INTEGER DEFAULT 0"),
+        ("has_insurance_reserve", "INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, col_type in migrations:
+        if col_name not in existing_columns:
+            conn.execute(f"ALTER TABLE balance_sheets ADD COLUMN {col_name} {col_type}")
+            logger.info(f"[Migration] Added column: balance_sheets.{col_name}")
+
+
+def init_db(db_path: Path | None = None) -> None:
+    """Create all tables and indexes if they don't exist."""
+    with get_connection(db_path) as conn:
+        conn.executescript(SCHEMA_SQL)
+        _run_v3_migrations(conn)  # V3.0 迁移
+    logger.info("Database initialised at %s", db_path or get_db_path())
+```
+
+**SCHEMA_SQL 更新**：在 `CREATE TABLE balance_sheets` 中直接包含新字段（新数据库无需迁移）：
+
+```sql
+CREATE TABLE IF NOT EXISTS balance_sheets (
+    -- ... 现有字段 ...
+    inventory            REAL,
+    advance_receipts     REAL,
+    has_loan_loss_provision INTEGER DEFAULT 0,
+    has_insurance_reserve   INTEGER DEFAULT 0,
+    -- ... 其余字段 ...
+);
+```
+
+### 3.4 AKShare 集成与字段映射
+
+**AKShare 资产负债表字段映射表**：
+
+| AKShare 中文字段名 | BalanceSheet 字段 | 备注 |
+|-------------------|------------------|------|
+| `*存货` / `存货` | `inventory` | 一般企业 |
+| `*预收款项` / `预收款项` | `advance_receipts` | 旧会计准则 |
+| `*合同负债` / `合同负债` | `advance_receipts` | 新会计准则（优先使用） |
+| `贷款损失准备` / `贷款减值准备` | 触发 `has_loan_loss_provision=True` | 银行专属 |
+| `未到期责任准备金` | 触发 `has_insurance_reserve=True` | 保险专属 |
+
+**实现逻辑**（在 `akshare_source.py` 的 `get_balance_sheets()` 中）：
+
+```python
+from src.data.balance_sheet_scanner import extract_industry_flags
+
+def get_balance_sheets(self, ticker: str, market: MarketType, ...) -> list[BalanceSheet]:
+    # ... 获取原始 DataFrame df ...
+
+    # 提取所有科目名称（DataFrame 的列名）
+    raw_items = list(df.columns)
+
+    # 调用科目扫描器获取行业标志位
+    industry_flags = extract_industry_flags(raw_items)
+
+    for _, row in df.iterrows():
+        # 提取存货
+        inventory = _get_val("*存货", "存货")
+
+        # 提取预收款项（优先使用合同负债，新准则）
+        advance_receipts = _get_val("*合同负债", "合同负债", "*预收款项", "预收款项")
+
+        results.append(BalanceSheet(
+            # ... 现有字段 ...
+            inventory=inventory,
+            advance_receipts=advance_receipts,
+            has_loan_loss_provision=industry_flags['has_loan_loss_provision'],
+            has_insurance_reserve=industry_flags['has_insurance_reserve'],
+            source=self.source_name,
+        ))
+
+    return results
+```
 
 ---
 
@@ -303,31 +389,131 @@ SPECIAL_REGIME_CONFIGS = {
 |-----|------|-------|
 | 银行 | DE > 8 AND has_loan_loss_provision | 0.95 |
 | 保险 | DE > 4 AND has_insurance_reserve | 0.92 |
-| 房地产 | inventory/assets > 40% AND advance/assets > 10% | 0.90 |
+| 房地产 | inventory/assets > 40% AND advance/assets > 10% AND NOT 金融股 | 0.90 |
 | 困境企业 | (margin_3yr < -10% OR roe_3yr < -10%) AND loss_years >= 2 AND NOT 金融股 | 0.85 |
 | 消费护城河 | gross_margin > 70% AND roe_5yr > 18% AND fcf_positive >= 4 | 0.88 |
 | 创新药 | rd_ratio > 30% AND net_margin < 5% AND has_pipeline_keywords | 0.82 |
 
+**金融股排除逻辑**：
+```python
+is_financial = has_loan_loss_provision or has_insurance_reserve
+```
+
+**创新药管线关键词列表**：
+```python
+PIPELINE_KEYWORDS = [
+    '临床', '管线', '适应症', 'pipeline',
+    'IND', 'NDA', 'FDA', 'NMPA', 'BLA',
+    '一期', '二期', '三期', 'Phase',
+    '创新药', '生物药', '单抗', '双抗',
+]
+```
+
 ### 4.4 LLM 动态路由
 
 **缓存策略**：
-- Key: `md5(stock_code + report_period)[:12]`
+- Key: `md5(stock_code + report_period)` (完整 32 字符，避免碰撞)
 - 存储位置: `output/industry_cache/{key}.json`
 - V3.1 修正：使用 `report_period`（季度）而非 `fiscal_year`，防止季报更新后脏读
 
 **JSON 提取器**：
-- 移除 `<think>...</think>` 块
-- 优先提取 ` ```json...``` ` 代码块
-- 降级提取裸 JSON 对象
+```python
+def extract_json_from_llm_output(raw_output: str) -> dict:
+    """
+    从 LLM 输出中提取 JSON，处理 DeepSeek-Reasoner 的 <think> 块。
+
+    策略:
+    1. 移除 <think>...</think> 块
+    2. 优先提取 ```json...``` 代码块
+    3. 降级提取裸 JSON 对象
+    4. 全部失败时抛出 ValueError（由调用者处理降级到 fallback）
+    """
+    # ... 实现见 Section 3 代码 ...
+```
+
+**LLM Prompt 模板**（添加到 `src/llm/prompts.py`）：
+
+```python
+# src/llm/prompts.py
+
+INDUSTRY_ROUTING_SYSTEM_PROMPT = """你是 A 股估值方法专家。根据公司描述和财务特征，选择最适合的估值框架。
+
+## 可用估值方法
+
+| 方法 | 适用场景 |
+|-----|---------|
+| pe | 稳定盈利企业 |
+| ev_ebitda | 资本密集型、有折旧摊销的企业 |
+| dcf | 现金流稳定、可预测的企业 |
+| ps | 亏损但有收入的成长企业 |
+| pb | 资产驱动型企业 |
+| pb_roe | 金融股（银行、保险） |
+| ddm | 高分红稳定企业 |
+| peg | 高速成长股 |
+| normalized_pe | 周期股（使用周期调整盈利） |
+| pe_moat | 品牌消费股（护城河溢价） |
+| ev_sales | 亏损成长股 |
+
+## 输出格式（严格 JSON）
+
+```json
+{
+  "regime": "行业体系名称（如 tech_saas, consumer_brand, cyclical_materials）",
+  "primary_methods": ["方法1", "方法2"],
+  "method_importance": {"方法1": 8, "方法2": 5},
+  "disabled_methods": ["不适用的方法"],
+  "scoring_mode": "standard 或 cycle_adjusted",
+  "ev_ebitda_multiple_range": [低倍数, 高倍数],
+  "rationale": "简要选择理由（1-2句）"
+}
+```
+
+## 注意事项
+- method_importance 使用 1-10 分制表示重要程度，系统会自动归一化为权重
+- primary_methods 最多选 3 个，按重要性排序
+- 如果公司亏损，禁用 pe 和 peg
+- 如果公司无明显周期特征，不要使用 normalized_pe
+"""
+
+INDUSTRY_ROUTING_USER_PROMPT_TEMPLATE = """## 公司信息
+- 名称：{name}
+- 行业标签：{industry}
+- 主营业务：{business_description}
+
+## 关键财务指标
+- 毛利率：{gross_margin}%
+- 净利率：{net_margin}%
+- ROE：{roe}%
+- 研发费用率：{rd_expense_ratio}%
+- 资产负债率：{de_ratio}x
+- 营收增长：{revenue_growth}%
+- 净利润增长：{net_income_growth}%
+- FCF 正值年数（近5年）：{fcf_positive_years}
+
+请选择最适合的估值框架，输出 JSON。"""
+```
 
 **LLM 任务配置**：
 ```yaml
 # config/llm_config.yaml
-industry_routing:
-  provider: deepseek
-  model: deepseek-reasoner
-  max_tokens: 800
-  temperature: 0.1
+task_routing:
+  # ... 现有配置 ...
+
+  industry_routing:
+    provider: deepseek
+    model: deepseek-reasoner
+    max_tokens: 800
+    temperature: 0.1
+    description: "Industry classification and valuation method selection"
+```
+
+**错误处理流程**：
+```
+LLM 调用 → JSON 提取成功 → Pydantic 校验 → 返回 ValuationConfig
+    │              │                 │
+    │              │                 └── 校验失败 → log warning → fallback
+    │              └── 提取失败 → log warning → fallback
+    └── 调用失败/超时 → log error → fallback
 ```
 
 ---
@@ -373,6 +559,68 @@ def run(ticker: str, market: str) -> AgentSignal:
 - 派生指标：roe_3yr_avg, roe_5yr_avg, net_margin_3yr_avg, fcf_positive_years, consecutive_loss_years
 - 报告期：report_period
 
+### 5.4 compare_with_legacy() 返回类型
+
+```python
+from pydantic import BaseModel
+from datetime import datetime
+
+class ComparisonResult(BaseModel):
+    """新旧引擎对比结果"""
+    ticker: str
+    timestamp: datetime
+
+    # V3 新引擎结果
+    v3_regime: str
+    v3_source: str  # 'hard_rule' | 'llm' | 'fallback'
+    v3_methods: list[str]
+    v3_confidence: float
+
+    # V2 旧引擎结果
+    v2_regime: str
+    v2_methods: list[str]
+
+    # 对比结论
+    agreement: bool
+    diff_summary: str | None = None  # 分歧说明
+
+
+def compare_with_legacy(ticker: str, company_info: dict, metrics: dict) -> ComparisonResult:
+    """与旧版 industry_classifier 对比，返回结构化结果"""
+    # ... 实现 ...
+```
+
+**分歧日志存储**：`output/engine_comparison.jsonl`（每行一个 JSON）
+
+### 5.5 可观测性设计
+
+**日志格式**：
+```python
+logger.info(
+    f"[IndustryEngine] {ticker}: "
+    f"regime={config.regime}, "
+    f"source={config.source}, "
+    f"confidence={config.confidence:.2f}, "
+    f"methods={config.primary_methods}, "
+    f"triggered_rules={config.triggered_rules}"
+)
+```
+
+**关键指标（未来 Phase 可实现）**：
+
+| 指标 | 类型 | 说明 |
+|-----|------|-----|
+| `industry_engine_hard_rule_hit_rate` | Gauge | 硬规则命中率 |
+| `industry_engine_llm_call_latency_ms` | Histogram | LLM 调用延迟 |
+| `industry_engine_cache_hit_rate` | Gauge | 缓存命中率 |
+| `industry_engine_fallback_count` | Counter | 兜底触发次数 |
+
+**成本估算**：
+- DeepSeek-Reasoner: 输入 ~$0.55/1M tokens, 输出 ~$2.19/1M tokens
+- 单次调用估算: ~500 input tokens, ~300 output tokens → ~$0.001/次
+- 假设 watchlist 200 只股票，全量无缓存调用 → ~$0.20
+- 缓存后（季度更新）日常调用趋近于 0
+
 ---
 
 ## 6. 测试计划
@@ -385,16 +633,66 @@ def run(ticker: str, market: str) -> AgentSignal:
 | TestJSONExtraction | `<think>` 块处理、代码块提取、裸 JSON 提取、错误处理 |
 | TestValuationConfig | 权重归一化、非法方法拒绝、空权重自动均分 |
 | TestUnifiedEntry | 兜底永不失败、get_valuation_config 永远返回 |
+| **TestEdgeCases** | 边缘情况测试（见下文） |
+
+**边缘情况测试用例**：
+
+```python
+class TestEdgeCases:
+    def test_missing_inventory_uses_llm_or_fallback(self):
+        """缺少 inventory 字段时不应误判为房地产"""
+        metrics = {
+            'total_assets': 100_000_000_000,
+            'inventory': None,  # 缺失
+            'advance_receipts': 20_000_000_000,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is None or result.regime != 'real_estate'
+
+    def test_multiple_rule_match_priority(self):
+        """多规则同时满足时，按优先级返回（银行 > 保险 > 其他）"""
+        # 银行规则优先级最高
+        metrics = {
+            'de_ratio': 12,
+            'has_loan_loss_provision': True,
+            'has_insurance_reserve': True,  # 同时满足保险条件
+        }
+        result = detect_special_regime(metrics, {})
+        assert result.regime == 'bank'
+
+    def test_llm_timeout_uses_fallback(self):
+        """LLM 超时时使用 fallback"""
+        # 通过 mock LLM 调用模拟超时
+        # 验证返回 source='fallback'
+
+    def test_stale_cache_not_used_after_new_report(self):
+        """新季报发布后，旧缓存不应被使用"""
+        # cache_key 包含 report_period，确保季报更新后 key 变化
+
+    def test_high_inventory_manufacturing_not_real_estate(self):
+        """高存货制造业不应误判为房地产"""
+        metrics = {
+            'total_assets': 100_000_000_000,
+            'inventory': 45_000_000_000,  # 45%
+            'advance_receipts': 12_000_000_000,  # 12%
+            # 但同时有制造业特征
+            'gross_margin': 25,  # 房地产毛利通常较高
+        }
+        company_info = {'name': '三一重工', 'industry': '工程机械'}
+        # 这种情况应该交给 LLM 判断，而非硬规则命中房地产
+```
 
 ### 6.2 集成测试标的
 
-| 股票代码 | 名称 | 预期 regime | 预期 source |
-|---------|------|------------|-------------|
-| 601398.SH | 工商银行 | bank | hard_rule |
-| 601318.SH | 中国平安 | insurance | hard_rule |
-| 001979.SZ | 招商蛇口 | real_estate | hard_rule |
-| 600519.SH | 贵州茅台 | brand_moat | hard_rule |
-| 688235.SH | 百济神州 | pharma_innovative | hard_rule/llm |
+| 股票代码 | 名称 | 预期 regime | 预期 source | 测试目的 |
+|---------|------|------------|-------------|---------|
+| 601398.SH | 工商银行 | bank | hard_rule | 银行规则验证 |
+| 601318.SH | 中国平安 | insurance | hard_rule | 保险规则验证 |
+| 001979.SZ | 招商蛇口 | real_estate | hard_rule | 房地产规则验证 |
+| 600519.SH | 贵州茅台 | brand_moat | hard_rule | 消费护城河验证 |
+| 688235.SH | 百济神州 | pharma_innovative | hard_rule/llm | 创新药规则验证 |
+| 600900.SH | 长江电力 | utility (via LLM) | llm | LLM 路由验证 |
+| 000792.SZ | 盐湖股份 | cyclical/distressed | hard_rule/llm | 周期/困境判断 |
 
 ---
 
