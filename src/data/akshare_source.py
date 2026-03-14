@@ -43,6 +43,7 @@ from src.data.models import (
     ProfitWarning,
 )
 from src.utils.logger import get_logger
+from src.data.balance_sheet_scanner import extract_industry_flags
 
 logger = get_logger(__name__)
 
@@ -387,6 +388,10 @@ class AKShareSource(BaseDataSource):
                 return []
             df = df.sort_values("报告期", ascending=False).iloc[:limit]
 
+            # V3.0: Extract industry flags from column names (once per DataFrame)
+            raw_column_names = list(df.columns)
+            industry_flags = extract_industry_flags(raw_column_names)
+
             for _, row in df.iterrows():
                 p_date = _parse_period_date(row.get("报告期"), indicator)
                 if p_date is None:
@@ -446,6 +451,17 @@ class AKShareSource(BaseDataSource):
                     else:
                         total_debt = sum(debt_values) if debt_values else None
 
+                # V3.0: Extract new fields for industry detection
+                inventory = _get_val("*存货", "存货")
+
+                # Prefer 合同负债 (new standard) over 预收款项 (old standard)
+                advance_receipts = _get_val("*合同负债", "合同负债", "*预收款项", "预收款项")
+
+                # Fixed assets = 固定资产 + 在建工程 (for asset-heavy detection)
+                fixed_assets_base = _get_val("*固定资产", "固定资产") or 0
+                construction_in_progress = _get_val("*在建工程", "在建工程") or 0
+                fixed_assets = (fixed_assets_base + construction_in_progress) or None
+
                 # Book value per share not available from THS debt table directly
                 results.append(BalanceSheet(
                     ticker=ticker,
@@ -458,6 +474,12 @@ class AKShareSource(BaseDataSource):
                     current_liabilities=current_liab,
                     cash_and_equivalents=cash,
                     total_debt=total_debt,
+                    # V3.0: New fields
+                    inventory=inventory,
+                    advance_receipts=advance_receipts,
+                    fixed_assets=fixed_assets,
+                    has_loan_loss_provision=industry_flags["has_loan_loss_provision"],
+                    has_insurance_reserve=industry_flags["has_insurance_reserve"],
                     source=self.source_name,
                 ))
 
