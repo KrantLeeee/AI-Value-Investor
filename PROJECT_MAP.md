@@ -1,6 +1,6 @@
 # PROJECT_MAP — AI Value Investor
 <!-- 用于 Claude Code / Cursor 快速定位文件，减少无效 token 消耗 -->
-<!-- Last Updated: 2026-03-12 | Version: 1.0 -->
+<!-- Last Updated: 2026-03-14 | Version: 1.1 -->
 
 ## 🗺️ 系统一句话总结
 多 Agent 协作的 A 股价值投资研究助手：CLI 触发 → 数据抓取（多源回退）→ 7 个 Agent 并行分析 → Contrarian Agent 辩证挑战 → LLM 生成中文研报 → Telegram 推送。
@@ -15,6 +15,8 @@
 | 修改报告章节结构/内容 | `src/agents/report_generator.py` + `src/agents/report_config.py` |
 | 修改报告章节的 LLM Prompt | `src/llm/prompts.py` |
 | 添加/调整行业分类规则 | `config/industry_profiles.yaml` + `src/agents/industry_classifier.py` |
+| **启用 V3 行业引擎** | 设置 `USE_INDUSTRY_ENGINE_V3=true` 环境变量 |
+| **修改 V3 硬规则** | `src/agents/industry_engine.py` → `detect_special_regime()` |
 | 修改行业估值参数（EV/EBITDA 倍数等） | `config/industry_profiles.yaml` |
 | 修改因子筛选规则 | `config/screening_rules.yaml` ⚠️ 受保护 |
 | 添加新数据源 | `src/data/` 下新建 `xxx_source.py` + 注册到 `fetcher.py` |
@@ -111,7 +113,7 @@
 - **改动触发点**：添加新估值方法；修复估值公式；调整行业适配逻辑
 - **注意**：文件顶部有大量行业特定常量（PE倍数、WACC参数等）
 
-#### `src/agents/industry_classifier.py` — 行业分类和参数管理
+#### `src/agents/industry_classifier.py` — 行业分类和参数管理 (V2)
 - **职责**：行业识别 + 从 YAML 加载行业特定估值倍数和 Agent 权重
 - **关键函数**：
   - `classify_industry(sector, sub_industry)` → 行业 key
@@ -121,6 +123,25 @@
   - `get_ev_ebitda_multiple()`, `get_pe_multiple()`, `get_ps_multiple()`, `get_pb_multiple()`
 - **数据来源**：`config/industry_profiles.yaml`
 - **改动触发点**：添加新行业类型；修改行业估值参数（改 YAML）；调整分类逻辑
+
+#### `src/agents/industry_engine.py` — V3 行业引擎（三层漏斗架构）⭐ NEW
+- **职责**：基于财务特征的行业分类，替代基于标签的 V2 分类器
+- **三层架构**：
+  1. **硬规则**（零成本）：银行/保险/地产/困境/品牌护城河/创新药 → 即时返回
+  2. **LLM 动态路由**：DeepSeek-Reasoner + 缓存，输出 method_importance 权重
+  3. **安全回退**：generic 体系，永不失败
+- **关键函数**：
+  - `get_valuation_config(ticker, company_info, metrics)` → `ValuationConfig`
+  - `detect_special_regime(metrics, company_info)` → `SpecialRegimeResult | None`
+  - `extract_json_from_llm_output(raw)` → 处理 DeepSeek `<think>` 块
+  - `compare_with_legacy(...)` → 并行模式对比 V3/V2 结果
+- **Feature Flag**：`USE_INDUSTRY_ENGINE_V3=true` 启用
+- **改动触发点**：修改硬规则阈值；添加新特殊行业；调整 LLM Prompt
+
+#### `src/agents/valuation_config.py` — 估值配置模型 ⭐ NEW
+- **职责**：`ValuationConfig` Pydantic 模型，method_importance → weights 自动归一化
+- **关键字段**：`regime`, `primary_methods`, `weights`, `method_importance`, `confidence`, `source`
+- **改动触发点**：添加新估值方法到 `ALLOWED_METHODS`
 
 #### `src/agents/wacc.py` — WACC 计算模块
 - **职责**：CAPM 成本权益 + 负债成本 → WACC，生成 DCF 敏感性矩阵
@@ -225,8 +246,14 @@
 - **职责**：定义所有数据实体：`AgentSignal`, `DailyPrice`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `FinancialMetrics`, `QualityReport`, `MarketType`
 - **改动触发点**：添加新字段到数据模型（同步更新 database.py）
 
+#### `src/data/balance_sheet_scanner.py` — 资产负债表扫描器 ⭐ NEW
+- **职责**：扫描资产负债表科目名，检测银行/保险特征（供 V3 行业引擎使用）
+- **关键函数**：`extract_industry_flags(raw_balance_sheet_items)` → `{has_loan_loss_provision, has_insurance_reserve}`
+- **改动触发点**：调整银行/保险关键词列表
+
 #### `src/data/akshare_source.py` — AKShare 数据源（最主要的 A 股数据源）
 - **改动触发点**：AKShare API 接口变更；添加新 AKShare 数据类型
+- **V3 集成**：`get_balance_sheets()` 现在提取 V3 字段（inventory, advance_receipts, fixed_assets, industry_flags）
 
 #### `src/data/qveris_source.py` — QVeris iFinD 数据源（付费精准数据）
 - **改动触发点**：QVeris API 变更；添加新 iFinD 数据字段
@@ -348,7 +375,7 @@ registry.run_all_agents("601808.SH", "a_share")
 ```sql
 daily_prices        (ticker, date, open, high, low, close, volume, source)
 income_statements   (ticker, period_end_date, period_type, revenue, net_income, ...)
-balance_sheets      (ticker, period_end_date, total_assets, total_equity, ...)
+balance_sheets      (ticker, period_end_date, total_assets, total_equity, inventory, advance_receipts, fixed_assets, has_loan_loss_provision, has_insurance_reserve, ...)
 cash_flows          (ticker, period_end_date, operating_cash_flow, capex, free_cash_flow)
 financial_metrics   (ticker, date, roe, roa, roic, de_ratio, current_ratio, ...)
 manual_docs         (ticker, file_name, doc_type, extracted_text, ...)
@@ -368,3 +395,4 @@ trade_log           (ticker, action, amount, shares, price, date)
 5. **LLM fallback 链**：OpenAI → Anthropic → DeepSeek，可在 `llm_config.yaml` 调整
 6. **QVeris 数据限额**：超限后自动降级到 `fetcher.py` 中的 `_COMPANY_INFO_FALLBACK` 本地字典
 7. **宏观数据缓存**：`data/cache/macro_snapshot.json`，TTL 4 小时，删除可强制刷新
+8. **V3 行业引擎 Feature Flag**：设置 `USE_INDUSTRY_ENGINE_V3=true` 启用三层漏斗架构，`INDUSTRY_ENGINE_PARALLEL=true` 启用 V2/V3 并行对比模式

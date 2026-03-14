@@ -211,3 +211,27 @@ invest backtest --rule "安全边际" --start 2020 --end 2024 --hold 3
 ```bash
 invest invest -t 601808.SH
 ```
+
+---
+
+## Environment Variables
+
+### Feature Flags
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `USE_INDUSTRY_ENGINE_V3` | `false` | 启用 V3 行业引擎（三层漏斗：硬规则 → LLM → fallback）|
+| `INDUSTRY_ENGINE_PARALLEL` | `false` | V3/V2 并行对比模式，输出两套结果供验证 |
+
+### API Keys
+
+| 变量 | 说明 |
+|------|------|
+| `OPENAI_API_KEY` | OpenAI GPT-4o（主力 LLM）|
+| `ANTHROPIC_API_KEY` | Anthropic Claude（备用）|
+| `DEEPSEEK_API_KEY` | DeepSeek（低成本任务，V3 行业路由）|
+| `TAVILY_API_KEY` | Tavily 新闻搜索 |
+| `TUSHARE_TOKEN` | Tushare A股数据（备用）|
+| `QVERIS_API_KEY` | QVeris iFinD（付费精准数据）|
+| `TELEGRAM_BOT_TOKEN` | Telegram 推送 |
+| `TELEGRAM_CHAT_ID` | Telegram 目标会话 |
