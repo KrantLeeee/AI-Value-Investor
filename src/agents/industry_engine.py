@@ -15,6 +15,9 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
+
+from pydantic import BaseModel
 
 from src.agents.valuation_config import ValuationConfig
 from src.llm.prompts import (
@@ -470,3 +473,71 @@ def get_valuation_config(
         fallback.regime,
     )
     return fallback
+
+
+# ── Comparison Mode for Parallel Validation ──────────────────────────────────
+
+
+class ComparisonResult(BaseModel):
+    """Result of comparing V3 engine with legacy V2 classifier."""
+
+    ticker: str
+    timestamp: datetime
+
+    # V3 results
+    v3_regime: str
+    v3_source: str
+    v3_methods: list[str]
+    v3_confidence: float
+
+    # V2 results (from legacy classifier)
+    v2_regime: str
+    v2_methods: list[str]
+
+    # Comparison
+    agreement: bool
+    diff_summary: str | None = None
+
+
+def compare_with_legacy(
+    ticker: str,
+    company_info: dict,
+    metrics: dict,
+    legacy_result: dict,
+) -> ComparisonResult:
+    """
+    Compare V3 engine result with legacy V2 classifier.
+
+    Used in parallel mode to validate V3 behavior before switching.
+    """
+    v3_config = get_valuation_config(ticker, company_info, metrics)
+
+    v2_regime = legacy_result.get("regime", "unknown")
+    v2_methods = legacy_result.get("primary_methods", [])
+
+    # Determine agreement
+    agreement = v3_config.regime == v2_regime
+
+    diff_summary = None
+    if not agreement:
+        diff_summary = f"V3={v3_config.regime} vs V2={v2_regime}"
+
+    return ComparisonResult(
+        ticker=ticker,
+        timestamp=datetime.now(),
+        v3_regime=v3_config.regime,
+        v3_source=v3_config.source,
+        v3_methods=v3_config.primary_methods,
+        v3_confidence=v3_config.confidence,
+        v2_regime=v2_regime,
+        v2_methods=v2_methods,
+        agreement=agreement,
+        diff_summary=diff_summary,
+    )
+
+
+def log_comparison_to_file(comparison: ComparisonResult) -> None:
+    """Append comparison result to JSONL log file."""
+    log_file = get_output_dir() / "engine_comparison.jsonl"
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(comparison.model_dump_json() + "\n")
