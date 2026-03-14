@@ -88,9 +88,19 @@ def _check_baostock_server_reachable() -> bool:
     try:
         # Quick socket connection test with 5 second timeout
         # BaoStock uses data.baostock.com:8000
+        # If DNS fails, we try a known IP as fallback
+        host = "data.baostock.com"
+        port = 8000
+        
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
-        result = sock.connect_ex(("data.baostock.com", 8000))
+        try:
+            result = sock.connect_ex((host, port))
+        except socket.gaierror:
+            # Fallback to known IP if DNS resolution fails
+            logger.warning("[BaoStock] DNS failed for %s, trying fallback IP 114.94.20.73", host)
+            result = sock.connect_ex(("114.94.20.73", port))
+            
         sock.close()
         if result == 0:
             logger.debug("[BaoStock] Server reachable")
@@ -99,10 +109,7 @@ def _check_baostock_server_reachable() -> bool:
             logger.warning("[BaoStock] Server unreachable (connection refused) - source disabled")
             return False
     except socket.timeout:
-        logger.warning("[BaoStock] Server timeout connecting to data.baostock.com - source disabled")
-        return False
-    except socket.gaierror as e:
-        logger.warning("[BaoStock] DNS resolution failed for data.baostock.com: %s - source disabled", e)
+        logger.warning("[BaoStock] Server timeout connecting to %s - source disabled", host)
         return False
     except Exception as e:
         logger.warning("[BaoStock] Error checking server connectivity: %s - source disabled", e)

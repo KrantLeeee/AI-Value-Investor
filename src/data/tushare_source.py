@@ -7,11 +7,17 @@ Key APIs:
 - daily: daily OHLCV price data (trade_date, open, high, low, close, vol)
 - income: income statement (end_date, total_revenue, n_income, etc.)
 - balancesheet: balance sheet (end_date, total_assets, total_liab, total_equity)
+  - comp_type: 1=工商业, 2=银行, 3=保险, 4=证券 (V3 industry detection)
 - cashflow: cash flow (end_date, n_cashflow_act, etc.)
+- fina_indicator: financial metrics (roe, roa, roic, current_ratio, etc.)
 
 Tushare uses different ticker format:
 - A-share: "601808.SH", "000002.SZ" (same as our format)
 - Period types: Tushare has no direct "annual" param, we filter by end_date month (Q4 = annual)
+
+V3 Industry Engine Integration:
+- comp_type field directly identifies bank/insurance/securities companies
+- Balance sheet includes inventory, advance_receipts, fixed_assets for industry detection
 """
 
 import os
@@ -22,6 +28,7 @@ from src.data.models import (
     BalanceSheet,
     CashFlow,
     DailyPrice,
+    FinancialMetrics,
     IncomeStatement,
     MarketType,
 )
@@ -29,12 +36,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Tushare Pro token (from requirements)
-# Load Tushare token from environment variable or fallback to hardcoded (for compatibility)
-TUSHARE_TOKEN = os.environ.get(
-    "TUSHARE_TOKEN",
-    "fb807267d782ca1f32a9a907c399fed4ea0a611ff94b786239fc2021"  # Fallback for existing setups
-)
+# Tushare Pro token from environment variable (required)
+# Register at https://tushare.pro to get your token
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 
 class TushareSource(BaseDataSource):
@@ -223,7 +227,14 @@ class TushareSource(BaseDataSource):
         self, ticker: str, market: MarketType,
         period_type: str = "annual", limit: int = 10,
     ) -> list[BalanceSheet]:
-        """Fetch balance sheets from Tushare Pro."""
+        """Fetch balance sheets from Tushare Pro.
+
+        V3 Industry Engine Integration:
+        - comp_type: 1=工商业, 2=银行, 3=保险, 4=证券
+        - Sets has_loan_loss_provision=True for banks (comp_type=2)
+        - Sets has_insurance_reserve=True for insurance (comp_type=3)
+        - Extracts inventory, advance_receipts, fixed_assets for industry detection
+        """
         if market != "a_share":
             return []
 
@@ -234,10 +245,19 @@ class TushareSource(BaseDataSource):
         results: list[BalanceSheet] = []
 
         try:
+            # Request V3 fields: inventories, adv_receipts, fix_assets, comp_type
+            # Also request bank/insurance indicator fields for validation
             df = api.balancesheet(ts_code=ts_code, fields=[
-                'ts_code', 'end_date', 'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int',
+                'ts_code', 'end_date', 'comp_type',
+                'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int',
                 'total_cur_assets', 'total_cur_liab', 'money_cap', 'total_share',
-                'st_borr', 'lt_borr'
+                'st_borr', 'lt_borr',
+                # V3 industry detection fields
+                'inventories', 'adv_receipts', 'fix_assets',
+                # Bank indicator fields
+                'decr_in_disbur', 'cb_borr', 'depos_ib_deposits',
+                # Insurance indicator fields
+                'rsrv_insur_cont', 'reser_une_prem', 'reser_lins_liab',
             ])
 
             if df is None or df.empty:
@@ -254,25 +274,56 @@ class TushareSource(BaseDataSource):
                 end_date_str = str(row["end_date"])
                 period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
 
-                st_debt = float(row["st_borr"]) if row["st_borr"] else 0
-                lt_debt = float(row["lt_borr"]) if row["lt_borr"] else 0
+                st_debt = float(row["st_borr"]) if row.get("st_borr") else 0
+                lt_debt = float(row["lt_borr"]) if row.get("lt_borr") else 0
                 total_debt = (st_debt + lt_debt) if (st_debt or lt_debt) else None
+
+                # V3 Industry Detection via comp_type
+                # comp_type: 1=工商业, 2=银行, 3=保险, 4=证券
+                comp_type = int(row["comp_type"]) if row.get("comp_type") else 1
+                has_loan_loss_provision = comp_type == 2  # Bank
+                has_insurance_reserve = comp_type == 3    # Insurance
+
+                # Additional validation: check if bank/insurance fields have values
+                if not has_loan_loss_provision:
+                    # Double-check with bank-specific fields
+                    bank_fields = ['decr_in_disbur', 'cb_borr', 'depos_ib_deposits']
+                    bank_hits = sum(1 for f in bank_fields if row.get(f) and float(row[f]) > 0)
+                    if bank_hits >= 2:
+                        has_loan_loss_provision = True
+                        logger.debug("[Tushare] %s detected as bank via balance sheet fields", ticker)
+
+                if not has_insurance_reserve:
+                    # Double-check with insurance-specific fields
+                    ins_fields = ['rsrv_insur_cont', 'reser_une_prem', 'reser_lins_liab']
+                    ins_hits = sum(1 for f in ins_fields if row.get(f) and float(row[f]) > 0)
+                    if ins_hits >= 2:
+                        has_insurance_reserve = True
+                        logger.debug("[Tushare] %s detected as insurance via balance sheet fields", ticker)
 
                 results.append(BalanceSheet(
                     ticker=ticker,
                     period_end_date=period_end,
                     period_type=period_type,
-                    total_assets=float(row["total_assets"]) if row["total_assets"] else None,
-                    total_liabilities=float(row["total_liab"]) if row["total_liab"] else None,
-                    total_equity=float(row["total_hldr_eqy_exc_min_int"]) if row["total_hldr_eqy_exc_min_int"] else None,
-                    current_assets=float(row["total_cur_assets"]) if row["total_cur_assets"] else None,
-                    current_liabilities=float(row["total_cur_liab"]) if row["total_cur_liab"] else None,
-                    cash_and_equivalents=float(row["money_cap"]) if row["money_cap"] else None,
+                    total_assets=float(row["total_assets"]) if row.get("total_assets") else None,
+                    total_liabilities=float(row["total_liab"]) if row.get("total_liab") else None,
+                    total_equity=float(row["total_hldr_eqy_exc_min_int"]) if row.get("total_hldr_eqy_exc_min_int") else None,
+                    current_assets=float(row["total_cur_assets"]) if row.get("total_cur_assets") else None,
+                    current_liabilities=float(row["total_cur_liab"]) if row.get("total_cur_liab") else None,
+                    cash_and_equivalents=float(row["money_cap"]) if row.get("money_cap") else None,
                     total_debt=total_debt,
+                    # V3 fields
+                    inventory=float(row["inventories"]) if row.get("inventories") else None,
+                    advance_receipts=float(row["adv_receipts"]) if row.get("adv_receipts") else None,
+                    fixed_assets=float(row["fix_assets"]) if row.get("fix_assets") else None,
+                    has_loan_loss_provision=has_loan_loss_provision,
+                    has_insurance_reserve=has_insurance_reserve,
                     source=self.source_name,
                 ))
 
-            logger.info("[Tushare] %s balance: %d rows", ticker, len(results))
+            logger.info("[Tushare] %s balance: %d rows (financial=%s)",
+                       ticker, len(results),
+                       has_loan_loss_provision or has_insurance_reserve)
         except Exception as e:
             logger.warning("[Tushare] get_balance_sheets failed for %s: %s", ticker, e)
 
@@ -338,6 +389,93 @@ class TushareSource(BaseDataSource):
 
     def get_financial_metrics(
         self, ticker: str, market: MarketType, limit: int = 10,
-    ) -> list:
-        """Tushare financial metrics not implemented - return empty list."""
-        return []
+    ) -> list[FinancialMetrics]:
+        """Fetch financial metrics from Tushare Pro fina_indicator API.
+
+        Tushare fina_indicator provides comprehensive metrics:
+        - Profitability: roe, roa, roic, grossprofit_margin, netprofit_margin
+        - Liquidity: current_ratio, quick_ratio
+        - Leverage: debt_to_assets, debt_to_eqt
+        - Growth: netprofit_yoy, or_yoy
+        - Valuation helpers: ebitda, bps
+        """
+        if market != "a_share":
+            return []
+
+        api = self._get_api()
+        if api is None:
+            return []
+        ts_code = ticker
+        results: list[FinancialMetrics] = []
+
+        try:
+            df = api.fina_indicator(ts_code=ts_code, fields=[
+                'ts_code', 'end_date',
+                # Profitability
+                'roe', 'roa', 'roic',
+                'grossprofit_margin', 'netprofit_margin',
+                # Liquidity
+                'current_ratio', 'quick_ratio',
+                # Leverage
+                'debt_to_assets', 'debt_to_eqt',
+                # Growth
+                'netprofit_yoy', 'or_yoy', 'tr_yoy',
+                # Valuation helpers
+                'ebitda', 'bps', 'eps',
+                # Cash flow
+                'ocfps', 'fcff', 'fcfe',
+            ])
+
+            if df is None or df.empty:
+                logger.info("[Tushare] %s metrics: 0 rows", ticker)
+                return []
+
+            df = df.sort_values("end_date", ascending=False)
+
+            # Filter for annual reports (Q4)
+            df = df[df["end_date"].astype(str).str.endswith("1231")]
+            df = df.iloc[:limit]
+
+            for _, row in df.iterrows():
+                end_date_str = str(row["end_date"])
+                period_end = datetime.strptime(end_date_str, "%Y%m%d").date()
+
+                # Helper to safely get float value
+                def safe_float(field: str) -> float | None:
+                    val = row.get(field)
+                    if val is None or (isinstance(val, float) and val != val):  # NaN check
+                        return None
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return None
+
+                # Convert percentages (Tushare returns as %, we store as decimal)
+                def pct_to_decimal(field: str) -> float | None:
+                    val = safe_float(field)
+                    return val / 100 if val is not None else None
+
+                results.append(FinancialMetrics(
+                    ticker=ticker,
+                    date=period_end,
+                    # Profitability (convert % to decimal)
+                    roe=pct_to_decimal("roe"),
+                    roa=pct_to_decimal("roa"),
+                    roic=pct_to_decimal("roic"),
+                    gross_margin=pct_to_decimal("grossprofit_margin"),
+                    operating_margin=pct_to_decimal("netprofit_margin"),  # Use net margin as proxy
+                    # Liquidity
+                    current_ratio=safe_float("current_ratio"),
+                    # Leverage (debt_to_eqt is D/E ratio, convert % to decimal)
+                    debt_to_equity=pct_to_decimal("debt_to_eqt"),
+                    # Growth (convert % to decimal)
+                    revenue_growth=pct_to_decimal("or_yoy"),
+                    net_income_growth=pct_to_decimal("netprofit_yoy"),
+                    source=self.source_name,
+                ))
+
+            logger.info("[Tushare] %s metrics: %d rows", ticker, len(results))
+        except Exception as e:
+            logger.warning("[Tushare] get_financial_metrics failed for %s: %s", ticker, e)
+
+        return results
