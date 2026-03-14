@@ -101,3 +101,70 @@ class TestBalanceSheetModel:
         assert bs.fixed_assets is None
         assert bs.has_loan_loss_provision is False
         assert bs.has_insurance_reserve is False
+
+
+class TestValuationConfig:
+    """Tests for ValuationConfig Pydantic model."""
+
+    def test_method_importance_converts_to_weights(self):
+        """method_importance scores should auto-normalize to weights."""
+        from src.agents.valuation_config import ValuationConfig
+
+        config = ValuationConfig(
+            regime="test_regime",
+            primary_methods=["pe", "ev_ebitda", "dcf"],
+            method_importance={"pe": 8, "ev_ebitda": 5, "dcf": 2},
+            source="llm",
+        )
+        # Total = 15, so pe=8/15, ev_ebitda=5/15, dcf=2/15
+        assert abs(config.weights["pe"] - 0.5333) < 0.01
+        assert abs(config.weights["ev_ebitda"] - 0.3333) < 0.01
+        assert abs(sum(config.weights.values()) - 1.0) < 0.001
+
+    def test_weights_sum_to_one(self):
+        """Weights should always sum to exactly 1.0."""
+        from src.agents.valuation_config import ValuationConfig
+
+        config = ValuationConfig(
+            regime="test",
+            primary_methods=["pe", "pb", "dcf"],
+            method_importance={"pe": 3, "pb": 3, "dcf": 3},
+            source="llm",
+        )
+        assert sum(config.weights.values()) == 1.0
+
+    def test_explicit_weights_used_directly(self):
+        """If weights provided, method_importance is ignored."""
+        from src.agents.valuation_config import ValuationConfig
+
+        config = ValuationConfig(
+            regime="bank",
+            primary_methods=["pb_roe", "ddm"],
+            weights={"pb_roe": 0.6, "ddm": 0.4},
+            method_importance={"pb_roe": 1, "ddm": 9},  # Should be ignored
+            source="hard_rule",
+        )
+        assert config.weights == {"pb_roe": 0.6, "ddm": 0.4}
+
+    def test_empty_weights_and_importance_uses_equal_distribution(self):
+        """No weights or importance → equal distribution."""
+        from src.agents.valuation_config import ValuationConfig
+
+        config = ValuationConfig(
+            regime="generic",
+            primary_methods=["pe", "pb", "ev_ebitda"],
+            source="fallback",
+        )
+        assert len(config.weights) == 3
+        assert abs(sum(config.weights.values()) - 1.0) < 0.001
+
+    def test_invalid_method_raises_error(self):
+        """Invalid valuation method should raise ValueError."""
+        from src.agents.valuation_config import ValuationConfig
+
+        with pytest.raises(ValueError, match="非法估值方法"):
+            ValuationConfig(
+                regime="test",
+                primary_methods=["invalid_method"],
+                source="llm",
+            )
