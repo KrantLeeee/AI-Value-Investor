@@ -110,3 +110,11 @@ def load_investor_profile() -> dict:
 
 def load_llm_config() -> dict:
     return load_yaml(_ROOT / "config" / "llm_config.yaml")
+
+
+def get_feature_flags() -> dict[str, bool]:
+    """Load feature flags from environment variables."""
+    return {
+        "use_industry_engine_v3": os.getenv("USE_INDUSTRY_ENGINE_V3", "false").lower() == "true",
+        "industry_engine_parallel_mode": os.getenv("INDUSTRY_ENGINE_PARALLEL", "false").lower() == "true",
+    }
