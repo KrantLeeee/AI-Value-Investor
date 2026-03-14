@@ -692,8 +692,25 @@ class AKShareSource(BaseDataSource):
             # stock_yjyg_em returns all A-share profit warnings by date
             # We need to filter by code
             df = ak.stock_yjyg_em(date="")  # Empty date = most recent
-            if df is None or df.empty:
+
+            # P2-1 FIX: Defensive checks for akshare API edge cases
+            # The API may return None, empty DataFrame, or unexpected types
+            if df is None:
+                logger.debug("[AKShare] stock_yjyg_em returned None")
+                return []
+
+            # Verify df is a proper DataFrame with expected attributes
+            if not hasattr(df, 'empty') or not hasattr(df, 'columns'):
+                logger.debug("[AKShare] stock_yjyg_em returned unexpected type: %s", type(df))
+                return []
+
+            if df.empty:
                 logger.debug("[AKShare] No profit warnings available from stock_yjyg_em")
+                return []
+
+            # Additional safety: ensure columns is not None
+            if df.columns is None:
+                logger.debug("[AKShare] stock_yjyg_em returned DataFrame with None columns")
                 return []
 
             # Filter by stock code - the API returns '股票代码' column

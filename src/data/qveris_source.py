@@ -50,6 +50,18 @@ _KNOWN_TOOLS = {
 _ANNUAL_PERIOD = "1231"  # 年度报告截止日期
 _EXHAUSTED_KEYS = set()  # Circuit breaker for exhausted API keys
 
+# Backward compatibility: module-level boolean (updated dynamically)
+# Note: This is a mutable singleton - callers should re-check each time
+_CREDITS_EXHAUSTED = False
+
+
+def _get_api_key() -> str | None:
+    """Get first available (non-exhausted) API key for backward compatibility."""
+    for key in _get_api_keys():
+        if key not in _EXHAUSTED_KEYS:
+            return key
+    return None
+
 
 def _get_api_keys() -> list[str]:
     """Get QVERIS_API_KEYS from env as a list."""
@@ -111,6 +123,11 @@ def _call_qveris(tool_id: str, params: dict, search_id: str | None = None) -> di
                 if "HTTP Error: 402" in err_msg or "Insufficient credits" in err_msg:
                     logger.error("[QVeris] Credits exhausted (402) for key %s...", api_key[:6])
                     _EXHAUSTED_KEYS.add(api_key)
+                    # Update global flag if all keys exhausted
+                    global _CREDITS_EXHAUSTED
+                    if all(k in _EXHAUSTED_KEYS for k in api_keys):
+                        _CREDITS_EXHAUSTED = True
+                        logger.error("[QVeris] All API keys exhausted. Disabling QVeris for this session.")
                     continue # Try next key
                 else:
                     logger.warning("[QVeris] CLI error with key %s...: %s", api_key[:6], err_msg[:200])

@@ -127,6 +127,42 @@ INDUSTRY_KEYWORDS = {
         "secondary": ["商业地产", "住宅开发"],
         "negative": [],
     },
+    # P1-1 FIX: Add missing industry keywords for better coverage
+    "brand_moat": {
+        "primary": ["白酒", "高端白酒", "白酒酿造"],
+        "secondary": ["酱香型", "浓香型", "清香型", "名酒"],
+        "negative": [],
+    },
+    "utility": {
+        "primary": ["公用事业", "电力", "燃气", "水务", "环保"],
+        "secondary": ["发电", "供电", "供水", "供热", "环境治理", "污水处理", "垃圾处理", "环境工程"],
+        "negative": [],
+    },
+    "pharma_mature": {
+        "primary": ["医药", "制药", "药品"],
+        "secondary": ["医疗", "化学制药", "原料药"],
+        "negative": ["创新药", "生物医药", "CXO", "器械"],
+    },
+    "tech_traditional": {
+        "primary": ["软件", "系统集成", "IT服务", "信息技术"],
+        "secondary": ["软件开发", "企业服务", "信息系统"],
+        "negative": ["SaaS", "云服务"],
+    },
+    "tech_saas": {
+        "primary": ["SaaS", "云计算", "云服务"],
+        "secondary": ["云平台", "PaaS", "IaaS"],
+        "negative": [],
+    },
+    "oil_gas": {
+        "primary": ["石油", "天然气", "油气", "油服"],
+        "secondary": ["炼化", "勘探", "开采"],
+        "negative": [],
+    },
+    "coal": {
+        "primary": ["煤炭", "煤矿", "焦煤"],
+        "secondary": ["煤化工", "采煤"],
+        "negative": [],
+    },
 }
 
 

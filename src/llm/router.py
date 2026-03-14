@@ -40,7 +40,7 @@ _DEFAULT_TASK_MAP: dict[str, dict] = {
     "buffett_analysis":    {"provider": "openai",   "model": "gpt-4o",         "max_tokens": 2000, "temperature": 0.2},
     "graham_analysis":     {"provider": "openai",   "model": "gpt-4o",         "max_tokens": 2000, "temperature": 0.2},
     "valuation_interpret": {"provider": "openai",   "model": "gpt-4o",         "max_tokens": 1500, "temperature": 0.2},
-    "portfolio_judgment":  {"provider": "openai",   "model": "gpt-4o",         "max_tokens": 1500, "temperature": 0.2},
+    "portfolio_judgment":  {"provider": "deepseek", "model": "deepseek-reasoner", "max_tokens": 1500, "temperature": 0.2},
     "news_sentiment":      {"provider": "deepseek", "model": "deepseek-chat",  "max_tokens": 500,  "temperature": 0.1},
     "document_extraction": {"provider": "deepseek", "model": "deepseek-chat",  "max_tokens": 2000, "temperature": 0.1},
 }
@@ -49,6 +49,14 @@ _DEFAULT_FALLBACK: dict[str, list[str]] = {
     "openai":    ["anthropic", "deepseek"],
     "deepseek":  ["openai"],
     "anthropic": ["openai", "deepseek"],
+}
+
+# P1-2 FIX: Default model per provider for fallback scenarios
+# When falling back to a different provider, use a compatible model name
+_PROVIDER_DEFAULT_MODEL: dict[str, str] = {
+    "openai": "gpt-4o",
+    "anthropic": "claude-sonnet-4-20250514",
+    "deepseek": "deepseek-chat",
 }
 
 
@@ -164,10 +172,12 @@ def call_llm(
     backoff          = retry_cfg.get("backoff_seconds", 10)
 
     # Build provider chain: primary + fallbacks
+    # P1-2 FIX: Use provider-specific default model for fallback (not OpenAI's model)
     fallbacks = fallback_map.get(primary_provider, [])
     provider_chain: list[tuple[str, str]] = [(primary_provider, model)]
     for fb_provider in fallbacks:
-        fb_model = _DEFAULT_TASK_MAP.get(task, {}).get("model", "gpt-4o")
+        # Use the provider's default model, not the original task's model
+        fb_model = _PROVIDER_DEFAULT_MODEL.get(fb_provider, "gpt-4o")
         provider_chain.append((fb_provider, fb_model))
 
     last_error: Exception = LLMError("No providers configured")

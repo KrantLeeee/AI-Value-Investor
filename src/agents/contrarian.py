@@ -143,9 +143,10 @@ def _build_industry_context_block(company_context: dict) -> str:
     if not company_context:
         return ""
 
-    company_name = company_context.get("company_name", "")
-    main_business = company_context.get("main_business", "")
-    concepts = company_context.get("concepts", "")
+    # P0-3 FIX: Use `or ""` to handle explicit None values (dict.get returns None if key exists with None value)
+    company_name = company_context.get("company_name") or ""
+    main_business = company_context.get("main_business") or ""
+    concepts = company_context.get("concepts") or ""
     business_desc = (main_business + " " + concepts).strip()
 
     lines = [

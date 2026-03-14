@@ -23,8 +23,8 @@ task_routing:
     max_tokens: 1000
     temperature: 0.1
   portfolio_judgment:
-    provider: openai
-    model: gpt-4o
+    provider: deepseek
+    model: deepseek-reasoner
     max_tokens: 500
     temperature: 0.2
   news_sentiment:
@@ -62,8 +62,8 @@ task_routing:
     temperature: 0.3
     description: "Market sentiment and news analysis chapter"
   report_ch7:
-    provider: openai
-    model: gpt-4o
+    provider: deepseek
+    model: deepseek-reasoner
     max_tokens: 1500
     temperature: 0.3
     description: "Investment recommendation and final verdict chapter"

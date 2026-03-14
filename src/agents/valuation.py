@@ -436,6 +436,8 @@ def is_delisting_risk(metrics: dict) -> dict:
     net_income_history = metrics.get("net_income_history", [])
     consecutive_losses = 0
     for ni in reversed(net_income_history):
+        if ni is None:
+            continue  # Skip None values in history
         if ni < 0:
             consecutive_losses += 1
         else:
