@@ -48,6 +48,7 @@ from src.agents.industry_classifier import (
     classify_industry,
 )
 from src.utils.logger import get_logger
+from src.utils.config import get_feature_flags
 
 logger = get_logger(__name__)
 
@@ -976,6 +977,71 @@ def _get_dividend_from_akshare(ticker: str) -> float | None:
 def _is_utility_stock(ticker: str) -> bool:
     """Check if ticker is a utility stock that should use DDM valuation."""
     return ticker in _UTILITY_TICKERS
+
+
+def _build_engine_metrics(ticker: str, market: str) -> dict:
+    """Build metrics dict required by industry_engine.get_valuation_config().
+
+    Uses existing database query functions from src.data.database module.
+    """
+    # Fetch latest balance sheet
+    balance_sheets = get_balance_sheets(ticker, limit=1, period_type="annual")
+    latest_bs = balance_sheets[0] if balance_sheets else {}
+
+    # Fetch latest financial metrics
+    fin_metrics = get_financial_metrics(ticker, limit=5)
+    latest_fm = fin_metrics[0] if fin_metrics else {}
+
+    # Calculate derived metrics
+    roe_values = [m.get("roe") for m in fin_metrics[:5] if m.get("roe") is not None]
+    fcf_positive = sum(1 for m in fin_metrics[:5] if (m.get("fcf_per_share") or 0) > 0)
+
+    return {
+        # From balance sheet
+        "total_assets": latest_bs.get("total_assets"),
+        "inventory": latest_bs.get("inventory"),
+        "advance_receipts": latest_bs.get("advance_receipts"),
+        "fixed_assets": latest_bs.get("fixed_assets"),
+        "has_loan_loss_provision": bool(latest_bs.get("has_loan_loss_provision", 0)),
+        "has_insurance_reserve": bool(latest_bs.get("has_insurance_reserve", 0)),
+
+        # From financial metrics
+        "de_ratio": latest_fm.get("debt_to_equity"),
+        "gross_margin": latest_fm.get("gross_margin"),
+        "net_margin": latest_fm.get("operating_margin"),  # Approximate
+        "roe": latest_fm.get("roe"),
+        "rd_expense_ratio": latest_fm.get("rd_expense_ratio"),
+        "revenue_growth": latest_fm.get("revenue_growth"),
+        "net_income_growth": latest_fm.get("net_income_growth"),
+
+        # Derived
+        "roe_5yr_avg": sum(roe_values) / len(roe_values) if roe_values else None,
+        "fcf_positive_years": fcf_positive,
+        "report_period": latest_bs.get("period_end_date", "unknown"),
+    }
+
+
+def _get_company_info(ticker: str, market: str) -> dict:
+    """Get basic company info for LLM routing.
+
+    Returns minimal info needed for industry engine. The industry label is optional
+    since V3 focuses on financial characteristics rather than labels.
+    """
+    # For now, return minimal info. In Phase 2+, can integrate with company profile API
+    return {
+        "name": ticker,  # Will be populated by LLM context if available
+        "industry": "",
+        "business_description": "",
+    }
+
+
+def _get_legacy_valuation_config(ticker: str, market: str, company_info: dict) -> dict:
+    """Get valuation config from legacy V2 industry classifier.
+
+    Used only in parallel comparison mode to compare V3 vs V2 results.
+    """
+    # Use actual legacy classifier from src.agents.industry_classifier
+    return classify_industry(ticker, market, company_info)
 
 
 def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
