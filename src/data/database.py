@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
     cash_and_equivalents REAL,
     total_debt           REAL,
     book_value_per_share REAL,
+    inventory            REAL,
+    advance_receipts     REAL,
+    fixed_assets         REAL,
+    has_loan_loss_provision INTEGER DEFAULT 0,
+    has_insurance_reserve   INTEGER DEFAULT 0,
     source               TEXT NOT NULL,
     updated_at           TEXT DEFAULT (datetime('now')),
     UNIQUE(ticker, period_end_date, period_type)
@@ -174,6 +179,30 @@ CREATE INDEX IF NOT EXISTS idx_signals_ticker ON agent_signals(ticker, created_a
 """
 
 
+def _run_v3_migrations(conn: sqlite3.Connection) -> None:
+    """
+    V3.0 Schema migration: add industry detection fields to balance_sheets.
+
+    SQLite supports ALTER TABLE ADD COLUMN but not IF NOT EXISTS.
+    Use PRAGMA table_info to check column existence.
+    """
+    cursor = conn.execute("PRAGMA table_info(balance_sheets)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    migrations = [
+        ("inventory", "REAL"),
+        ("advance_receipts", "REAL"),
+        ("fixed_assets", "REAL"),
+        ("has_loan_loss_provision", "INTEGER DEFAULT 0"),
+        ("has_insurance_reserve", "INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, col_type in migrations:
+        if col_name not in existing_columns:
+            conn.execute(f"ALTER TABLE balance_sheets ADD COLUMN {col_name} {col_type}")
+            logger.info("[Migration] Added column: balance_sheets.%s", col_name)
+
+
 @contextmanager
 def get_connection(db_path: Path | None = None):
     """Context manager for SQLite connection with row factory."""
@@ -194,6 +223,7 @@ def init_db(db_path: Path | None = None) -> None:
     """Create all tables and indexes if they don't exist."""
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        _run_v3_migrations(conn)  # V3.0 migration
     logger.info("Database initialised at %s", db_path or get_db_path())
 
 
@@ -251,17 +281,26 @@ def upsert_balance_sheets(sheets: list[BalanceSheet]) -> int:
         INSERT INTO balance_sheets
             (ticker, period_end_date, period_type, total_assets, total_liabilities, total_equity,
              current_assets, current_liabilities, cash_and_equivalents, total_debt,
-             book_value_per_share, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             book_value_per_share, inventory, advance_receipts, fixed_assets,
+             has_loan_loss_provision, has_insurance_reserve, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticker, period_end_date, period_type) DO UPDATE SET
             total_assets=excluded.total_assets, total_equity=excluded.total_equity,
-            total_liabilities=excluded.total_liabilities, source=excluded.source,
-            updated_at=datetime('now')
+            total_liabilities=excluded.total_liabilities,
+            inventory=excluded.inventory, advance_receipts=excluded.advance_receipts,
+            fixed_assets=excluded.fixed_assets,
+            has_loan_loss_provision=excluded.has_loan_loss_provision,
+            has_insurance_reserve=excluded.has_insurance_reserve,
+            source=excluded.source, updated_at=datetime('now')
     """
     rows = [
         (s.ticker, str(s.period_end_date), s.period_type, s.total_assets, s.total_liabilities,
          s.total_equity, s.current_assets, s.current_liabilities, s.cash_and_equivalents,
-         s.total_debt, s.book_value_per_share, s.source)
+         s.total_debt, s.book_value_per_share,
+         s.inventory, s.advance_receipts, s.fixed_assets,
+         1 if s.has_loan_loss_provision else 0,
+         1 if s.has_insurance_reserve else 0,
+         s.source)
         for s in sheets
     ]
     with get_connection() as conn:
