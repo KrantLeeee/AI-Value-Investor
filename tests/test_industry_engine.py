@@ -359,3 +359,58 @@ class TestGetValuationConfig:
         config = get_valuation_config("601398.SH", company_info, metrics)
         assert config.regime == "bank"
         assert config.source == "hard_rule"
+
+
+class TestEdgeCases:
+    """Edge case tests for V3 industry engine."""
+
+    def test_missing_inventory_no_real_estate_match(self):
+        """Missing inventory should not match real_estate."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "total_assets": 100_000_000_000,
+            "inventory": None,
+            "advance_receipts": 20_000_000_000,
+            "fixed_assets": 2_000_000_000,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is None or result.regime != "real_estate"
+
+    def test_multiple_rule_match_priority(self):
+        """Bank rule should take priority over insurance if both match."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "de_ratio": 12,
+            "has_loan_loss_provision": True,
+            "has_insurance_reserve": True,  # Also true
+        }
+        result = detect_special_regime(metrics, {})
+        assert result.regime == "bank"  # Bank has higher priority
+
+    def test_zero_total_assets_no_crash(self):
+        """Zero total_assets should not cause division by zero."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "total_assets": 0,
+            "inventory": 1000,
+            "advance_receipts": 500,
+        }
+        result = detect_special_regime(metrics, {})
+        # Should not crash, may return None or some result
+        assert result is None or result.regime is not None
+
+    def test_valuation_config_weights_exact_sum(self):
+        """Weights should sum to exactly 1.0, not 0.9999."""
+        from src.agents.valuation_config import ValuationConfig
+
+        config = ValuationConfig(
+            regime="test",
+            primary_methods=["pe", "pb", "dcf"],
+            method_importance={"pe": 1, "pb": 1, "dcf": 1},
+            source="llm",
+        )
+        total = sum(config.weights.values())
+        assert total == 1.0, f"Weights sum to {total}, expected 1.0"
