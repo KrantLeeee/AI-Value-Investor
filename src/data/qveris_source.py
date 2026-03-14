@@ -48,84 +48,93 @@ _KNOWN_TOOLS = {
 
 # Period mapping: year → period string for annual annual reports
 _ANNUAL_PERIOD = "1231"  # 年度报告截止日期
-_CREDITS_EXHAUSTED = False  # Circuit breaker for 402 errors
+_EXHAUSTED_KEYS = set()  # Circuit breaker for exhausted API keys
 
 
-def _get_api_key() -> str | None:
-    """Get QVERIS_API_KEY from env."""
-    # Try env var first (runtime), then .env file
-    key = os.environ.get("QVERIS_API_KEY")
-    if key:
-        return key
-    # Try loading from .env
-    try:
-        from src.utils.config import get_settings
-        settings = get_settings()
-        return getattr(settings, "qveris_api_key", None)
-    except Exception:
-        pass
-    return None
+def _get_api_keys() -> list[str]:
+    """Get QVERIS_API_KEYS from env as a list."""
+    # Try env var first (runtime), then .env file (supports both KEYS and KEY)
+    keys_str = os.environ.get("QVERIS_API_KEYS") or os.environ.get("QVERIS_API_KEY")
+    if not keys_str:
+        # Try loading from configuration
+        try:
+            from src.utils.config import get_settings
+            settings = get_settings()
+            keys_str = getattr(settings, "qveris_api_keys", None) or getattr(settings, "qveris_api_key", None)
+        except Exception:
+            pass
+            
+    if not keys_str:
+        return []
+        
+    return [k.strip() for k in keys_str.split(",") if k.strip()]
 
 
 def _call_qveris(tool_id: str, params: dict, search_id: str | None = None) -> dict | None:
     """
     Execute a QVeris tool via the Node.js CLI script.
+    Rotates through available API keys until one succeeds.
 
     Returns:
         Parsed JSON result dict, or None on failure.
     """
-    global _CREDITS_EXHAUSTED
-    if _CREDITS_EXHAUSTED:
-        logger.debug("[QVeris] Skipping call due to previous credits exhaustion")
-        return None
-
-    api_key = _get_api_key()
-    if not api_key:
-        logger.warning("[QVeris] QVERIS_API_KEY not set, skipping")
+    api_keys = _get_api_keys()
+    if not api_keys:
+        logger.warning("[QVeris] No QVERIS API keys found, skipping")
         return None
 
     if not _QVERIS_SCRIPT.exists():
         logger.warning("[QVeris] Tool script not found at %s", _QVERIS_SCRIPT)
         return None
 
-    cmd = [
-        "node", str(_QVERIS_SCRIPT),
-        "execute", tool_id,
-        "--params", json.dumps(params),
-        "--json",
-    ]
-    if search_id:
-        cmd += ["--search-id", search_id]
+    for api_key in api_keys:
+        if api_key in _EXHAUSTED_KEYS:
+            continue
 
-    env = {**os.environ, "QVERIS_API_KEY": api_key}
+        cmd = [
+            "node", str(_QVERIS_SCRIPT),
+            "execute", tool_id,
+            "--params", json.dumps(params),
+            "--json",
+        ]
+        if search_id:
+            cmd += ["--search-id", search_id]
 
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, env=env
-        )
-        if result.returncode != 0:
-            err_msg = result.stderr.strip()
-            if "HTTP Error: 402" in err_msg or "Insufficient credits" in err_msg:
-                if not _CREDITS_EXHAUSTED:
-                    logger.error("[QVeris] Credits exhausted (402). Disabling QVeris for this session.")
-                    _CREDITS_EXHAUSTED = True
-            else:
-                logger.warning("[QVeris] CLI error: %s", err_msg[:200])
-            return None
-        data = json.loads(result.stdout)
-        # The --json flag returns the raw API response
-        if isinstance(data, dict) and data.get("result"):
-            return data["result"]
-        return data
-    except subprocess.TimeoutExpired:
-        logger.warning("[QVeris] Tool %s timed out", tool_id)
-        return None
-    except json.JSONDecodeError as e:
-        logger.warning("[QVeris] JSON parse error: %s", e)
-        return None
-    except Exception as e:
-        logger.warning("[QVeris] Unexpected error: %s", e)
-        return None
+        env = {**os.environ, "QVERIS_API_KEY": api_key}
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30, env=env
+            )
+            if result.returncode != 0:
+                err_msg = result.stderr.strip()
+                if "HTTP Error: 402" in err_msg or "Insufficient credits" in err_msg:
+                    logger.error("[QVeris] Credits exhausted (402) for key %s...", api_key[:6])
+                    _EXHAUSTED_KEYS.add(api_key)
+                    continue # Try next key
+                else:
+                    logger.warning("[QVeris] CLI error with key %s...: %s", api_key[:6], err_msg[:200])
+                    continue # Try next key
+            
+            data = json.loads(result.stdout)
+            # The --json flag returns the raw API response
+            if isinstance(data, dict) and data.get("result"):
+                return data["result"]
+            return data
+            
+        except subprocess.TimeoutExpired:
+            logger.warning("[QVeris] Tool %s timed out with key %s...", tool_id, api_key[:6])
+            continue
+        except json.JSONDecodeError as e:
+            logger.warning("[QVeris] JSON parse error: %s", e)
+            continue
+        except Exception as e:
+            logger.warning("[QVeris] Unexpected error: %s", e)
+            continue
+            
+    # If we get here, all keys failed or were exhausted
+    logger.debug("[QVeris] All available API keys failed or exhausted for tool %s", tool_id)
+    return None
 
 
 def fetch_company_basics(ticker: str) -> dict | None:
@@ -199,7 +208,7 @@ class QVerisSource(BaseDataSource):
 
     def health_check(self) -> bool:
         """Check if QVeris API key is set and script exists."""
-        return bool(_get_api_key()) and _QVERIS_SCRIPT.exists()
+        return bool(_get_api_keys()) and _QVERIS_SCRIPT.exists()
 
     # ── Income Statements ──────────────────────────────────────────────────────
 
