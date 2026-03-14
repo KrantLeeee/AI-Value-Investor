@@ -143,11 +143,11 @@ def _build_industry_context_block(company_context: dict) -> str:
     if not company_context:
         return ""
 
-    company_name = company_context.get('company_name', '')
-    main_business = company_context.get('main_business', '')
-    concepts = company_context.get('concepts', '')
+    company_name = company_context.get("company_name", "")
+    main_business = company_context.get("main_business", "")
+    concepts = company_context.get("concepts", "")
     business_desc = (main_business + " " + concepts).strip()
-    
+
     lines = [
         "\n\n--- 行业与业务上下文（必须紧密结合，否则分析无效） ---",
         f"公司名称: {company_name}",
@@ -160,7 +160,7 @@ def _build_industry_context_block(company_context: dict) -> str:
         "- 如果是高杠杆行业（如金融/地产），必须围绕信用周期、资产质量、利差压缩和政策监管进行致命打击。",
         "- 如果是科技/制造行业，必须质疑技术迭代、产能过剩、价格战和客户集中度风险。",
         "不要给我通用的宏观废话，必须一针见血地指出**该特定行业**和**该公司具体业务**最核心的命门。",
-        "--- 以上行业背景推演必须融入你的质疑和风险场景 ---"
+        "--- 以上行业背景推演必须融入你的质疑和风险场景 ---",
     ]
     return "\n".join(lines)
 
@@ -187,9 +187,12 @@ def _build_prompt(
         Tuple of (system_prompt, user_prompt)
     """
     from src.llm.prompts import (
-        CONTRARIAN_BEAR_CASE_SYSTEM, CONTRARIAN_BEAR_CASE_USER,
-        CONTRARIAN_BULL_CASE_SYSTEM, CONTRARIAN_BULL_CASE_USER,
-        CONTRARIAN_CRITICAL_QUESTIONS_SYSTEM, CONTRARIAN_CRITICAL_QUESTIONS_USER,
+        CONTRARIAN_BEAR_CASE_SYSTEM,
+        CONTRARIAN_BEAR_CASE_USER,
+        CONTRARIAN_BULL_CASE_SYSTEM,
+        CONTRARIAN_BULL_CASE_USER,
+        CONTRARIAN_CRITICAL_QUESTIONS_SYSTEM,
+        CONTRARIAN_CRITICAL_QUESTIONS_USER,
     )
 
     # Select system prompt (with industry context appended)
@@ -247,9 +250,22 @@ def _build_prompt(
     user_template = user_templates[mode]
 
     # Build macro/industry context for user prompt
-    ticker = company_context.get("ticker", "N/A") if company_context else "N/A"
-    industry = company_context.get("sector", "未知行业") if company_context else "未知行业"
-    analysis_date = company_context.get("analysis_date", "2026-03-08") if company_context else "2026-03-08"
+    # P2-7 FIX: Use safe_format for all values that might be None
+    ticker = safe_format(company_context.get("ticker") if company_context else None, default="N/A")
+    industry = safe_format(
+        company_context.get("sector") if company_context else None, default="未知行业"
+    )
+    analysis_date = safe_format(
+        company_context.get("analysis_date") if company_context else None, default="2026-03-14"
+    )
+
+    # Ensure consensus values are not None
+    consensus_direction_safe = safe_format(consensus_direction, default="mixed")
+    consensus_strength_safe = consensus_strength if consensus_strength is not None else 0.0
+
+    # Ensure arguments_text and quality_context are not None
+    arguments_text_safe = arguments_text if arguments_text else "（无可用论据）"
+    quality_context_safe = quality_context if quality_context else "（无数据质量报告）"
 
     # Construct macro/industry context block
     macro_context_lines = [
@@ -267,28 +283,36 @@ def _build_prompt(
 
     macro_industry_context = "\n".join(macro_context_lines)
 
-    # Fill user prompt
-    if mode in ["bear_case", "bull_case"]:
-        user_prompt = user_template.format(
-            ticker=ticker,
-            industry=industry,
-            analysis_date=analysis_date,
-            macro_industry_context=macro_industry_context,
-            consensus_direction=consensus_direction,
-            consensus_strength=consensus_strength,
-            strongest_arguments=arguments_text,
-            quality_context=quality_context,
-        )
-    else:  # critical_questions
-        user_prompt = user_template.format(
-            ticker=ticker,
-            industry=industry,
-            analysis_date=analysis_date,
-            macro_industry_context=macro_industry_context,
-            consensus_direction=consensus_direction,
-            consensus_strength=consensus_strength,
-            all_arguments=arguments_text,
-            quality_context=quality_context,
+    # Fill user prompt with safe values
+    try:
+        if mode in ["bear_case", "bull_case"]:
+            user_prompt = user_template.format(
+                ticker=ticker,
+                industry=industry,
+                analysis_date=analysis_date,
+                macro_industry_context=macro_industry_context,
+                consensus_direction=consensus_direction_safe,
+                consensus_strength=consensus_strength_safe,
+                strongest_arguments=arguments_text_safe,
+                quality_context=quality_context_safe,
+            )
+        else:  # critical_questions
+            user_prompt = user_template.format(
+                ticker=ticker,
+                industry=industry,
+                analysis_date=analysis_date,
+                macro_industry_context=macro_industry_context,
+                consensus_direction=consensus_direction_safe,
+                consensus_strength=consensus_strength_safe,
+                all_arguments=arguments_text_safe,
+                quality_context=quality_context_safe,
+            )
+    except (KeyError, ValueError) as e:
+        # P2-7: Fallback to simplified prompt on any formatting error
+        logger.warning(f"[Contrarian] Template formatting failed: {e}, using fallback")
+        user_prompt = (
+            f"请分析 {ticker} ({industry}) 的投资风险和机会。\n"
+            f"当前共识: {consensus_direction_safe} ({consensus_strength_safe:.0%})"
         )
 
     return system_prompt, user_prompt
@@ -424,11 +448,8 @@ def run(
             reasoning=f"LLM分析暂不可用。共识:{consensus_direction}({consensus_strength:.0%}), 模式:{mode}",
             metrics={
                 "mode": mode,
-                "consensus": {
-                    "direction": consensus_direction,
-                    "strength": consensus_strength
-                },
-                "llm_disabled": True
+                "consensus": {"direction": consensus_direction, "strength": consensus_strength},
+                "llm_disabled": True,
             },
         )
         insert_agent_signal(agent_signal)
@@ -437,7 +458,11 @@ def run(
     # Step 3: Build prompts
     try:
         system_prompt, user_prompt = _build_prompt(
-            mode, consensus_direction, consensus_strength, signals, quality_report,
+            mode,
+            consensus_direction,
+            consensus_strength,
+            signals,
+            quality_report,
             company_context=company_context,  # NEW
         )
     except Exception as e:
@@ -466,11 +491,8 @@ def run(
             reasoning=f"LLM调用失败: {str(e)}",
             metrics={
                 "mode": mode,
-                "consensus": {
-                    "direction": consensus_direction,
-                    "strength": consensus_strength
-                },
-                "error": "llm_call_failed"
+                "consensus": {"direction": consensus_direction, "strength": consensus_strength},
+                "error": "llm_call_failed",
             },
         )
         insert_agent_signal(agent_signal)
@@ -490,11 +512,8 @@ def run(
             reasoning=f"JSON验证失败。原始输出: {reasoning_text}",
             metrics={
                 "mode": mode,
-                "consensus": {
-                    "direction": consensus_direction,
-                    "strength": consensus_strength
-                },
-                "json_invalid": True
+                "consensus": {"direction": consensus_direction, "strength": consensus_strength},
+                "json_invalid": True,
             },
         )
         insert_agent_signal(agent_signal)
@@ -517,6 +536,8 @@ def run(
     )
 
     insert_agent_signal(agent_signal)
-    logger.info(f"[Contrarian] {ticker}: {signal_output} (mode={mode}, confidence={confidence:.2f})")
+    logger.info(
+        f"[Contrarian] {ticker}: {signal_output} (mode={mode}, confidence={confidence:.2f})"
+    )
 
     return agent_signal

@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 AGENT_NAME = "valuation"
 
 # Real estate industry keywords for detection
-REAL_ESTATE_KEYWORDS = ['房地产', '地产', '住宅', '物业', '房产', '不动产']
+REAL_ESTATE_KEYWORDS = ["房地产", "地产", "住宅", "物业", "房产", "不动产"]
 
 
 def is_real_estate_industry(industry: str) -> bool:
@@ -84,20 +84,22 @@ def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
         dict with pb_capped value and optional warning
     """
     if not is_real_estate_industry(industry_type):
-        return {'pb_capped': pb_value, 'warning': None}
+        return {"pb_capped": pb_value, "warning": None}
 
-    cap = REAL_ESTATE_CONFIG['pb_multiple_cap']
+    cap = REAL_ESTATE_CONFIG["pb_multiple_cap"]
     if pb_value > cap:
         return {
-            'pb_capped': cap,
-            'original_pb': pb_value,
-            'warning': REAL_ESTATE_CONFIG['warning_text']
+            "pb_capped": cap,
+            "original_pb": pb_value,
+            "warning": REAL_ESTATE_CONFIG["warning_text"],
         }
 
-    return {'pb_capped': pb_value, 'warning': None}
+    return {"pb_capped": pb_value, "warning": None}
 
 
-def calculate_ev_ebitda_value(ebitda: float, multiple: float, shares: int, revenue: float) -> tuple[float | None, str | None]:
+def calculate_ev_ebitda_value(
+    ebitda: float, multiple: float, shares: int, revenue: float
+) -> tuple[float | None, str | None]:
     """
     Calculate per-share value using EV/EBITDA method with validation.
 
@@ -134,10 +136,10 @@ def calculate_ev_ebitda_value(ebitda: float, multiple: float, shares: int, reven
 
 
 BRAND_MOAT_CRITERIA = {
-    'gross_margin_min': 0.60,
-    'roe_5yr_avg_min': 0.15,
-    'fcf_positive_years_min': 4,
-    'revenue_growth_stable': True,
+    "gross_margin_min": 0.60,
+    "roe_5yr_avg_min": 0.15,
+    "fcf_positive_years_min": 4,
+    "revenue_growth_stable": True,
 }
 
 
@@ -148,18 +150,18 @@ def detect_brand_moat(metrics: dict) -> bool:
     """
     conditions_met = 0
 
-    if metrics.get('gross_margin', 0) >= BRAND_MOAT_CRITERIA['gross_margin_min'] * 100:
+    if metrics.get("gross_margin", 0) >= BRAND_MOAT_CRITERIA["gross_margin_min"] * 100:
         conditions_met += 1
 
-    if metrics.get('roe_5yr_avg', 0) >= BRAND_MOAT_CRITERIA['roe_5yr_avg_min'] * 100:
+    if metrics.get("roe_5yr_avg", 0) >= BRAND_MOAT_CRITERIA["roe_5yr_avg_min"] * 100:
         conditions_met += 1
 
-    fcf_history = metrics.get('fcf_history', [])
+    fcf_history = metrics.get("fcf_history", [])
     positive_years = sum(1 for fcf in fcf_history if fcf > 0)
-    if positive_years >= BRAND_MOAT_CRITERIA['fcf_positive_years_min']:
+    if positive_years >= BRAND_MOAT_CRITERIA["fcf_positive_years_min"]:
         conditions_met += 1
 
-    revenue_growth = metrics.get('revenue_growth_5yr', [])
+    revenue_growth = metrics.get("revenue_growth_5yr", [])
     if len(revenue_growth) >= 3 and all(g > 0 for g in revenue_growth[-3:]):
         conditions_met += 1
 
@@ -167,23 +169,23 @@ def detect_brand_moat(metrics: dict) -> bool:
 
 
 BRAND_MOAT_PE_ANCHORS = {
-    'premium': {'pe_range': (30, 40)},
-    'strong': {'pe_range': (25, 35)},
-    'moderate': {'pe_range': (20, 28)},
+    "premium": {"pe_range": (30, 40)},
+    "strong": {"pe_range": (25, 35)},
+    "moderate": {"pe_range": (20, 28)},
 }
 
 
 def classify_moat_tier(metrics: dict) -> str:
     """Classify moat tier based on financials."""
-    gross_margin = metrics.get('gross_margin', 0)
-    roe_5yr = metrics.get('roe_5yr_avg', 0)
+    gross_margin = metrics.get("gross_margin", 0)
+    roe_5yr = metrics.get("roe_5yr_avg", 0)
 
     if gross_margin >= 80 and roe_5yr >= 25:
-        return 'premium'
+        return "premium"
     elif gross_margin >= 60 and roe_5yr >= 18:
-        return 'strong'
+        return "strong"
     elif gross_margin >= 50 and roe_5yr >= 15:
-        return 'moderate'
+        return "moderate"
 
     return None
 
@@ -203,33 +205,33 @@ def apply_brand_moat_valuation(metrics: dict, industry_config: dict) -> dict:
     # Classify tier
     moat_tier = classify_moat_tier(metrics)
     if moat_tier is None:
-        moat_tier = 'moderate'
+        moat_tier = "moderate"
 
     # Get P/E range
-    pe_range = BRAND_MOAT_PE_ANCHORS[moat_tier]['pe_range']
+    pe_range = BRAND_MOAT_PE_ANCHORS[moat_tier]["pe_range"]
     pe_low, pe_high = pe_range
     pe_mid = (pe_low + pe_high) / 2
 
     # Normalize EPS: use max(TTM, 3yr avg) to avoid one-time impact
-    eps_ttm = metrics.get('eps')
-    eps_3yr_avg = metrics.get('eps_3yr_avg')
+    eps_ttm = metrics.get("eps")
+    eps_3yr_avg = metrics.get("eps_3yr_avg")
 
     if eps_ttm is None or eps_ttm <= 0:
         if eps_3yr_avg is not None and eps_3yr_avg > 0:
             eps = eps_3yr_avg
-            eps_source = '3年平均EPS（TTM为负）'
+            eps_source = "3年平均EPS（TTM为负）"
         else:
             return {
-                'method': 'pe_moat',
-                'error': 'EPS为负或无效，护城河P/E估值不适用',
-                'moat_tier': moat_tier
+                "method": "pe_moat",
+                "error": "EPS为负或无效，护城河P/E估值不适用",
+                "moat_tier": moat_tier,
             }
     elif eps_3yr_avg is not None and eps_3yr_avg > eps_ttm * 1.2:
         eps = eps_3yr_avg
-        eps_source = f'3年平均EPS（TTM={eps_ttm:.2f}显著偏低）'
+        eps_source = f"3年平均EPS（TTM={eps_ttm:.2f}显著偏低）"
     else:
         eps = eps_ttm
-        eps_source = 'TTM EPS'
+        eps_source = "TTM EPS"
 
     # Calculate target prices
     target_low = eps * pe_low
@@ -237,17 +239,17 @@ def apply_brand_moat_valuation(metrics: dict, industry_config: dict) -> dict:
     target_high = eps * pe_high
 
     return {
-        'method': 'pe_moat',
-        'moat_tier': moat_tier,
-        'pe_range': pe_range,
-        'pe_applied': pe_mid,
-        'target_price': target_mid,
-        'target_range': (target_low, target_high),
-        'eps_used': eps,
-        'eps_source': eps_source,
-        'eps_ttm': eps_ttm,
-        'eps_3yr_avg': eps_3yr_avg,
-        'note': f'护城河等级: {moat_tier}，P/E锚点: {pe_low}-{pe_high}x，使用{eps_source}'
+        "method": "pe_moat",
+        "moat_tier": moat_tier,
+        "pe_range": pe_range,
+        "pe_applied": pe_mid,
+        "target_price": target_mid,
+        "target_range": (target_low, target_high),
+        "eps_used": eps,
+        "eps_source": eps_source,
+        "eps_ttm": eps_ttm,
+        "eps_3yr_avg": eps_3yr_avg,
+        "note": f"护城河等级: {moat_tier}，P/E锚点: {pe_low}-{pe_high}x，使用{eps_source}",
     }
 
 
@@ -259,6 +261,7 @@ def _get_industry_position_safe(ticker: str) -> dict | None:
     """
     try:
         from src.agents.industry_valuation import get_industry_position
+
         result = get_industry_position(ticker)
         if result.get("error"):
             logger.warning("[Valuation] Industry positioning failed: %s", result["error"])
@@ -268,107 +271,108 @@ def _get_industry_position_safe(ticker: str) -> dict | None:
         logger.warning("[Valuation] Industry positioning error: %s", e)
         return None
 
+
 # Default valuation assumptions (conservative value-investor settings)
-WACC_DEFAULT     = 0.10   # 10% discount rate
+WACC_DEFAULT = 0.10  # 10% discount rate
 WACC_CYCLE_ADDON = 0.005  # +50bp for highly cyclical sectors (oil services)
-TERMINAL_GROWTH  = 0.025  # 2.5% perpetual growth — conservative (was 3%)
-FCF_GROWTH_BULL  = 0.12   # 12% — optimistic scenario
-FCF_GROWTH_BASE  = 0.07   # 7%  — base scenario
-FCF_GROWTH_BEAR  = 0.02   # 2%  — pessimistic scenario
+TERMINAL_GROWTH = 0.025  # 2.5% perpetual growth — conservative (was 3%)
+FCF_GROWTH_BULL = 0.12  # 12% — optimistic scenario
+FCF_GROWTH_BASE = 0.07  # 7%  — base scenario
+FCF_GROWTH_BEAR = 0.02  # 2%  — pessimistic scenario
 PROJECTION_YEARS = 10
-INDUSTRY_EV_EBITDA_OIL = 6.0   # oil services sector multiple (3rd-party benchmark)
-INDUSTRY_EV_EBITDA      = 8.0   # generic fallback multiple
+INDUSTRY_EV_EBITDA_OIL = 6.0  # oil services sector multiple (3rd-party benchmark)
+INDUSTRY_EV_EBITDA = 8.0  # generic fallback multiple
 # P/B midpoint targets by sector (industry research benchmarks)
-PB_TARGET_OIL_SERVICES = 1.8    # oil services: 1.6-2.1x midpoint
-PB_TARGET_DEFAULT      = 2.0    # generic fallback
+PB_TARGET_OIL_SERVICES = 1.8  # oil services: 1.6-2.1x midpoint
+PB_TARGET_DEFAULT = 2.0  # generic fallback
 # WACC = 0.10 kept as alias for backward compatibility
 WACC = WACC_DEFAULT
 
 # BUG-03A: PS (Price-to-Sales) multiples for loss-making tech stocks
 # Based on A-share tech sector medians (2023-2025 data)
-PS_MULTIPLE_TECH_AI = 8.0       # AI/Voice tech: 6-10x median
-PS_MULTIPLE_TECH_SOFTWARE = 6.0 # Software/SaaS: 4-8x median
-PS_MULTIPLE_DEFAULT = 4.0       # Generic tech fallback
+PS_MULTIPLE_TECH_AI = 8.0  # AI/Voice tech: 6-10x median
+PS_MULTIPLE_TECH_SOFTWARE = 6.0  # Software/SaaS: 4-8x median
+PS_MULTIPLE_DEFAULT = 4.0  # Generic tech fallback
 
 # EV/Sales multiples (for loss-making tech stocks)
-EV_SALES_TECH = 6.0             # Tech sector EV/Sales median
+EV_SALES_TECH = 6.0  # Tech sector EV/Sales median
 
 # BUG-03B: PEG (Price/Earnings-to-Growth) parameters for growth stocks
 # PEG = PE / EPS Growth Rate
 # Fair PEG for A-share growth stocks is typically 1.0-1.5x
 # Premium quality growth stocks can justify PEG up to 2.0x
-PEG_FAIR_VALUE = 1.2            # A-share quality growth premium
-PEG_MAX_REASONABLE = 2.0        # Above this, overvalued even for growth
-PEG_BARGAIN = 0.8               # Below this, potentially undervalued
+PEG_FAIR_VALUE = 1.2  # A-share quality growth premium
+PEG_MAX_REASONABLE = 2.0  # Above this, overvalued even for growth
+PEG_BARGAIN = 0.8  # Below this, potentially undervalued
 
 # Phase 2: Financial stock (bank/insurance) valuation parameters
 # P/B valuation: Fair PB = ROE / Ke (cost of equity)
 # Insurance embedded value typically trades at 0.6-1.2x EV
-FINANCIAL_COST_OF_EQUITY = 0.08    # 8% cost of equity assumption
-FINANCIAL_DDM_GROWTH = 0.03        # 3% long-term dividend growth
-PB_MIN_FINANCIAL = 0.5             # Minimum reasonable P/B for banks
-PB_MAX_FINANCIAL = 3.0             # Maximum reasonable P/B
+FINANCIAL_COST_OF_EQUITY = 0.08  # 8% cost of equity assumption
+FINANCIAL_DDM_GROWTH = 0.03  # 3% long-term dividend growth
+PB_MIN_FINANCIAL = 0.5  # Minimum reasonable P/B for banks
+PB_MAX_FINANCIAL = 3.0  # Maximum reasonable P/B
 
 # Task #15: Utility stock valuation parameters (DDM is primary for stable dividend payers)
 # Utilities have lower cost of equity due to regulated, stable cash flows
-UTILITY_COST_OF_EQUITY = 0.07      # 7% cost of equity (lower than financial due to stability)
-UTILITY_DDM_GROWTH = 0.025         # 2.5% long-term dividend growth (inflation-linked)
+UTILITY_COST_OF_EQUITY = 0.07  # 7% cost of equity (lower than financial due to stability)
+UTILITY_DDM_GROWTH = 0.025  # 2.5% long-term dividend growth (inflation-linked)
 
 # Utility tickers - these use DDM as primary valuation method
 _UTILITY_TICKERS = {
-    "600900.SH",   # 长江电力 - stable dividend payer
-    "601985.SH",   # 中国核电
-    "600023.SH",   # 浙能电力
-    "600025.SH",   # 华能水电
-    "000027.SZ",   # 深圳能源
-    "600011.SH",   # 华能国际
-    "600795.SH",   # 国电电力
-    "601991.SH",   # 大唐发电
-    "600886.SH",   # 国投电力
+    "600900.SH",  # 长江电力 - stable dividend payer
+    "601985.SH",  # 中国核电
+    "600023.SH",  # 浙能电力
+    "600025.SH",  # 华能水电
+    "000027.SZ",  # 深圳能源
+    "600011.SH",  # 华能国际
+    "600795.SH",  # 国电电力
+    "601991.SH",  # 大唐发电
+    "600886.SH",  # 国投电力
 }
 
 # Phase 2: Cyclical stock valuation parameters
 # Use cycle-bottom multiples, not current period
-EV_EBITDA_CYCLE_BOTTOM = 5.0       # Cycle trough EV/EBITDA for oil services
-EV_EBITDA_CYCLE_NORMAL = 7.0       # Mid-cycle EV/EBITDA
-EV_EBITDA_CYCLE_PEAK = 10.0        # Cycle peak EV/EBITDA
-PB_CYCLE_BOTTOM = 0.7              # Cycle trough P/B for resources
+EV_EBITDA_CYCLE_BOTTOM = 5.0  # Cycle trough EV/EBITDA for oil services
+EV_EBITDA_CYCLE_NORMAL = 7.0  # Mid-cycle EV/EBITDA
+EV_EBITDA_CYCLE_PEAK = 10.0  # Cycle peak EV/EBITDA
+PB_CYCLE_BOTTOM = 0.7  # Cycle trough P/B for resources
 
 # Phase 2: Healthcare stock valuation parameters
 # R&D stage uses PS (like loss-making tech), mature uses PE
-PS_MULTIPLE_HEALTHCARE_RD = 8.0    # R&D stage biotech/pharma PS multiple
+PS_MULTIPLE_HEALTHCARE_RD = 8.0  # R&D stage biotech/pharma PS multiple
 PS_MULTIPLE_HEALTHCARE_MATURE = 4.0  # Mature pharma PS multiple
-PE_MULTIPLE_HEALTHCARE = 30.0      # Mature healthcare PE multiple (higher than general)
-EV_EBITDA_HEALTHCARE = 18.0        # Healthcare EV/EBITDA (higher than general)
+PE_MULTIPLE_HEALTHCARE = 30.0  # Mature healthcare PE multiple (higher than general)
+EV_EBITDA_HEALTHCARE = 18.0  # Healthcare EV/EBITDA (higher than general)
 
 
 # ── Task 3.4: Distressed Company Valuation Framework ──────────────────────────
 
 
 DISTRESSED_CATEGORIES = {
-    'asset_intensive': {
-        'keywords': ['超市', '零售', '门店', '制造', '工厂', '餐饮'],
-        'valuation_method': 'asset_replacement',
-        'ev_sales_multiple': 0.2,
-        'note': '以门店/设备重置成本为底线'
+    "asset_intensive": {
+        "keywords": ["超市", "零售", "门店", "制造", "工厂", "餐饮"],
+        "valuation_method": "asset_replacement",
+        "ev_sales_multiple": 0.2,
+        "note": "以门店/设备重置成本为底线",
     },
-    'contract_based': {
-        'keywords': ['工程', '环保', 'PPP', '建筑', '施工', 'BOT'],
-        'valuation_method': 'backlog_value',
-        'ev_sales_multiple': None,
-        'note': '以在手合同/订单折现价值为锚点'
+    "contract_based": {
+        "keywords": ["工程", "环保", "PPP", "建筑", "施工", "BOT"],
+        "valuation_method": "backlog_value",
+        "ev_sales_multiple": None,
+        "note": "以在手合同/订单折现价值为锚点",
     },
-    'receivables_heavy': {
-        'keywords': ['政府项目', '市政', '国企客户', '央企客户'],
-        'valuation_method': 'receivables_recovery',
-        'ev_sales_multiple': None,
-        'note': '以应收账款预期回收率为关键变量'
+    "receivables_heavy": {
+        "keywords": ["政府项目", "市政", "国企客户", "央企客户"],
+        "valuation_method": "receivables_recovery",
+        "ev_sales_multiple": None,
+        "note": "以应收账款预期回收率为关键变量",
     },
-    'generic_distressed': {
-        'valuation_method': 'ev_sales',
-        'ev_sales_multiple': 0.3,
-        'note': '通用困境折价'
-    }
+    "generic_distressed": {
+        "valuation_method": "ev_sales",
+        "ev_sales_multiple": 0.3,
+        "note": "通用困境折价",
+    },
 }
 
 
@@ -378,42 +382,42 @@ def detect_distressed_company(metrics: dict) -> bool:
     Need 2+ signals to classify as distressed.
     """
     # Safely get values with proper None handling
-    net_margin = metrics.get('net_margin')
-    roe = metrics.get('roe')
-    fcf = metrics.get('fcf')
-    ocf = metrics.get('ocf')
-    debt_equity = metrics.get('debt_equity')
+    net_margin = metrics.get("net_margin")
+    roe = metrics.get("roe")
+    fcf = metrics.get("fcf")
+    ocf = metrics.get("ocf")
+    debt_equity = metrics.get("debt_equity")
 
     signals = [
-        net_margin is not None and net_margin < -20,           # Deep loss
-        roe is not None and roe < -15,                         # Negative ROE
+        net_margin is not None and net_margin < -20,  # Deep loss
+        roe is not None and roe < -15,  # Negative ROE
         (fcf is not None and fcf < 0) and (ocf is not None and ocf < 0),  # Double negative
-        debt_equity is not None and debt_equity > 300,         # High leverage
+        debt_equity is not None and debt_equity > 300,  # High leverage
     ]
     return sum(signals) >= 2
 
 
 def classify_distressed_type(company_info: dict, metrics: dict) -> str:
     """Classify distressed company type."""
-    business_desc = company_info.get('business_description', '')
-    company_name = company_info.get('name', '')
+    business_desc = company_info.get("business_description", "")
+    company_name = company_info.get("name", "")
     combined = business_desc + company_name
 
     # Check keyword matches
     for category, config in DISTRESSED_CATEGORIES.items():
-        if category == 'generic_distressed':
+        if category == "generic_distressed":
             continue
-        keywords = config.get('keywords', [])
+        keywords = config.get("keywords", [])
         if any(kw in combined for kw in keywords):
             return category
 
     # Check financial characteristics
-    receivables = metrics.get('accounts_receivable', 0)
-    revenue = metrics.get('revenue', 1)
+    receivables = metrics.get("accounts_receivable", 0)
+    revenue = metrics.get("revenue", 1)
     if receivables / revenue > 0.5:
-        return 'receivables_heavy'
+        return "receivables_heavy"
 
-    return 'generic_distressed'
+    return "generic_distressed"
 
 
 def is_delisting_risk(metrics: dict) -> dict:
@@ -426,10 +430,10 @@ def is_delisting_risk(metrics: dict) -> dict:
     - Negative net assets: delisting warning
     """
     risk_factors = []
-    risk_level = 'LOW'
+    risk_level = "LOW"
 
     # Check consecutive losses
-    net_income_history = metrics.get('net_income_history', [])
+    net_income_history = metrics.get("net_income_history", [])
     consecutive_losses = 0
     for ni in reversed(net_income_history):
         if ni < 0:
@@ -438,36 +442,32 @@ def is_delisting_risk(metrics: dict) -> dict:
             break
 
     if consecutive_losses >= 3:
-        risk_factors.append('连续三年亏损')
-        risk_level = 'HIGH'
+        risk_factors.append("连续三年亏损")
+        risk_level = "HIGH"
     elif consecutive_losses >= 2:
-        risk_factors.append('连续两年亏损')
-        risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+        risk_factors.append("连续两年亏损")
+        risk_level = "MEDIUM" if risk_level == "LOW" else risk_level
 
     # Check net assets (only if explicitly provided)
-    net_assets = metrics.get('net_assets')
+    net_assets = metrics.get("net_assets")
     if net_assets is not None:
         if net_assets <= 0:
-            risk_factors.append('净资产为负')
-            risk_level = 'HIGH'
-        elif net_assets < metrics.get('total_assets', 1) * 0.1:
-            risk_factors.append('净资产占比过低')
-            risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+            risk_factors.append("净资产为负")
+            risk_level = "HIGH"
+        elif net_assets < metrics.get("total_assets", 1) * 0.1:
+            risk_factors.append("净资产占比过低")
+            risk_level = "MEDIUM" if risk_level == "LOW" else risk_level
 
     # Check audit opinion
-    audit_opinion = metrics.get('audit_opinion', '标准无保留')
-    if audit_opinion in ['无法表示意见', '否定意见']:
-        risk_factors.append(f'审计意见: {audit_opinion}')
-        risk_level = 'HIGH'
-    elif audit_opinion in ['保留意见', '带强调事项段']:
-        risk_factors.append(f'审计意见: {audit_opinion}')
-        risk_level = 'MEDIUM' if risk_level == 'LOW' else risk_level
+    audit_opinion = metrics.get("audit_opinion", "标准无保留")
+    if audit_opinion in ["无法表示意见", "否定意见"]:
+        risk_factors.append(f"审计意见: {audit_opinion}")
+        risk_level = "HIGH"
+    elif audit_opinion in ["保留意见", "带强调事项段"]:
+        risk_factors.append(f"审计意见: {audit_opinion}")
+        risk_level = "MEDIUM" if risk_level == "LOW" else risk_level
 
-    return {
-        'level': risk_level,
-        'factors': risk_factors,
-        'consecutive_losses': consecutive_losses
-    }
+    return {"level": risk_level, "factors": risk_factors, "consecutive_losses": consecutive_losses}
 
 
 def distressed_valuation(metrics: dict, company_info: dict) -> dict:
@@ -480,89 +480,86 @@ def distressed_valuation(metrics: dict, company_info: dict) -> dict:
     # 1. Determine type
     distressed_type = classify_distressed_type(company_info, metrics)
     config = DISTRESSED_CATEGORIES[distressed_type]
-    results['distressed_type'] = distressed_type
-    results['valuation_note'] = config['note']
+    results["distressed_type"] = distressed_type
+    results["valuation_note"] = config["note"]
 
-    shares = metrics.get('shares', 1)
+    shares = metrics.get("shares", 1)
 
     # 2. Apply type-specific valuation
-    if config['valuation_method'] == 'asset_replacement':
-        fixed_assets = metrics.get('fixed_assets', 0)
-        inventory = metrics.get('inventory', 0)
+    if config["valuation_method"] == "asset_replacement":
+        fixed_assets = metrics.get("fixed_assets", 0)
+        inventory = metrics.get("inventory", 0)
         # 50% discount on fixed assets, 30% discount on inventory
         replacement_value = fixed_assets * 0.5 + inventory * 0.7
-        results['asset_replacement'] = {
-            'value': replacement_value / shares,
-            'fixed_assets': fixed_assets,
-            'inventory': inventory,
-            'note': '资产重置价值（固定资产50%折价 + 存货70%折价）'
+        results["asset_replacement"] = {
+            "value": replacement_value / shares,
+            "fixed_assets": fixed_assets,
+            "inventory": inventory,
+            "note": "资产重置价值（固定资产50%折价 + 存货70%折价）",
         }
         # EV/Sales as reference
-        if metrics.get('revenue', 0) > 0:
-            ev = metrics['revenue'] * config['ev_sales_multiple']
-            results['ev_sales_ref'] = {
-                'value': ev / shares,
-                'multiple': config['ev_sales_multiple'],
-                'note': '仅供参考'
+        if metrics.get("revenue", 0) > 0:
+            ev = metrics["revenue"] * config["ev_sales_multiple"]
+            results["ev_sales_ref"] = {
+                "value": ev / shares,
+                "multiple": config["ev_sales_multiple"],
+                "note": "仅供参考",
             }
 
-    elif config['valuation_method'] == 'backlog_value':
-        backlog = metrics.get('order_backlog', 0)
+    elif config["valuation_method"] == "backlog_value":
+        backlog = metrics.get("order_backlog", 0)
         if backlog > 0:
-            gross_margin = metrics.get('gross_margin', 15) / 100
+            gross_margin = metrics.get("gross_margin", 15) / 100
             backlog_pv = backlog * gross_margin * 0.85
-            results['backlog_value'] = {
-                'value': backlog_pv / shares,
-                'order_backlog': backlog,
-                'assumed_margin': gross_margin,
-                'note': f'在手订单{backlog/1e8:.1f}亿，假设毛利率{gross_margin:.0%}，3年折现'
+            results["backlog_value"] = {
+                "value": backlog_pv / shares,
+                "order_backlog": backlog,
+                "assumed_margin": gross_margin,
+                "note": f"在手订单{backlog/1e8:.1f}亿，假设毛利率{gross_margin:.0%}，3年折现",
             }
         else:
-            results['backlog_value'] = {
-                'error': '无法获取在手订单数据',
-                'fallback': 'ev_sales'
-            }
-            if metrics.get('revenue', 0) > 0:
-                results['ev_sales'] = {
-                    'value': metrics['revenue'] * 0.4 / shares,
-                    'multiple': 0.4,
-                    'note': '回退到EV/Sales（无订单数据）'
+            results["backlog_value"] = {"error": "无法获取在手订单数据", "fallback": "ev_sales"}
+            if metrics.get("revenue", 0) > 0:
+                results["ev_sales"] = {
+                    "value": metrics["revenue"] * 0.4 / shares,
+                    "multiple": 0.4,
+                    "note": "回退到EV/Sales（无订单数据）",
                 }
 
-    elif config['valuation_method'] == 'receivables_recovery':
-        receivables = metrics.get('accounts_receivable', 0)
+    elif config["valuation_method"] == "receivables_recovery":
+        receivables = metrics.get("accounts_receivable", 0)
         recovery_low = receivables * 0.5
         recovery_high = receivables * 0.7
-        results['receivables_recovery'] = {
-            'value_range': (recovery_low / shares, recovery_high / shares),
-            'receivables': receivables,
-            'recovery_rate': '50%-70%',
-            'note': f'应收账款{receivables/1e8:.1f}亿，预期回收率50%-70%'
+        results["receivables_recovery"] = {
+            "value_range": (recovery_low / shares, recovery_high / shares),
+            "receivables": receivables,
+            "recovery_rate": "50%-70%",
+            "note": f"应收账款{receivables/1e8:.1f}亿，预期回收率50%-70%",
         }
 
     else:  # generic_distressed
-        if metrics.get('revenue', 0) > 0:
-            ev = metrics['revenue'] * config['ev_sales_multiple']
-            results['ev_sales'] = {
-                'value': ev / shares,
-                'multiple': config['ev_sales_multiple'],
-                'note': config['note']
+        if metrics.get("revenue", 0) > 0:
+            ev = metrics["revenue"] * config["ev_sales_multiple"]
+            results["ev_sales"] = {
+                "value": ev / shares,
+                "multiple": config["ev_sales_multiple"],
+                "note": config["note"],
             }
 
     # 3. Net-Net analysis (all types)
-    current_assets = metrics.get('current_assets', 0)
-    total_liabilities = metrics.get('total_liabilities', 0)
+    current_assets = metrics.get("current_assets", 0)
+    total_liabilities = metrics.get("total_liabilities", 0)
     if current_assets > total_liabilities:
-        results['net_net'] = {
-            'value': (current_assets - total_liabilities) / shares,
-            'current_assets': current_assets,
-            'total_liabilities': total_liabilities
+        results["net_net"] = {
+            "value": (current_assets - total_liabilities) / shares,
+            "current_assets": current_assets,
+            "total_liabilities": total_liabilities,
         }
 
     # 4. Delisting risk
     delisting_risk = is_delisting_risk(metrics)
-    if delisting_risk['level'] in ['MEDIUM', 'HIGH']:
-        results['delisting_risk'] = delisting_risk
+    if delisting_risk["level"] in ["MEDIUM", "HIGH"]:
+        results["delisting_risk"] = delisting_risk
 
     return results
 
@@ -570,26 +567,36 @@ def distressed_valuation(metrics: dict, company_info: dict) -> dict:
 # ── Task 3.5 & 3.6: Outlier Threshold Adjustment + DCF Exclusion ──────────────
 
 
-def get_outlier_threshold(industry_type: str) -> float:
+def get_outlier_threshold(industry_type: str, method_name: str | None = None) -> float:
     """
-    Get outlier threshold based on industry type.
+    Get outlier threshold based on industry type AND method name.
 
-    Growth and new energy industries get relaxed thresholds because their
-    valuations are inherently more variable due to high growth expectations.
+    P0-3 FIX: Added method_name parameter to handle moat P/E specially.
+    Moat P/E valuation is DESIGNED to give higher prices than other methods,
+    so it should use a relaxed threshold to avoid being incorrectly excluded.
 
     Args:
         industry_type: Industry classification string
+        method_name: Optional method name for method-specific thresholds
 
     Returns:
         Outlier threshold multiplier (e.g., 0.6 means 60% deviation from median)
     """
+    # Method-specific thresholds (P0-3 fix)
+    # P/E_Moat is designed to give higher valuations for moat companies
+    # It should NOT be excluded just because it differs from other methods
+    if method_name == "P/E_Moat":
+        return 1.5  # 150% deviation allowed for moat P/E
+
     thresholds = {
-        'auto_new_energy': 1.5,   # EV makers like BYD have wide valuation ranges
-        'new_energy_mfg': 1.5,    # Battery/solar manufacturers
-        'growth_tech': 2.0,       # High-growth tech (most volatile)
-        'default': 0.6,           # Standard 60% threshold for others
+        "auto_new_energy": 1.5,  # EV makers like BYD have wide valuation ranges
+        "new_energy_mfg": 1.5,  # Battery/solar manufacturers
+        "growth_tech": 2.0,  # High-growth tech (most volatile)
+        "brand_moat": 1.0,  # Moat companies get relaxed threshold (100%)
+        "consumer_premium": 1.0,  # Premium consumer brands
+        "default": 0.6,  # Standard 60% threshold for others
     }
-    return thresholds.get(industry_type, thresholds['default'])
+    return thresholds.get(industry_type, thresholds["default"])
 
 
 def should_exclude_dcf(dcf_value: float, median_value: float, growth_rate: float) -> bool:
@@ -628,8 +635,13 @@ def _safe(x) -> float | None:
         return None
 
 
-def _dcf(base_fcf: float, growth_rate: float, wacc: float = WACC,
-          terminal_growth: float = TERMINAL_GROWTH, years: int = PROJECTION_YEARS) -> float:
+def _dcf(
+    base_fcf: float,
+    growth_rate: float,
+    wacc: float = WACC,
+    terminal_growth: float = TERMINAL_GROWTH,
+    years: int = PROJECTION_YEARS,
+) -> float:
     """
     10-year DCF with terminal value.
     Returns total present value (NOT per share — divide by shares outstanding separately).
@@ -637,7 +649,7 @@ def _dcf(base_fcf: float, growth_rate: float, wacc: float = WACC,
     pv = 0.0
     fcf = base_fcf
     for yr in range(1, years + 1):
-        fcf *= (1 + growth_rate)
+        fcf *= 1 + growth_rate
         pv += fcf / ((1 + wacc) ** yr)
     # Terminal value (Gordon Growth Model)
     terminal_fcf = fcf * (1 + terminal_growth)
@@ -651,7 +663,7 @@ def _validate_valuation_result(
     target_price: float,
     current_price: float,
     all_results: list[float],
-    industry_type: str = "default"
+    industry_type: str = "default",
 ) -> dict:
     """
     Validate a valuation result against outlier detection rules.
@@ -697,15 +709,21 @@ def _validate_valuation_result(
         if len(valid_prices) >= 2:
             # Check for directional consensus (all above or all below market price)
             # If all methods agree on direction, don't exclude any of them
-            all_above_market = all(p > current_price for p in valid_prices) if current_price > 0 else False
-            all_below_market = all(p < current_price for p in valid_prices) if current_price > 0 else False
+            all_above_market = (
+                all(p > current_price for p in valid_prices) if current_price > 0 else False
+            )
+            all_below_market = (
+                all(p < current_price for p in valid_prices) if current_price > 0 else False
+            )
             directional_consensus = all_above_market or all_below_market
 
             median_price = statistics.median(valid_prices)
-            deviation_from_median = abs(target_price - median_price) / median_price if median_price > 0 else 0
+            deviation_from_median = (
+                abs(target_price - median_price) / median_price if median_price > 0 else 0
+            )
 
-            # Task 3.5: Use industry-specific outlier threshold instead of hardcoded 60%
-            threshold = get_outlier_threshold(industry_type)
+            # Task 3.5 + P0-3 fix: Use industry-specific AND method-specific threshold
+            threshold = get_outlier_threshold(industry_type, method_name=method_name)
             if deviation_from_median > threshold and not directional_consensus:
                 warnings.append(
                     f"{method_name}: deviation from median "
@@ -731,9 +749,7 @@ def _validate_valuation_result(
 
 
 def _calculate_weighted_target(
-    results: list[dict],
-    current_price: float,
-    weights: dict[str, float] | None = None
+    results: list[dict], current_price: float, weights: dict[str, float] | None = None
 ) -> dict:
     """
     Calculate weighted target price from validated results.
@@ -815,23 +831,23 @@ def _calculate_weighted_target(
 
     # Calculate weighted average
     weighted_target = sum(
-        r["target_price"] * normalized_weights.get(r["method"], 0)
-        for r in valid_results
+        r["target_price"] * normalized_weights.get(r["method"], 0) for r in valid_results
     )
 
     # ── DEBUG: Log weighted calculation output ────────────────────────────────
     manual_calc = sum(
-        r["target_price"] * normalized_weights.get(r["method"], 0)
-        for r in valid_results
+        r["target_price"] * normalized_weights.get(r["method"], 0) for r in valid_results
     )
     logger.info(f"[Weighted Calc] Final weighted price: ¥{weighted_target:.2f}")
     logger.info(f"[Weighted Calc] Manual verification: ¥{manual_calc:.2f}")
     logger.info(
         f"[Weighted Calc] Detailed calculation: "
-        + " + ".join([
-            f"¥{r['target_price']:.2f}×{normalized_weights.get(r['method'], 0):.4f}"
-            for r in valid_results
-        ])
+        + " + ".join(
+            [
+                f"¥{r['target_price']:.2f}×{normalized_weights.get(r['method'], 0):.4f}"
+                for r in valid_results
+            ]
+        )
     )
 
     return {
@@ -879,6 +895,7 @@ def _get_dividend_from_akshare(ticker: str) -> float | None:
     try:
         import akshare as ak
         from datetime import datetime
+
         code = ticker.split(".")[0]
 
         # Use stock_history_dividend_detail - the working API
@@ -940,9 +957,11 @@ def _get_dividend_from_akshare(ticker: str) -> float | None:
         if annual_dividend_per_10 > 0:
             dps = annual_dividend_per_10 / 10  # Convert from per-10-shares to per-share
             logger.info(
-                "[Valuation] %s: fetched annual DPS=¥%.3f from AKShare "
-                "(派息=%s/10股, years=%s)",
-                ticker, dps, annual_dividend_per_10, years_checked or "latest"
+                "[Valuation] %s: fetched annual DPS=¥%.3f from AKShare " "(派息=%s/10股, years=%s)",
+                ticker,
+                dps,
+                annual_dividend_per_10,
+                years_checked or "latest",
             )
             return dps
 
@@ -962,10 +981,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     Run the Valuation Agent for a given ticker.
     Returns an AgentSignal and persists it to the database.
     """
-    income_rows   = get_income_statements(ticker, limit=5, period_type="annual")
-    balance_rows  = get_balance_sheets(ticker, limit=3, period_type="annual")
+    income_rows = get_income_statements(ticker, limit=5, period_type="annual")
+    balance_rows = get_balance_sheets(ticker, limit=3, period_type="annual")
     cashflow_rows = get_cash_flows(ticker, limit=3, period_type="annual")
-    metric_rows   = get_financial_metrics(ticker, limit=3)
+    metric_rows = get_financial_metrics(ticker, limit=3)
 
     current_price = _get_current_price(ticker)
 
@@ -977,6 +996,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if industry == "default":
         try:
             from src.data.fetcher import _COMPANY_INFO_FALLBACK
+
             fallback_info = _COMPANY_INFO_FALLBACK.get(ticker, {})
             if fallback_info.get("industry"):
                 industry = fallback_info["industry"]
@@ -988,10 +1008,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if industry == "default":
         try:
             from src.data.fetcher import Fetcher
+
             fetcher = Fetcher()
             company_info = fetcher.fetch_company_basics(ticker, market)
-            if company_info and company_info.get('industry'):
-                akshare_industry = company_info['industry']
+            if company_info and company_info.get("industry"):
+                akshare_industry = company_info["industry"]
                 logger.info(f"[Valuation] {ticker}: Using AKShare industry: {akshare_industry}")
                 industry = akshare_industry
         except Exception as e:
@@ -1003,17 +1024,21 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     wacc_fallback = wacc_result.get("fallback_used", False)
 
     results: dict = {
-        "wacc":           wacc * 100,
+        "wacc": wacc * 100,
         "wacc_components": {
             "re": wacc_result.get("re") * 100 if wacc_result.get("re") else None,
             "rd": wacc_result.get("rd") * 100 if wacc_result.get("rd") else None,
             "tc": wacc_result.get("tc") * 100 if wacc_result.get("tc") else None,
             "beta": wacc_result.get("beta"),
-            "equity_weight": wacc_result.get("equity_weight") * 100 if wacc_result.get("equity_weight") else None,
-            "debt_weight": wacc_result.get("debt_weight") * 100 if wacc_result.get("debt_weight") else None,
+            "equity_weight": wacc_result.get("equity_weight") * 100
+            if wacc_result.get("equity_weight")
+            else None,
+            "debt_weight": wacc_result.get("debt_weight") * 100
+            if wacc_result.get("debt_weight")
+            else None,
         },
         "terminal_growth": TERMINAL_GROWTH * 100,
-        "current_price":  current_price,
+        "current_price": current_price,
         "industry": industry,
     }
 
@@ -1029,9 +1054,13 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     pb_target = None
 
     # Apply cyclical sector WACC premium
-    _is_cyclical = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "mining", "steel"])
+    _is_cyclical = industry and any(
+        k in (industry or "").lower() for k in ["oil", "energy", "mining", "steel"]
+    )
     # Flag for oil services P/B target
-    _is_oil = industry and any(k in (industry or "").lower() for k in ["oil", "energy", "油", "石油", "油服", "海油"])
+    _is_oil = industry and any(
+        k in (industry or "").lower() for k in ["oil", "energy", "油", "石油", "油服", "海油"]
+    )
     if _is_cyclical:
         wacc = wacc + WACC_CYCLE_ADDON
         logger.info("[Valuation] %s: cyclical sector → WACC +50bp → %.2f%%", ticker, wacc * 100)
@@ -1049,29 +1078,43 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             f"D/V={wacc_result.get('debt_weight', 0)*100:.0f}%)"
         )
     else:
-        detail_lines.append(f"⚠ WACC: {wacc*100:.2f}% (使用行业默认值: {wacc_result.get('note', '')})")
+        detail_lines.append(
+            f"⚠ WACC: {wacc*100:.2f}% (使用行业默认值: {wacc_result.get('note', '')})"
+        )
 
     # ── QVeris supplement: enrich shares + balance sheet ────────────────────
     # AKShare often lacks shares_outstanding and current_assets for A-shares.
     if market == "a_share":
         try:
             from src.data.qveris_source import QVerisSource
+
             qsrc = QVerisSource()
             if qsrc.health_check():
                 # Income supplement (for shares derivation)
-                if (not income_rows or not _safe(income_rows[0].get("eps"))):
+                if not income_rows or not _safe(income_rows[0].get("eps")):
                     qi = qsrc.get_income_statements(ticker, market, limit=1)
                     if qi and not income_rows:
-                        income_rows = [{"revenue": qi[0].revenue, "net_income": qi[0].net_income,
-                                        "eps": qi[0].eps}]
+                        income_rows = [
+                            {
+                                "revenue": qi[0].revenue,
+                                "net_income": qi[0].net_income,
+                                "eps": qi[0].eps,
+                            }
+                        ]
                 # Balance supplement
                 qb = qsrc.get_balance_sheets(ticker, market, limit=1)
                 if qb:
                     if not balance_rows:
                         balance_rows = [{}]
                     _b = balance_rows[0]
-                    for fld in ["total_equity", "current_assets", "current_liabilities",
-                                "total_assets", "total_liabilities", "cash_and_equivalents"]:
+                    for fld in [
+                        "total_equity",
+                        "current_assets",
+                        "current_liabilities",
+                        "total_assets",
+                        "total_liabilities",
+                        "cash_and_equivalents",
+                    ]:
                         if not _safe(_b.get(fld)) and getattr(qb[0], fld, None):
                             _b[fld] = getattr(qb[0], fld)
                     logger.info("[Valuation] %s: enriched from QVeris", ticker)
@@ -1080,9 +1123,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     latest_ni = None
     if income_rows:
-        latest_ni  = _safe(income_rows[0].get("net_income"))
+        latest_ni = _safe(income_rows[0].get("net_income"))
         shares_raw = _safe(income_rows[0].get("shares_outstanding"))
-        eps_raw    = _safe(income_rows[0].get("eps"))
+        eps_raw = _safe(income_rows[0].get("eps"))
         shares = shares_raw
         # Derive shares from net_income / EPS when not stored explicitly
         if (shares is None or shares == 0) and latest_ni and eps_raw and eps_raw != 0:
@@ -1091,15 +1134,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     owner_earnings = None
     if cashflow_rows:
-        ocf  = _safe(cashflow_rows[0].get("operating_cash_flow"))
-        fcf  = _safe(cashflow_rows[0].get("free_cash_flow"))
+        ocf = _safe(cashflow_rows[0].get("operating_cash_flow"))
+        fcf = _safe(cashflow_rows[0].get("free_cash_flow"))
         capex = _safe(cashflow_rows[0].get("capital_expenditure"))
-        dep  = _safe(cashflow_rows[0].get("depreciation"))
+        dep = _safe(cashflow_rows[0].get("depreciation"))
 
         # Owner Earnings = Net Income + D&A − CapEx  (Buffett's formula)
         if latest_ni and capex is not None:
-            da  = dep or 0
-            cx  = abs(capex) if capex < 0 else capex
+            da = dep or 0
+            cx = abs(capex) if capex < 0 else capex
             owner_earnings = latest_ni + da - cx
             results["owner_earnings"] = owner_earnings
             detail_lines.append(f"Owner Earnings: {owner_earnings/1e8:.2f}亿元")
@@ -1130,13 +1173,24 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if metric_rows:
         rd_ratio = _safe(metric_rows[0].get("rd_expense_ratio"))
 
-    # Detect loss-making tech
+    # Get ROE early for loss-making tech detection (BUG-03A fix)
+    # This prevents misclassifying profitable low-margin manufacturers
+    roe_for_detection = None
+    if metric_rows:
+        roe_raw = _safe(metric_rows[0].get("roe"))
+        if roe_raw is not None:
+            # AKShare returns ROE as percentage (e.g., 21.6 for 21.6%)
+            # Convert to decimal (0.216)
+            roe_for_detection = roe_raw / 100 if roe_raw > 1 else roe_raw
+
+    # Detect loss-making tech (with ROE check to avoid false positives)
     is_loss_making_tech = detect_loss_making_tech_stock(
         net_income=latest_ni,
         net_margin=net_margin,
         revenue_growth=revenue_growth,
         rd_ratio=rd_ratio,
         industry=industry,
+        roe=roe_for_detection,  # NEW: prevents misclassifying profitable companies
     )
 
     if is_loss_making_tech:
@@ -1157,7 +1211,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         revenue_3y_ago = _safe(income_rows[2].get("revenue"))  # 3 years ago
         if revenue_current and revenue_3y_ago and revenue_3y_ago > 0:
             # CAGR = (End/Start)^(1/n) - 1
-            revenue_cagr_3y = (revenue_current / revenue_3y_ago) ** (1/3) - 1
+            revenue_cagr_3y = (revenue_current / revenue_3y_ago) ** (1 / 3) - 1
             results["revenue_cagr_3y"] = round(revenue_cagr_3y * 100, 2)
 
     # Get PE ratio from metrics or calculate from price/EPS
@@ -1212,7 +1266,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if roe_raw is not None:
             roe = roe_raw / 100 if roe_raw > 1 else roe_raw  # 10.47 → 0.1047
         if dividend_yield_raw is not None:
-            dividend_yield = dividend_yield_raw / 100 if dividend_yield_raw > 1 else dividend_yield_raw
+            dividend_yield = (
+                dividend_yield_raw / 100 if dividend_yield_raw > 1 else dividend_yield_raw
+            )
 
     # Only check financial if not already classified
     if not is_loss_making_tech and not is_growth_stock:
@@ -1229,8 +1285,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         results["roe"] = round(roe * 100, 2) if roe else None
         results["dividend_yield"] = round(dividend_yield * 100, 2) if dividend_yield else None
         detail_lines.append(
-            f"🏦 金融股：使用P/B-ROE模型+DDM估值方法，禁用EV/EBITDA "
-            f"(ROE={roe*100:.1f}%)" if roe else "🏦 金融股：使用P/B-ROE模型+DDM估值方法"
+            f"🏦 金融股：使用P/B-ROE模型+DDM估值方法，禁用EV/EBITDA " f"(ROE={roe*100:.1f}%)"
+            if roe
+            else "🏦 金融股：使用P/B-ROE模型+DDM估值方法"
         )
 
     # ── Phase 2: Detect cyclical stocks (resources/commodities) ────────────────
@@ -1257,7 +1314,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     is_healthcare_stock = False
     is_healthcare_rd = False
 
-    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock:
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_financial_stock
+        and not is_cyclical_stock
+    ):
         is_healthcare_stock = detect_healthcare_stock(industry=industry)
 
     if is_healthcare_stock:
@@ -1291,7 +1353,13 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     # due to stable, regulated cash flows and predictable dividends
     is_utility_stock = False
 
-    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock:
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_financial_stock
+        and not is_cyclical_stock
+        and not is_healthcare_stock
+    ):
         is_utility_stock = _is_utility_stock(ticker)
 
     if is_utility_stock:
@@ -1338,12 +1406,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # Build metrics dict
     moat_metrics = {
-        'gross_margin': gross_margin,
-        'roe_5yr_avg': roe_5yr_avg,
-        'fcf_history': fcf_history,
-        'revenue_growth_5yr': [],  # TODO: Calculate from income history
-        'eps': eps_for_moat,
-        'eps_3yr_avg': None,  # TODO: Calculate from income history
+        "gross_margin": gross_margin,
+        "roe_5yr_avg": roe_5yr_avg,
+        "fcf_history": fcf_history,
+        "revenue_growth_5yr": [],  # TODO: Calculate from income history
+        "eps": eps_for_moat,
+        "eps_3yr_avg": None,  # TODO: Calculate from income history
     }
 
     # Check brand moat if not already classified as special type
@@ -1351,7 +1419,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     # - Premium: gross_margin >= 80% AND (current ROE >= 20% OR 5yr avg ROE >= 20%)
     # - Strong: gross_margin >= 60% AND (current ROE >= 15% OR 5yr avg ROE >= 15%)
     # - Moderate: gross_margin >= 50% AND (current ROE >= 12% OR 5yr avg ROE >= 12%)
-    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock and not is_utility_stock:
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_financial_stock
+        and not is_cyclical_stock
+        and not is_healthcare_stock
+        and not is_utility_stock
+    ):
         # Get current ROE from metrics (decimal form, need to convert to percentage)
         current_roe_pct = roe * 100 if roe is not None else None
 
@@ -1370,11 +1445,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 is_brand_moat = True
                 # Determine tier based on gross margin and ROE
                 if gross_margin >= 80 and best_roe >= 20:
-                    brand_moat_tier = 'premium'
+                    brand_moat_tier = "premium"
                 elif gross_margin >= 60 and best_roe >= 15:
-                    brand_moat_tier = 'strong'
+                    brand_moat_tier = "strong"
                 else:
-                    brand_moat_tier = 'moderate'
+                    brand_moat_tier = "moderate"
 
                 results["is_brand_moat"] = True
                 results["brand_moat_tier"] = brand_moat_tier
@@ -1382,7 +1457,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 results["brand_moat_gross_margin"] = round(gross_margin, 2)
                 results["brand_moat_roe"] = round(best_roe, 2)
 
-                pe_range = BRAND_MOAT_PE_ANCHORS.get(brand_moat_tier, BRAND_MOAT_PE_ANCHORS['moderate'])['pe_range']
+                pe_range = BRAND_MOAT_PE_ANCHORS.get(
+                    brand_moat_tier, BRAND_MOAT_PE_ANCHORS["moderate"]
+                )["pe_range"]
                 detail_lines.append(
                     f"🏆 护城河品牌股：毛利率{gross_margin:.1f}% + ROE{best_roe:.1f}% → {brand_moat_tier}档，"
                     f"使用P/E锚点估值（{pe_range[0]}-{pe_range[1]}x），禁用Graham Number"
@@ -1395,26 +1472,38 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # Build distressed detection metrics
     distressed_metrics = {
-        'net_margin': net_margin * 100 if net_margin else None,
-        'roe': roe * 100 if roe else None,
-        'fcf': _safe(cashflow_rows[0].get("free_cash_flow")) if cashflow_rows else None,
-        'ocf': _safe(cashflow_rows[0].get("operating_cash_flow")) if cashflow_rows else None,
-        'debt_equity': _safe(metric_rows[0].get("debt_to_equity")) * 100 if metric_rows and _safe(metric_rows[0].get("debt_to_equity")) else None,
+        "net_margin": net_margin * 100 if net_margin else None,
+        "roe": roe * 100 if roe else None,
+        "fcf": _safe(cashflow_rows[0].get("free_cash_flow")) if cashflow_rows else None,
+        "ocf": _safe(cashflow_rows[0].get("operating_cash_flow")) if cashflow_rows else None,
+        "debt_equity": _safe(metric_rows[0].get("debt_to_equity")) * 100
+        if metric_rows and _safe(metric_rows[0].get("debt_to_equity"))
+        else None,
     }
 
     # Check if distressed (not if already classified as special type)
-    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock and not is_cyclical_stock and not is_healthcare_stock and not is_utility_stock and not is_brand_moat:
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_financial_stock
+        and not is_cyclical_stock
+        and not is_healthcare_stock
+        and not is_utility_stock
+        and not is_brand_moat
+    ):
         if detect_distressed_company(distressed_metrics):
             is_distressed = True
             results["is_distressed"] = True
             results["valuation_mode"] = "distressed"
 
             # Get company info for distressed type classification
-            company_info = {'name': ticker, 'business_description': industry or ''}
+            company_info = {"name": ticker, "business_description": industry or ""}
             distressed_type = classify_distressed_type(company_info, distressed_metrics)
             results["distressed_type"] = distressed_type
 
-            distressed_config = DISTRESSED_CATEGORIES.get(distressed_type, DISTRESSED_CATEGORIES['generic_distressed'])
+            distressed_config = DISTRESSED_CATEGORIES.get(
+                distressed_type, DISTRESSED_CATEGORIES["generic_distressed"]
+            )
             detail_lines.append(
                 f"⚠️ 困境企业：{distressed_config['note']}，使用{distressed_config['valuation_method']}估值方法"
             )
@@ -1437,15 +1526,17 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             dcf_bull = _dcf(base_fcf, FCF_GROWTH_BULL, wacc=wacc)
             dcf_base = _dcf(base_fcf, FCF_GROWTH_BASE, wacc=wacc)
             dcf_bear = _dcf(base_fcf, FCF_GROWTH_BEAR, wacc=wacc)
-            results.update({
-                "base_fcf":     base_fcf,
-                "dcf_bull":     dcf_bull,
-                "dcf_base":     dcf_base,
-                "dcf_bear":     dcf_bear,
-                "fcf_growth_bull": FCF_GROWTH_BULL * 100,
-                "fcf_growth_base": FCF_GROWTH_BASE * 100,
-                "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
-            })
+            results.update(
+                {
+                    "base_fcf": base_fcf,
+                    "dcf_bull": dcf_bull,
+                    "dcf_base": dcf_base,
+                    "dcf_bear": dcf_bear,
+                    "fcf_growth_bull": FCF_GROWTH_BULL * 100,
+                    "fcf_growth_base": FCF_GROWTH_BASE * 100,
+                    "fcf_growth_bear": FCF_GROWTH_BEAR * 100,
+                }
+            )
             # DCF display: clarify that these are enterprise values (OUTPUT), not FCF (INPUT)
             detail_lines.append(
                 f"DCF企业价值 (乐观/基准/悲观): {dcf_bull/1e8:.0f}亿 / {dcf_base/1e8:.0f}亿 / {dcf_bear/1e8:.0f}亿元 "
@@ -1497,7 +1588,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # ── 2. Graham Number ──────────────────────────────────────────────────────
     graham_number_per_share = None
-    eps  = _safe(income_rows[0].get("eps")) if income_rows else None
+    eps = _safe(income_rows[0].get("eps")) if income_rows else None
     bvps = _safe(balance_rows[0].get("book_value_per_share")) if balance_rows else None
 
     # Estimate BVPS from equity / shares if not stored directly
@@ -1512,7 +1603,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if eps and bvps and eps > 0 and bvps > 0:
         graham_number_per_share = math.sqrt(22.5 * eps * bvps)
         results["graham_number"] = graham_number_per_share
-        detail_lines.append(f"Graham Number: ¥{graham_number_per_share:.2f}/股 (EPS={eps:.2f}, BVPS={bvps:.2f})")
+        detail_lines.append(
+            f"Graham Number: ¥{graham_number_per_share:.2f}/股 (EPS={eps:.2f}, BVPS={bvps:.2f})"
+        )
     else:
         results["graham_number"] = None
         detail_lines.append("- Graham Number 无法计算（缺 EPS 或 BVPS）")
@@ -1531,11 +1624,29 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             ni = _safe(income_rows[0].get("net_income"))
             if ni and ni > 0:
                 ebitda = ni * 1.5
-                logger.debug("[Valuation] %s: estimated EBITDA=%.0f亿 from NI×1.5", ticker, ebitda / 1e8)
+                logger.debug(
+                    "[Valuation] %s: estimated EBITDA=%.0f亿 from NI×1.5", ticker, ebitda / 1e8
+                )
 
     # Phase 3: Use industry-specific EV/EBITDA multiple from industry_profiles.yaml
     industry_class = classify_industry(industry) if industry else "default"
     _ev_multiple = get_ev_ebitda_multiple(industry_class, cycle_phase="normal")
+
+    # P1-4 FIX: Load disable_methods from industry_profiles.yaml
+    # This allows industry-specific method disabling (e.g., telecom_operator disables graham_number)
+    disabled_methods_from_profile = []
+    try:
+        from src.agents.industry_classifier import get_industry_profile
+
+        industry_profile = get_industry_profile(industry_class)
+        disabled_methods_from_profile = industry_profile.get("disable_methods", [])
+        if disabled_methods_from_profile:
+            logger.info(
+                f"[Valuation] {ticker}: Industry {industry_class} disables methods: "
+                f"{disabled_methods_from_profile}"
+            )
+    except Exception as e:
+        logger.debug(f"[Valuation] Failed to load industry profile disable_methods: {e}")
 
     # Task #18: Check if utility stock - skip generic EV/EBITDA detail lines
     # Utility stocks will add their own 12x detail lines later
@@ -1550,7 +1661,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             ebitda=ebitda,
             multiple=_ev_multiple,
             shares=shares,
-            revenue=revenue or 0  # Default to 0 if revenue unavailable
+            revenue=revenue or 0,  # Default to 0 if revenue unavailable
         )
 
         if ev_error:
@@ -1561,7 +1672,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # BUG-18: Additional validation - EV/EBITDA per share should be reasonable
             # If < 10% of current price, the EBITDA estimate is likely unreliable
             if current_price and ev_ebitda_per_share < current_price * 0.1:
-                detail_lines.append(f"⚠ EV/EBITDA 不适用: 估值(¥{ev_ebitda_per_share:.2f})远低于市价的10%，EBITDA数据可能无效")
+                detail_lines.append(
+                    f"⚠ EV/EBITDA 不适用: 估值(¥{ev_ebitda_per_share:.2f})远低于市价的10%，EBITDA数据可能无效"
+                )
                 results["ev_ebitda_per_share"] = None
                 ev_ebitda_per_share = None
             else:
@@ -1573,7 +1686,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
                 # Only add generic detail lines for non-utility stocks
                 if not _skip_generic_ev_detail:
-                    detail_lines.append(f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元")
+                    detail_lines.append(
+                        f"EV/EBITDA ({_ev_multiple:.1f}x行业倍数): 总企业价值≈{ev_ebitda_total/1e8:.0f}亿元"
+                    )
 
                 # Per-share estimate
                 if ev_ebitda_per_share is not None:
@@ -1589,10 +1704,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Apply real estate P/B cap (Task 1.2)
             if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(_pb, industry)
-                _pb = cap_result['pb_capped']
+                _pb = cap_result["pb_capped"]
                 pb_target_per_share = bvps * _pb
-                if cap_result.get('warning'):
-                    detail_lines.append(cap_result['warning'])
+                if cap_result.get("warning"):
+                    detail_lines.append(cap_result["warning"])
 
             results["pb_target"] = round(pb_target_per_share, 2)
             detail_lines.append(f"P/B目标价 ({_pb}x BVPS={bvps:.2f}): ¥{pb_target_per_share:.2f}")
@@ -1608,7 +1723,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if revenue and revenue > 0 and shares and shares > 0:
         # Determine PS multiple based on industry
         _is_ai = industry and any(k in (industry or "").lower() for k in ["ai", "人工智能", "语音"])
-        _is_software = industry and any(k in (industry or "").lower() for k in ["软件", "software", "saas"])
+        _is_software = industry and any(
+            k in (industry or "").lower() for k in ["软件", "software", "saas"]
+        )
 
         if _is_ai:
             ps_multiple = PS_MULTIPLE_TECH_AI
@@ -1640,7 +1757,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             ev_sales_per_share = implied_ev / shares
             results["ev_sales_per_share"] = round(ev_sales_per_share, 2)
             results["ev_sales_multiple"] = EV_SALES_TECH
-            detail_lines.append(f"EV/Sales估值 ({EV_SALES_TECH}x 营收): ¥{ev_sales_per_share:.2f}/股")
+            detail_lines.append(
+                f"EV/Sales估值 ({EV_SALES_TECH}x 营收): ¥{ev_sales_per_share:.2f}/股"
+            )
 
     # ── 3d. PEG valuation (BUG-03B: for growth stocks) ───────────────────────
     # PEG = PE / EPS Growth Rate
@@ -1806,14 +1925,18 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     # ── 4. Net-Net ratio (Graham defensive check) ─────────────────────────────
     net_net_ratio = None
     if balance_rows:
-        ca   = _safe(balance_rows[0].get("current_assets"))
-        tl   = _safe(balance_rows[0].get("total_liabilities"))
+        ca = _safe(balance_rows[0].get("current_assets"))
+        tl = _safe(balance_rows[0].get("total_liabilities"))
         if ca and tl and shares and shares > 0:
             net_net_per_share = (ca - tl) / shares
             net_net_ratio = net_net_per_share / current_price if current_price else None
             results["net_net_per_share"] = net_net_per_share
             results["net_net_ratio"] = net_net_ratio
-            detail_lines.append(f"Net-Net: (CA-TL)/股={net_net_per_share:.2f}, 价格比={net_net_ratio:.2f}" if net_net_ratio else f"Net-Net: {net_net_per_share:.2f}/股")
+            detail_lines.append(
+                f"Net-Net: (CA-TL)/股={net_net_per_share:.2f}, 价格比={net_net_ratio:.2f}"
+                if net_net_ratio
+                else f"Net-Net: {net_net_per_share:.2f}/股"
+            )
 
     # ── 5. Outlier Detection & Weighted Target Price ──────────────────────────
     # Collect all per-share target prices for validation
@@ -1845,9 +1968,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Apply real estate P/B cap (Task 1.2)
             if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
-                pb_target_per_share = cap_result['pb_capped'] * bvps
-                if cap_result.get('warning'):
-                    detail_lines.append(cap_result['warning'])
+                pb_target_per_share = cap_result["pb_capped"] * bvps
+                if cap_result.get("warning"):
+                    detail_lines.append(cap_result["warning"])
 
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)
@@ -1882,9 +2005,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Apply real estate P/B cap (Task 1.2)
             if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
-                pb_target_per_share = cap_result['pb_capped'] * bvps
-                if cap_result.get('warning'):
-                    detail_lines.append(cap_result['warning'])
+                pb_target_per_share = cap_result["pb_capped"] * bvps
+                if cap_result.get("warning"):
+                    detail_lines.append(cap_result["warning"])
 
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)
@@ -1966,9 +2089,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 # Apply real estate P/B cap (Task 1.2)
                 if is_real_estate_industry(industry):
                     cap_result = apply_real_estate_cap(_pb, industry)
-                    pb_target_per_share = cap_result['pb_capped'] * bvps
-                    if cap_result.get('warning'):
-                        detail_lines.append(cap_result['warning'])
+                    pb_target_per_share = cap_result["pb_capped"] * bvps
+                    if cap_result.get("warning"):
+                        detail_lines.append(cap_result["warning"])
 
                 valuation_methods.append(("P/B", pb_target_per_share))
 
@@ -2039,13 +2162,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Apply real estate P/B cap (Task 1.2)
             if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
-                pb_target_per_share = cap_result['pb_capped'] * bvps
-                if cap_result.get('warning'):
-                    detail_lines.append(cap_result['warning'])
+                pb_target_per_share = cap_result["pb_capped"] * bvps
+                if cap_result.get("warning"):
+                    detail_lines.append(cap_result["warning"])
 
             results["pb_target"] = round(pb_target_per_share, 2)
             valuation_methods.append(("P/B", pb_target_per_share))
-            detail_lines.append(f"P/B目标价 ({utility_pb_multiple}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股")
+            detail_lines.append(
+                f"P/B目标价 ({utility_pb_multiple}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股"
+            )
 
         # NOTE: Graham Number is DISABLED for utilities
         # (Graham Number is designed for undervalued stocks, not regulated utilities)
@@ -2056,7 +2181,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         pe_anchor_per_share = None
 
         # P/E anchor valuation - primary method for brand moat stocks
-        pe_range = BRAND_MOAT_PE_ANCHORS.get(brand_moat_tier, BRAND_MOAT_PE_ANCHORS['moderate'])['pe_range']
+        pe_range = BRAND_MOAT_PE_ANCHORS.get(brand_moat_tier, BRAND_MOAT_PE_ANCHORS["moderate"])[
+            "pe_range"
+        ]
         pe_mid = (pe_range[0] + pe_range[1]) / 2
 
         # Use the early-defined EPS for brand moat calculation (defined at moat detection)
@@ -2085,7 +2212,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             pb_target_per_share = bvps * _pb
             results["pb_target"] = round(pb_target_per_share, 2)
             valuation_methods.append(("P/B", pb_target_per_share))
-            detail_lines.append(f"P/B目标价 ({_pb}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股")
+            detail_lines.append(
+                f"P/B目标价 ({_pb}x BVPS=¥{bvps:.2f}): ¥{pb_target_per_share:.2f}/股"
+            )
 
         # NOTE: Graham Number is DISABLED for brand moat stocks
         # (Graham designed for undervalued stocks, not premium brands)
@@ -2095,43 +2224,51 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # Uses asset replacement value, net-net, EV/Sales based on distressed type
 
         # Get company info for distressed valuation
-        company_info = {'name': ticker, 'business_description': industry or ''}
+        company_info = {"name": ticker, "business_description": industry or ""}
 
         # Build full metrics for distressed valuation
         full_metrics = {
-            'shares': shares,
-            'revenue': revenue,
-            'fixed_assets': _safe(balance_rows[0].get("fixed_assets")) if balance_rows else None,
-            'inventory': _safe(balance_rows[0].get("inventory")) if balance_rows else None,
-            'current_assets': _safe(balance_rows[0].get("current_assets")) if balance_rows else None,
-            'total_liabilities': _safe(balance_rows[0].get("total_liabilities")) if balance_rows else None,
-            'accounts_receivable': _safe(balance_rows[0].get("accounts_receivable")) if balance_rows else None,
-            'order_backlog': None,  # Usually not available
-            'gross_margin': gross_margin,
+            "shares": shares,
+            "revenue": revenue,
+            "fixed_assets": _safe(balance_rows[0].get("fixed_assets")) if balance_rows else None,
+            "inventory": _safe(balance_rows[0].get("inventory")) if balance_rows else None,
+            "current_assets": _safe(balance_rows[0].get("current_assets"))
+            if balance_rows
+            else None,
+            "total_liabilities": _safe(balance_rows[0].get("total_liabilities"))
+            if balance_rows
+            else None,
+            "accounts_receivable": _safe(balance_rows[0].get("accounts_receivable"))
+            if balance_rows
+            else None,
+            "order_backlog": None,  # Usually not available
+            "gross_margin": gross_margin,
         }
 
         distressed_results = distressed_valuation(full_metrics, company_info)
         results["distressed_valuation"] = distressed_results
 
         # Asset replacement value (for asset_intensive type)
-        if 'asset_replacement' in distressed_results:
-            asset_val = distressed_results['asset_replacement']['value']
+        if "asset_replacement" in distressed_results:
+            asset_val = distressed_results["asset_replacement"]["value"]
             valuation_methods.append(("Asset_Replacement", asset_val))
             detail_lines.append(f"资产重置估值: ¥{asset_val:.2f}/股")
 
         # EV/Sales (generic distressed or reference)
-        if 'ev_sales' in distressed_results or 'ev_sales_ref' in distressed_results:
-            ev_sales_data = distressed_results.get('ev_sales') or distressed_results.get('ev_sales_ref')
-            if ev_sales_data and 'value' in ev_sales_data:
-                ev_sales_val = ev_sales_data['value']
+        if "ev_sales" in distressed_results or "ev_sales_ref" in distressed_results:
+            ev_sales_data = distressed_results.get("ev_sales") or distressed_results.get(
+                "ev_sales_ref"
+            )
+            if ev_sales_data and "value" in ev_sales_data:
+                ev_sales_val = ev_sales_data["value"]
                 valuation_methods.append(("EV/Sales_Distressed", ev_sales_val))
                 detail_lines.append(
                     f"困境EV/Sales ({ev_sales_data.get('multiple', 0.3)}x): ¥{ev_sales_val:.2f}/股"
                 )
 
         # Net-Net value (Graham's net-net for deep value)
-        if 'net_net' in distressed_results:
-            net_net_val = distressed_results['net_net']['value']
+        if "net_net" in distressed_results:
+            net_net_val = distressed_results["net_net"]["value"]
             valuation_methods.append(("Net_Net", net_net_val))
             detail_lines.append(f"Net-Net价值: ¥{net_net_val:.2f}/股")
 
@@ -2148,19 +2285,33 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     else:
         # Standard valuation methods for traditional value stocks
+        # P1-4 FIX: Check disabled_methods_from_profile before adding each method
+
         # DCF base case (per share)
         if dcf_base and shares and shares > 0:
             dcf_per_share = dcf_base / shares
             results["dcf_per_share"] = dcf_per_share
-            valuation_methods.append(("DCF", dcf_per_share))
+            # Check if DCF is disabled for this industry
+            if "dcf" not in [m.lower() for m in disabled_methods_from_profile]:
+                valuation_methods.append(("DCF", dcf_per_share))
+            else:
+                detail_lines.append(f"⚠ DCF: 已禁用 (行业配置: {industry_class})")
 
         # Graham Number - only for traditional value stocks
         if graham_number_per_share:
-            valuation_methods.append(("Graham", graham_number_per_share))
+            # Check if Graham Number is disabled for this industry
+            if "graham_number" not in [m.lower() for m in disabled_methods_from_profile]:
+                valuation_methods.append(("Graham", graham_number_per_share))
+            else:
+                detail_lines.append(f"⚠ Graham Number: 已禁用 (行业配置: {industry_class})")
 
         # EV/EBITDA per share - only for profitable companies
         if ev_ebitda_per_share:
-            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+            # Check if EV/EBITDA is disabled for this industry
+            if "ev_ebitda" not in [m.lower() for m in disabled_methods_from_profile]:
+                valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+            else:
+                detail_lines.append(f"⚠ EV/EBITDA: 已禁用 (行业配置: {industry_class})")
 
         # P/B target per share
         if bvps:
@@ -2170,14 +2321,19 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Apply real estate P/B cap (Task 1.2)
             if is_real_estate_industry(industry):
                 cap_result = apply_real_estate_cap(pb_target_per_share / bvps, industry)
-                pb_target_per_share = cap_result['pb_capped'] * bvps
-                if cap_result.get('warning'):
-                    detail_lines.append(cap_result['warning'])
+                pb_target_per_share = cap_result["pb_capped"] * bvps
+                if cap_result.get("warning"):
+                    detail_lines.append(cap_result["warning"])
 
             # Only add to results if not already added in EV/EBITDA section
             if "pb_target" not in results:
                 results["pb_target"] = round(pb_target_per_share, 2)
-            valuation_methods.append(("P/B", pb_target_per_share))
+
+            # Check if P/B is disabled for this industry
+            if "pb" not in [m.lower() for m in disabled_methods_from_profile]:
+                valuation_methods.append(("P/B", pb_target_per_share))
+            else:
+                detail_lines.append(f"⚠ P/B: 已禁用 (行业配置: {industry_class})")
 
     # Validate each method and calculate weighted target
     validated_results = []
@@ -2192,7 +2348,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             target_price=target_price,
             current_price=current_price or 0,
             all_results=all_target_prices,
-            industry_type=industry_type_for_threshold
+            industry_type=industry_type_for_threshold,
         )
         validated_results.append(validation)
 
@@ -2227,50 +2383,59 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         if is_healthcare_rd:
             valuation_config = get_healthcare_rd_valuation_config()
             default_weights = valuation_config["weights"]
-            logger.info("[Valuation] %s: Using healthcare R&D stage weights: %s", ticker, default_weights)
+            logger.info(
+                "[Valuation] %s: Using healthcare R&D stage weights: %s", ticker, default_weights
+            )
         else:
             valuation_config = get_healthcare_mature_valuation_config()
             default_weights = valuation_config["weights"]
-            logger.info("[Valuation] %s: Using healthcare mature stage weights: %s", ticker, default_weights)
+            logger.info(
+                "[Valuation] %s: Using healthcare mature stage weights: %s", ticker, default_weights
+            )
     elif is_utility_stock:
         # Task #15: Use utility stock weights (DDM-focused for stable dividend payers)
         default_weights = {
-            "DDM": 0.50,              # Primary - utilities have stable, predictable dividends
-            "DCF_Conservative": 0.20, # Secondary - conservative growth assumptions
-            "EV/EBITDA": 0.20,        # Tertiary - regulated asset base
-            "P/B": 0.10,              # Floor value
+            "DDM": 0.50,  # Primary - utilities have stable, predictable dividends
+            "DCF_Conservative": 0.20,  # Secondary - conservative growth assumptions
+            "EV/EBITDA": 0.20,  # Tertiary - regulated asset base
+            "P/B": 0.10,  # Floor value
         }
         logger.info("[Valuation] %s: Using utility stock weights: %s", ticker, default_weights)
     elif is_brand_moat:
         # Task 3.1: Use brand moat stock weights (P/E anchor focused, no Graham)
         default_weights = {
-            "P/E_Moat": 0.50,         # Primary - P/E anchor based on moat tier
-            "DCF": 0.30,              # Secondary - supports high valuation
-            "EV/EBITDA": 0.15,        # Tertiary - cross-check
-            "P/B": 0.05,              # Floor value only
+            "P/E_Moat": 0.50,  # Primary - P/E anchor based on moat tier
+            "DCF": 0.30,  # Secondary - supports high valuation
+            "EV/EBITDA": 0.15,  # Tertiary - cross-check
+            "P/B": 0.05,  # Floor value only
         }
         logger.info("[Valuation] %s: Using brand moat stock weights: %s", ticker, default_weights)
     elif is_distressed:
         # Task 3.4: Use distressed company weights based on type
-        if distressed_type == 'asset_intensive':
+        if distressed_type == "asset_intensive":
             default_weights = {
                 "Asset_Replacement": 0.50,  # Primary - replacement value
-                "Net_Net": 0.30,            # Secondary - Graham deep value
-                "P/B_Distressed": 0.20,     # Tertiary - floor value
+                "Net_Net": 0.30,  # Secondary - Graham deep value
+                "P/B_Distressed": 0.20,  # Tertiary - floor value
             }
-        elif distressed_type in ['contract_based', 'receivables_heavy']:
+        elif distressed_type in ["contract_based", "receivables_heavy"]:
             default_weights = {
                 "EV/Sales_Distressed": 0.40,  # Primary - revenue-based
-                "Net_Net": 0.35,              # Secondary - deep value
-                "P/B_Distressed": 0.25,       # Tertiary - floor value
+                "Net_Net": 0.35,  # Secondary - deep value
+                "P/B_Distressed": 0.25,  # Tertiary - floor value
             }
         else:  # generic_distressed
             default_weights = {
                 "EV/Sales_Distressed": 0.40,  # Primary - generic EV/Sales
-                "Net_Net": 0.30,              # Secondary - deep value
-                "P/B_Distressed": 0.30,       # Tertiary - book value
+                "Net_Net": 0.30,  # Secondary - deep value
+                "P/B_Distressed": 0.30,  # Tertiary - book value
             }
-        logger.info("[Valuation] %s: Using distressed stock weights (%s): %s", ticker, distressed_type, default_weights)
+        logger.info(
+            "[Valuation] %s: Using distressed stock weights (%s): %s",
+            ticker,
+            distressed_type,
+            default_weights,
+        )
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
@@ -2282,9 +2447,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         }
 
     weighted_result = _calculate_weighted_target(
-        results=validated_results,
-        current_price=current_price or 0,
-        weights=default_weights
+        results=validated_results, current_price=current_price or 0, weights=default_weights
     )
 
     # Store validation results in metrics
@@ -2294,7 +2457,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 "method": v["method"],
                 "target_price": v["target_price"],
                 "valid": v["valid"],
-                "excluded": v["exclude_from_weighted"]
+                "excluded": v["exclude_from_weighted"],
             }
             for v in validated_results
         ],
@@ -2317,7 +2480,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
         if weighted_result["degraded"]:
             detail_lines.append(f"\n{weighted_result['warning']}")
-            detail_lines.append(f"安全边际 (单一方法): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})")
+            detail_lines.append(
+                f"安全边际 (单一方法): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})"
+            )
         else:
             valid_method_list = ", ".join(weighted_result["valid_methods"])
             detail_lines.append(
@@ -2326,7 +2491,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             if weighted_result["excluded_methods"]:
                 excluded_list = ", ".join(weighted_result["excluded_methods"])
                 detail_lines.append(f"  已排除异常值: {excluded_list}")
-            detail_lines.append(f"安全边际 (加权): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})")
+            detail_lines.append(
+                f"安全边际 (加权): {mos_pct:.1f}% (目标¥{weighted_target:.2f} vs 市价¥{current_price:.2f})"
+            )
     elif not weighted_target and current_price:
         # Degraded mode with 0 valid methods
         if weighted_result.get("warning"):
@@ -2360,7 +2527,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             confidence = 0.45 * base_confidence_multiplier
         else:
             signal = "bearish"
-            confidence = min(0.90, (0.55 + abs(margin_of_safety) * 0.5) * base_confidence_multiplier)
+            confidence = min(
+                0.90, (0.55 + abs(margin_of_safety) * 0.5) * base_confidence_multiplier
+            )
 
         # Override with degraded confidence if applicable
         if weighted_result["degraded"]:
@@ -2371,10 +2540,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             confidence = 0.25  # Very low confidence when no valid methods
         detail_lines.append("⚠ 估值数据不足，保持中性")
 
-    reasoning = (
-        f"估值分析结果（{primary_method}为主要依据）：\n"
-        + "\n".join(detail_lines)
-    )
+    reasoning = f"估值分析结果（{primary_method}为主要依据）：\n" + "\n".join(detail_lines)
 
     # ── 6. Optional LLM interpretation ────────────────────────────────────────
     if use_llm:
@@ -2384,11 +2550,22 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 VALUATION_INTERPRET_SYSTEM_PROMPT,
                 VALUATION_INTERPRET_USER_TEMPLATE,
             )
+
             # Format validation context for LLM
-            valid_methods_str = ", ".join(weighted_result["valid_methods"]) if weighted_result["valid_methods"] else "无"
-            excluded_methods_str = ", ".join(weighted_result["excluded_methods"]) if weighted_result["excluded_methods"] else "无"
+            valid_methods_str = (
+                ", ".join(weighted_result["valid_methods"])
+                if weighted_result["valid_methods"]
+                else "无"
+            )
+            excluded_methods_str = (
+                ", ".join(weighted_result["excluded_methods"])
+                if weighted_result["excluded_methods"]
+                else "无"
+            )
             weighted_target_str = f"¥{weighted_target:.2f}" if weighted_target else "N/A"
-            validation_mode = "降级模式（≤1个有效方法）" if weighted_result["degraded"] else "正常模式"
+            validation_mode = (
+                "降级模式（≤1个有效方法）" if weighted_result["degraded"] else "正常模式"
+            )
 
             # Task #19: Build detailed method lists for LLM to reference correctly
             valuation_mode = results.get("valuation_mode", "standard")
@@ -2410,7 +2587,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                     valid_methods_details_list.append(
                         f"- {v['method']}: ¥{v['target_price']:.2f}/股"
                     )
-            valid_methods_details = "\n".join(valid_methods_details_list) if valid_methods_details_list else "无有效方法"
+            valid_methods_details = (
+                "\n".join(valid_methods_details_list)
+                if valid_methods_details_list
+                else "无有效方法"
+            )
 
             # Build excluded/not-applicable methods
             excluded_details_list = []
@@ -2423,7 +2604,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 excluded_details_list.append("- Graham Number: 不适用于金融股")
             elif valuation_mode == "utility":
                 excluded_details_list.append("- Graham Number: 不适用于公用事业股")
-            excluded_methods_details = "\n".join(excluded_details_list) if excluded_details_list else "无排除方法"
+            excluded_methods_details = (
+                "\n".join(excluded_details_list) if excluded_details_list else "无排除方法"
+            )
 
             user_msg = VALUATION_INTERPRET_USER_TEMPLATE.format(
                 ticker=ticker,
@@ -2442,6 +2625,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
             # ── Parse JSON and convert to readable prose (fix raw-JSON output bug) ──
             import json as _json
+
             try:
                 cleaned = llm_text.strip()
                 if cleaned.startswith("```"):
@@ -2455,10 +2639,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 confidence = (confidence + llm_conf) / 2
                 # Render as readable prose instead of raw JSON
                 val_pos = parsed.get("valuation_position", "")
-                iv_low  = parsed.get("intrinsic_value_range_low", "")
+                iv_low = parsed.get("intrinsic_value_range_low", "")
                 iv_high = parsed.get("intrinsic_value_range_high", "")
-                method  = parsed.get("most_relevant_method", "")
-                prose   = parsed.get("reasoning", "")
+                method = parsed.get("most_relevant_method", "")
+                prose = parsed.get("reasoning", "")
                 reasoning += (
                     f"\n\n**LLM估值解读**:\n"
                     f"最适方法: {method} | 估值立场: {val_pos} | "
@@ -2482,7 +2666,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         metrics=results,
     )
     insert_agent_signal(agent_signal)
-    logger.info("[Valuation] %s: signal=%s confidence=%.2f mos=%s",
-                ticker, signal, confidence,
-                f"{margin_of_safety*100:.1f}%" if margin_of_safety else "N/A")
+    logger.info(
+        "[Valuation] %s: signal=%s confidence=%.2f mos=%s",
+        ticker,
+        signal,
+        confidence,
+        f"{margin_of_safety*100:.1f}%" if margin_of_safety else "N/A",
+    )
     return agent_signal

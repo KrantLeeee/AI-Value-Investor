@@ -23,16 +23,18 @@ logger = get_logger(__name__)
 @dataclass
 class IndustryClassificationResult:
     """Result of industry classification with confidence scoring."""
-    industry_type: str           # Industry type code
-    display_name: str            # Display name
-    confidence: float            # 0.0-1.0
-    confidence_factors: Dict     # Confidence breakdown
-    conservative_mode: bool      # Whether conservative mode triggered
-    classification_path: List    # Decision path for debugging
+
+    industry_type: str  # Industry type code
+    display_name: str  # Display name
+    confidence: float  # 0.0-1.0
+    confidence_factors: Dict  # Confidence breakdown
+    conservative_mode: bool  # Whether conservative mode triggered
+    classification_path: List  # Decision path for debugging
 
 
 class IndustryWeights(TypedDict):
     """Agent weight distribution for an industry."""
+
     fundamentals: float
     valuation: float
     warren_buffett: float
@@ -42,6 +44,7 @@ class IndustryWeights(TypedDict):
 
 class IndustryScoring(TypedDict):
     """Fundamentals scoring thresholds for an industry."""
+
     roe_thresholds: list[float]
     net_margin_thresholds: list[float]
     de_thresholds: list[float]
@@ -51,6 +54,7 @@ class IndustryScoring(TypedDict):
 
 class IndustryProfile(TypedDict):
     """Complete industry profile."""
+
     weights: IndustryWeights
     rationale: str
     validated: bool
@@ -63,58 +67,58 @@ _KEYWORDS_CACHE: dict[str, list[str]] | None = None
 # BUG-03: Priority keywords checked first to avoid misclassification
 # (e.g., 宁德时代 should be new_energy_mfg, not pharma)
 PRIORITY_KEYWORDS = {
-    'new_energy_mfg': ['锂电', '动力电池', '储能', '新能源', '光伏', '风电', '电芯'],
-    'auto_new_energy': ['新能源汽车', '电动汽车', '纯电动', '整车制造'],
+    "new_energy_mfg": ["锂电", "动力电池", "储能", "新能源", "光伏", "风电", "电芯"],
+    "auto_new_energy": ["新能源汽车", "电动汽车", "纯电动", "整车制造"],
 }
 
 # Task 2.3: Industry classification confidence mechanism
 CONFIDENCE_THRESHOLD = 0.5  # Conservative mode threshold
 
 INDUSTRY_KEYWORDS = {
-    'bank': {
-        'primary': ['银行', '商业银行'],
-        'secondary': ['信贷', '存贷'],
-        'negative': ['投资银行'],
+    "bank": {
+        "primary": ["银行", "商业银行"],
+        "secondary": ["信贷", "存贷"],
+        "negative": ["投资银行"],
     },
-    'insurance': {
-        'primary': ['保险', '人寿', '财险', '再保险'],
-        'secondary': ['保费', '承保'],
-        'negative': ['保险经纪'],
+    "insurance": {
+        "primary": ["保险", "人寿", "财险", "再保险"],
+        "secondary": ["保费", "承保"],
+        "negative": ["保险经纪"],
     },
-    'new_energy_mfg': {
-        'primary': ['锂电池', '动力电池', '储能电池', '新能源'],
-        'secondary': ['锂电', '电芯', '正极', '负极', '隔膜'],
-        'negative': ['新能源汽车'],
+    "new_energy_mfg": {
+        "primary": ["锂电池", "动力电池", "储能电池", "新能源"],
+        "secondary": ["锂电", "电芯", "正极", "负极", "隔膜"],
+        "negative": ["新能源汽车"],
     },
-    'auto_new_energy': {
-        'primary': ['新能源汽车', '电动汽车', '纯电动'],
-        'secondary': ['整车', '造车'],
-        'negative': [],
+    "auto_new_energy": {
+        "primary": ["新能源汽车", "电动汽车", "纯电动"],
+        "secondary": ["整车", "造车"],
+        "negative": [],
     },
-    'cyclical_materials': {
-        'primary': ['钢铁', '水泥', '铝业', '铜业', '化工'],
-        'secondary': ['冶炼', '矿业', '有色'],
-        'negative': [],
+    "cyclical_materials": {
+        "primary": ["钢铁", "水泥", "铝业", "铜业", "化工"],
+        "secondary": ["冶炼", "矿业", "有色"],
+        "negative": [],
     },
-    'defense_equipment': {
-        'primary': ['航空发动机', '军工', '国防', '航天'],
-        'secondary': ['导弹', '舰船', '雷达'],
-        'negative': [],
+    "defense_equipment": {
+        "primary": ["航空发动机", "军工", "国防", "航天"],
+        "secondary": ["导弹", "舰船", "雷达"],
+        "negative": [],
     },
-    'telecom_operator': {
-        'primary': ['电信', '移动通信', '运营商'],
-        'secondary': ['基站', '5G网络'],
-        'negative': ['设备'],
+    "telecom_operator": {
+        "primary": ["电信", "移动通信", "运营商"],
+        "secondary": ["基站", "5G网络"],
+        "negative": ["设备"],
     },
-    'telecom_equipment': {
-        'primary': ['通信设备', '网络设备', '基站设备'],
-        'secondary': ['交换机', '路由器'],
-        'negative': [],
+    "telecom_equipment": {
+        "primary": ["通信设备", "网络设备", "基站设备"],
+        "secondary": ["交换机", "路由器"],
+        "negative": [],
     },
-    'low_margin_mfg': {
-        'primary': ['代工', 'ODM', 'OEM', '电子制造'],
-        'secondary': ['组装', '精密制造'],
-        'negative': [],
+    "low_margin_mfg": {
+        "primary": ["代工", "ODM", "OEM", "电子制造"],
+        "secondary": ["组装", "精密制造"],
+        "negative": [],
     },
 }
 
@@ -204,8 +208,7 @@ def _load_profiles() -> tuple[dict[str, IndustryProfile], dict[str, list[str]]]:
         return _PROFILES_CACHE, _KEYWORDS_CACHE
 
 
-def match_keywords(company_name: str, business_desc: str,
-                   akshare_industry: str) -> tuple:
+def match_keywords(company_name: str, business_desc: str, akshare_industry: str) -> tuple:
     """
     Match keywords to determine industry type.
 
@@ -226,23 +229,25 @@ def match_keywords(company_name: str, business_desc: str,
 
     for industry_type, keywords in INDUSTRY_KEYWORDS.items():
         # Check negative keywords first
-        if any(neg in combined_text for neg in keywords.get('negative', [])):
+        if any(neg in combined_text for neg in keywords.get("negative", [])):
             continue
 
         score = 0.0
 
         # Primary keyword matching (raised weights)
-        if any(kw in company_name for kw in keywords['primary']):
+        if any(kw in company_name for kw in keywords["primary"]):
             score = 0.45  # Company name primary → 0.45
-        elif any(kw in business_desc for kw in keywords['primary']):
+        elif any(kw in business_desc for kw in keywords["primary"]):
             score = 0.40  # Business desc primary → 0.40
-        elif any(kw in company_name for kw in keywords.get('secondary', [])):
+        elif any(kw in company_name for kw in keywords.get("secondary", [])):
             score = 0.30  # Company name secondary → 0.30
-        elif any(kw in business_desc for kw in keywords.get('secondary', [])):
+        elif any(kw in business_desc for kw in keywords.get("secondary", [])):
             score = 0.25  # Business desc secondary → 0.25
 
         # Check AKShare industry match (additional confidence boost)
-        if akshare_industry and any(kw in akshare_industry for kw in keywords['primary'] + keywords.get('secondary', [])):
+        if akshare_industry and any(
+            kw in akshare_industry for kw in keywords["primary"] + keywords.get("secondary", [])
+        ):
             score += 0.20  # AKShare industry confirmation
 
         if score > best_score:
@@ -256,15 +261,18 @@ def get_display_name(industry_type: str) -> str:
     """Get display name for industry type."""
     try:
         config_path = get_project_root() / "config" / "industry_profiles.yaml"
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        return config.get('industries', {}).get(industry_type, {}).get('display_name', industry_type)
+        return (
+            config.get("industries", {}).get(industry_type, {}).get("display_name", industry_type)
+        )
     except Exception:
         return industry_type
 
 
-def classify_industry_with_confidence(stock_code: str, company_info: dict,
-                                      metrics: dict) -> IndustryClassificationResult:
+def classify_industry_with_confidence(
+    stock_code: str, company_info: dict, metrics: dict
+) -> IndustryClassificationResult:
     """
     Multi-signal industry classification with confidence scoring.
 
@@ -281,34 +289,30 @@ def classify_industry_with_confidence(stock_code: str, company_info: dict,
     classification_path = []
 
     # Extract company info
-    company_name = company_info.get('name', '')
-    business_desc = company_info.get('business_description', '')
-    akshare_industry = company_info.get('akshare_industry', '')
+    company_name = company_info.get("name", "")
+    business_desc = company_info.get("business_description", "")
+    akshare_industry = company_info.get("akshare_industry", "")
 
     # Factor 1: Keyword matching
-    keyword_industry, keyword_score = match_keywords(
-        company_name, business_desc, akshare_industry
-    )
+    keyword_industry, keyword_score = match_keywords(company_name, business_desc, akshare_industry)
     if keyword_industry:
         confidence += keyword_score
-        confidence_factors['keyword'] = keyword_score
+        confidence_factors["keyword"] = keyword_score
         classification_path.append(f"关键词匹配: {keyword_industry} (+{keyword_score:.2f})")
 
     # Determine final industry type
-    final_industry = keyword_industry if keyword_industry else 'generic'
+    final_industry = keyword_industry if keyword_industry else "generic"
 
     # Check if confidence below threshold
     if confidence < CONFIDENCE_THRESHOLD:
-        classification_path.append(
-            f"置信度{confidence:.2f}<{CONFIDENCE_THRESHOLD}，降级到generic"
-        )
+        classification_path.append(f"置信度{confidence:.2f}<{CONFIDENCE_THRESHOLD}，降级到generic")
         return IndustryClassificationResult(
-            industry_type='generic',
-            display_name='综合行业',
+            industry_type="generic",
+            display_name="综合行业",
             confidence=confidence,
             confidence_factors=confidence_factors,
             conservative_mode=True,
-            classification_path=classification_path
+            classification_path=classification_path,
         )
 
     return IndustryClassificationResult(
@@ -317,7 +321,7 @@ def classify_industry_with_confidence(stock_code: str, company_info: dict,
         confidence=min(confidence, 1.0),
         confidence_factors=confidence_factors,
         conservative_mode=False,
-        classification_path=classification_path
+        classification_path=classification_path,
     )
 
 
@@ -365,6 +369,9 @@ def classify_industry(sector: str | None, sub_industry: str | None = None) -> st
     """
     Classify stock into industry category.
 
+    BUG-03 FIX: Priority keywords are now checked FIRST to avoid misclassification.
+    E.g., CATL (宁德时代) should be new_energy_mfg, not pharma.
+
     Args:
         sector: Sector from watchlist or data source
         sub_industry: Optional sub-industry detail
@@ -376,16 +383,43 @@ def classify_industry(sector: str | None, sub_industry: str | None = None) -> st
         logger.debug("[Industry] No sector provided, using default")
         return "default"
 
-    _, keywords = _load_profiles()
-
     # Combine sector and sub_industry for matching
-    search_text = (sector + " " + (sub_industry or "")).lower()
+    search_text = sector + " " + (sub_industry or "")
+    search_text_lower = search_text.lower()
 
-    # Try to match keywords
-    for industry, keyword_list in keywords.items():
+    # Step 1: Check PRIORITY_KEYWORDS first (new energy, EV, etc.)
+    # These are high-value categories that should never be misclassified
+    for industry_type, keywords in PRIORITY_KEYWORDS.items():
+        if any(kw in search_text for kw in keywords):
+            logger.info(
+                f"[Industry] Priority matched '{sector}' as '{industry_type}' "
+                f"(matched priority keyword)"
+            )
+            return industry_type
+
+    # Step 2: Check INDUSTRY_KEYWORDS (structured with primary/secondary/negative)
+    for industry_type, keywords_dict in INDUSTRY_KEYWORDS.items():
+        primary = keywords_dict.get("primary", [])
+        secondary = keywords_dict.get("secondary", [])
+        negative = keywords_dict.get("negative", [])
+
+        # Skip if negative keywords match
+        if any(neg in search_text for neg in negative):
+            continue
+
+        # Check primary and secondary keywords
+        if any(kw in search_text for kw in primary + secondary):
+            logger.info(f"[Industry] Keyword matched '{sector}' as '{industry_type}'")
+            return industry_type
+
+    # Step 3: Check YAML applies_to keywords (fallback)
+    _, yaml_keywords = _load_profiles()
+    for industry, keyword_list in yaml_keywords.items():
         for keyword in keyword_list:
-            if keyword in search_text:
-                logger.info(f"[Industry] Classified '{sector}' as '{industry}' (matched: {keyword})")
+            if keyword in search_text_lower:
+                logger.info(
+                    f"[Industry] YAML matched '{sector}' as '{industry}' " f"(matched: {keyword})"
+                )
                 return industry
 
     # No match found
@@ -414,9 +448,7 @@ def get_industry_profile(industry: str) -> IndustryProfile:
     # Validate weights sum to 1.0
     weights_sum = sum(profile["weights"].values())
     if abs(weights_sum - 1.0) > 0.01:
-        logger.warning(
-            f"[Industry] Weights for '{industry}' sum to {weights_sum:.2f}, not 1.0!"
-        )
+        logger.warning(f"[Industry] Weights for '{industry}' sum to {weights_sum:.2f}, not 1.0!")
 
     return profile
 
@@ -678,6 +710,7 @@ def get_industry_from_watchlist(ticker: str, watchlist_path: Path | None = None)
 
 class ValuationMethodConfig(TypedDict):
     """Valuation method configuration for a stock type."""
+
     enabled_methods: list[str]  # DCF, Graham, EV/EBITDA, P/B, PS, EV/Sales, PEG
     weights: dict[str, float]  # method -> weight
     rationale: str
@@ -689,13 +722,18 @@ def detect_loss_making_tech_stock(
     revenue_growth: float | None,
     rd_ratio: float | None = None,
     industry: str | None = None,
+    roe: float | None = None,
 ) -> bool:
     """
-    BUG-03A: Detect loss-making tech stocks that need PS/EV-Sales valuation.
+    BUG-03A FIX: Detect loss-making tech stocks that need PS/EV-Sales valuation.
 
-    Criteria (from 多行业估值能力进化方案改造 2.0):
-    - Net income ≤ 0 OR net margin < 2%
-    - Revenue growth ≥ 20% (growth potential - without this, stock is just failing)
+    CRITICAL FIX: Added ROE check to prevent misclassifying profitable companies.
+    Industrial Foxconn (工业富联) has 3.9% net margin but 21.6% ROE and ¥353B profit,
+    which is clearly a profitable company, not a loss-making tech stock.
+
+    Criteria (revised):
+    - Net income ≤ 0 OR (net margin < 2% AND ROE < 5%)
+    - Revenue growth ≥ 15% (growth potential)
     - R&D expense / revenue ≥ 10% (optional, indicates tech investment)
     - Industry is tech/software/AI related
 
@@ -705,29 +743,53 @@ def detect_loss_making_tech_stock(
         revenue_growth: Revenue growth rate as decimal (e.g., 0.25 for 25%)
         rd_ratio: R&D expense ratio as decimal (e.g., 0.15 for 15%)
         industry: Industry classification
+        roe: Return on equity as decimal (e.g., 0.21 for 21%) - NEW parameter
 
     Returns:
         True if stock should use loss-making tech valuation methods
     """
-    # Check for loss-making OR marginal profitability condition
-    # BUG-03A: Include borderline cases (net margin < 5% counts as "struggling")
-    is_loss_making = False
+    # Step 1: Check for TRUE loss-making condition
+    # A company is only "loss-making" if:
+    # - Net income is negative, OR
+    # - Net margin < 2% AND ROE is also low (< 5%)
+    # This prevents misclassifying low-margin-but-profitable manufacturers
+    is_truly_loss_making = False
+
     if net_income is not None and net_income <= 0:
-        is_loss_making = True
-    elif net_margin is not None and net_margin < 0.05:  # < 5% (borderline profitability)
-        is_loss_making = True
+        is_truly_loss_making = True
+    elif net_margin is not None and net_margin < 0.02:  # < 2% margin
+        # Only consider as "struggling" if ROE is also low
+        # High ROE (>5%) with low margin means efficient asset-light business, not loss-making
+        if roe is None or roe < 0.05:
+            is_truly_loss_making = True
+        else:
+            logger.debug(
+                f"[Industry] Low margin ({net_margin:.1%}) but ROE={roe:.1%} > 5%, "
+                f"not a loss-making tech stock (profitable manufacturing)"
+            )
+            return False
 
-    if not is_loss_making:
+    if not is_truly_loss_making:
         return False
 
-    # Check for growth potential (revenue growth >= 15% for borderline cases)
-    # Original threshold was 20%, relaxed to 15% to catch borderline cases
-    has_growth = revenue_growth is not None and revenue_growth >= 0.15  # >= 15%
+    # Step 2: Check ROE as a safety guard
+    # Companies with ROE > 10% are clearly profitable and should NOT be classified as loss-making
+    if roe is not None and roe > 0.10:
+        logger.debug(
+            f"[Industry] ROE={roe:.1%} > 10% indicates profitable company, "
+            f"not a loss-making tech stock"
+        )
+        return False
+
+    # Step 3: Check for growth potential (revenue growth >= 15%)
+    has_growth = revenue_growth is not None and revenue_growth >= 0.15
     if not has_growth:
-        logger.debug(f"[Industry] Loss-making/marginal but low growth ({revenue_growth}), not a growth tech stock")
+        logger.debug(
+            f"[Industry] Loss-making but low growth ({revenue_growth}), " f"not a growth tech stock"
+        )
         return False
 
-    # Check for tech industry (optional but helps)
+    # Step 4: Check for tech industry indicators
     tech_keywords = ["tech", "科技", "软件", "AI", "人工智能", "互联网", "电子", "半导体"]
     is_tech_industry = False
     if industry:
@@ -737,12 +799,11 @@ def detect_loss_making_tech_stock(
     has_rd_investment = rd_ratio is not None and rd_ratio >= 0.10  # >= 10%
 
     # Classify as loss-making tech if:
-    # 1. Is loss-making + has growth + (is tech industry OR has high R&D)
-    # 2. R&D alone can qualify even without explicit tech label
+    # 1. Is truly loss-making + has growth + (is tech industry OR has high R&D)
     if is_tech_industry or has_rd_investment:
         logger.info(
             f"[Industry] Detected loss-making tech stock: "
-            f"net_margin={net_margin}, growth={revenue_growth}, "
+            f"net_margin={net_margin}, roe={roe}, growth={revenue_growth}, "
             f"rd_ratio={rd_ratio}, industry={industry}"
         )
         return True
@@ -759,10 +820,10 @@ def get_loss_making_tech_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["PS", "EV/Sales", "DCF", "P/B"],
         "weights": {
-            "PS": 0.40,        # Primary method - revenue-based
+            "PS": 0.40,  # Primary method - revenue-based
             "EV/Sales": 0.30,  # Enterprise value / sales
-            "DCF": 0.20,       # DCF with turnaround assumptions
-            "P/B": 0.10,       # Floor value only
+            "DCF": 0.20,  # DCF with turnaround assumptions
+            "P/B": 0.10,  # Floor value only
         },
         "rationale": (
             "亏损期科技股估值方法: PS和EV/Sales为主力方法（营收不受亏损影响），"
@@ -820,12 +881,30 @@ def detect_growth_stock(
 
     # Check for growth-related industry (optional but helps confirm)
     growth_keywords = [
-        "自动化", "automation", "半导体", "semiconductor",
-        "新能源", "new energy", "互联网", "internet",
-        "医药", "pharma", "研发", "r&d",
-        "科技", "tech", "软件", "software",
-        "人工智能", "ai", "电子", "electronic",
-        "机器人", "robot", "智能", "smart",
+        "自动化",
+        "automation",
+        "半导体",
+        "semiconductor",
+        "新能源",
+        "new energy",
+        "互联网",
+        "internet",
+        "医药",
+        "pharma",
+        "研发",
+        "r&d",
+        "科技",
+        "tech",
+        "软件",
+        "software",
+        "人工智能",
+        "ai",
+        "电子",
+        "electronic",
+        "机器人",
+        "robot",
+        "智能",
+        "smart",
     ]
     is_growth_industry = False
     if industry:
@@ -863,10 +942,10 @@ def get_growth_tech_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["PEG", "DCF", "EV/Sales", "P/B"],
         "weights": {
-            "DCF": 0.35,       # DCF with growth assumptions
-            "PEG": 0.30,       # Price/Earnings-to-Growth
+            "DCF": 0.35,  # DCF with growth assumptions
+            "PEG": 0.30,  # Price/Earnings-to-Growth
             "EV/Sales": 0.20,  # Industry comparison
-            "P/B": 0.15,       # ROE-adjusted P/B
+            "P/B": 0.15,  # ROE-adjusted P/B
         },
         "rationale": (
             "盈利期成长股估值方法: DCF和PEG为主力（反映成长溢价），"
@@ -900,10 +979,19 @@ def detect_financial_stock(
         return False
 
     financial_keywords = [
-        "银行", "bank", "banking",
-        "保险", "insurance", "寿险", "财险",
-        "金融", "financial", "finance",
-        "证券", "securities", "券商",
+        "银行",
+        "bank",
+        "banking",
+        "保险",
+        "insurance",
+        "寿险",
+        "财险",
+        "金融",
+        "financial",
+        "finance",
+        "证券",
+        "securities",
+        "券商",
     ]
 
     is_financial = any(kw in industry.lower() for kw in financial_keywords)
@@ -927,9 +1015,9 @@ def get_financial_stock_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["P/B_ROE", "DDM", "P/E"],
         "weights": {
-            "P/B_ROE": 0.40,   # P/B driven by ROE/Ke
-            "DDM": 0.35,       # Dividend discount model
-            "P/E": 0.25,       # Operational profit PE
+            "P/B_ROE": 0.40,  # P/B driven by ROE/Ke
+            "DDM": 0.35,  # Dividend discount model
+            "P/E": 0.25,  # Operational profit PE
         },
         "rationale": (
             "金融股估值方法: P/B-ROE模型为主力（ROE是核心指标），"
@@ -964,16 +1052,33 @@ def detect_cyclical_stock(
         return False
 
     cyclical_keywords = [
-        "石油", "oil", "petroleum",
-        "天然气", "gas", "lng",
-        "矿业", "mining", "矿产",
-        "钢铁", "steel", "铝", "aluminum",
-        "化工", "chemical", "petrochemical",
-        "有色金属", "metal",
-        "煤炭", "coal",
-        "航运", "shipping",
-        "能源", "energy",  # Added to catch energy sector
-        "油田", "oilfield", "油服",
+        "石油",
+        "oil",
+        "petroleum",
+        "天然气",
+        "gas",
+        "lng",
+        "矿业",
+        "mining",
+        "矿产",
+        "钢铁",
+        "steel",
+        "铝",
+        "aluminum",
+        "化工",
+        "chemical",
+        "petrochemical",
+        "有色金属",
+        "metal",
+        "煤炭",
+        "coal",
+        "航运",
+        "shipping",
+        "能源",
+        "energy",  # Added to catch energy sector
+        "油田",
+        "oilfield",
+        "油服",
     ]
 
     is_cyclical = any(kw in industry.lower() for kw in cyclical_keywords)
@@ -997,10 +1102,10 @@ def get_cyclical_stock_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["DCF_Normalized", "EV/EBITDA_Cycle", "NAV", "P/B_Cycle"],
         "weights": {
-            "DCF_Normalized": 0.35,   # DCF with cycle-bottom FCF
+            "DCF_Normalized": 0.35,  # DCF with cycle-bottom FCF
             "EV/EBITDA_Cycle": 0.30,  # Cycle-adjusted EV/EBITDA
-            "NAV": 0.20,              # Asset replacement value
-            "P/B_Cycle": 0.15,        # Cycle-bottom P/B
+            "NAV": 0.20,  # Asset replacement value
+            "P/B_Cycle": 0.15,  # Cycle-bottom P/B
         },
         "rationale": (
             "周期股估值方法: 正常化DCF（周期底部FCF为基准），"
@@ -1030,15 +1135,29 @@ def detect_healthcare_stock(
         return False
 
     healthcare_keywords = [
-        "医药", "pharma", "pharmaceutical",
-        "生物", "biotech", "bio",
-        "医疗", "medical", "healthcare",
-        "制药", "drug",
-        "保健", "health",
-        "疫苗", "vaccine",
-        "诊断", "diagnostic",
-        "器械", "device",
-        "cro", "cxo", "cmo", "cdmo",  # lowercase for case-insensitive matching
+        "医药",
+        "pharma",
+        "pharmaceutical",
+        "生物",
+        "biotech",
+        "bio",
+        "医疗",
+        "medical",
+        "healthcare",
+        "制药",
+        "drug",
+        "保健",
+        "health",
+        "疫苗",
+        "vaccine",
+        "诊断",
+        "diagnostic",
+        "器械",
+        "device",
+        "cro",
+        "cxo",
+        "cmo",
+        "cdmo",  # lowercase for case-insensitive matching
     ]
 
     is_healthcare = any(kw in industry.lower() for kw in healthcare_keywords)
@@ -1096,15 +1215,11 @@ def detect_healthcare_rd_stage(
         return True
 
     if has_high_rd:
-        logger.info(
-            f"[Industry] Healthcare R&D stage detected (high R&D): "
-            f"rd_ratio={rd_ratio}"
-        )
+        logger.info(f"[Industry] Healthcare R&D stage detected (high R&D): " f"rd_ratio={rd_ratio}")
         return True
 
     logger.debug(
-        f"[Industry] Healthcare mature stage: "
-        f"net_margin={net_margin}, rd_ratio={rd_ratio}"
+        f"[Industry] Healthcare mature stage: " f"net_margin={net_margin}, rd_ratio={rd_ratio}"
     )
     return False
 
@@ -1120,10 +1235,10 @@ def get_healthcare_rd_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["PS", "EV/Sales", "Pipeline_DCF", "P/B"],
         "weights": {
-            "PS": 0.40,           # Primary - revenue-based
-            "EV/Sales": 0.30,     # Enterprise value approach
-            "Pipeline_DCF": 0.20, # DCF with pipeline probability adjustments
-            "P/B": 0.10,          # Floor value only
+            "PS": 0.40,  # Primary - revenue-based
+            "EV/Sales": 0.30,  # Enterprise value approach
+            "Pipeline_DCF": 0.20,  # DCF with pipeline probability adjustments
+            "P/B": 0.10,  # Floor value only
         },
         "rationale": (
             "研发期医药股估值方法: PS和EV/Sales为主力（营收反映管线商业化进展），"
@@ -1142,10 +1257,10 @@ def get_healthcare_mature_valuation_config() -> ValuationMethodConfig:
     return {
         "enabled_methods": ["P/E", "DCF", "EV/EBITDA", "PS"],
         "weights": {
-            "P/E": 0.35,          # Primary - stable earnings
-            "DCF": 0.30,          # Cash flow based
-            "EV/EBITDA": 0.20,    # Industry comparison
-            "PS": 0.15,           # Revenue multiple as secondary
+            "P/E": 0.35,  # Primary - stable earnings
+            "DCF": 0.30,  # Cash flow based
+            "EV/EBITDA": 0.20,  # Industry comparison
+            "PS": 0.15,  # Revenue multiple as secondary
         },
         "rationale": (
             "成熟期医药股估值方法: PE为主力（盈利稳定可比较），"
@@ -1176,26 +1291,33 @@ def is_innovative_pharma(metrics: dict, business_desc: str) -> bool:
     conditions = 0
 
     # R&D expense ratio high
-    rd_ratio = metrics.get('rd_expense_ratio', 0)
+    rd_ratio = metrics.get("rd_expense_ratio", 0)
     if rd_ratio > 30:
         conditions += 1
 
     # Loss or slim profit
-    net_margin = metrics.get('net_margin', 0)
+    net_margin = metrics.get("net_margin", 0)
     if net_margin < 5:
         conditions += 1
 
     # Keywords check
-    innovative_keywords = ['创新药', 'First-in-class', 'Best-in-class',
-                           '临床试验', 'IND', 'NDA', '管线', 'Pipeline']
+    innovative_keywords = [
+        "创新药",
+        "First-in-class",
+        "Best-in-class",
+        "临床试验",
+        "IND",
+        "NDA",
+        "管线",
+        "Pipeline",
+    ]
     if any(kw.lower() in business_desc.lower() for kw in innovative_keywords):
         conditions += 1
 
     return conditions >= 2
 
 
-def classify_sub_industry(industry_type: str, company_info: dict,
-                          metrics: dict) -> str:
+def classify_sub_industry(industry_type: str, company_info: dict, metrics: dict) -> str:
     """
     Further classify within a main industry to sub-industry.
 
@@ -1207,40 +1329,40 @@ def classify_sub_industry(industry_type: str, company_info: dict,
     Returns:
         Sub-industry type or original industry_type
     """
-    business_desc = company_info.get('business_description', '')
-    company_name = company_info.get('name', '')
+    business_desc = company_info.get("business_description", "")
+    company_name = company_info.get("name", "")
 
     # === Pharma sub-classification ===
-    if industry_type in ['pharma', 'pharma_mature', 'medical_device']:
+    if industry_type in ["pharma", "pharma_mature", "medical_device"]:
         # Check innovative pharma
         if is_innovative_pharma(metrics, business_desc):
-            return 'pharma_innovative'
+            return "pharma_innovative"
 
         # Check CXO
-        cxo_keywords = ['CRO', 'CMO', 'CDMO', '医药外包', '药物研发服务']
+        cxo_keywords = ["CRO", "CMO", "CDMO", "医药外包", "药物研发服务"]
         if any(kw in business_desc for kw in cxo_keywords):
-            return 'pharma_cxo'
+            return "pharma_cxo"
 
         # Check TCM
-        tcm_keywords = ['中药', '中成药', '中医药', '传统医药']
+        tcm_keywords = ["中药", "中成药", "中医药", "传统医药"]
         if any(kw in business_desc + company_name for kw in tcm_keywords):
-            return 'pharma_tcm'
+            return "pharma_tcm"
 
     # === Tech sub-classification ===
-    if industry_type in ['tech', 'software']:
-        saas_keywords = ['SaaS', '云服务', '订阅', 'ARR', '云计算']
-        gross_margin = metrics.get('gross_margin', 0)
+    if industry_type in ["tech", "software"]:
+        saas_keywords = ["SaaS", "云服务", "订阅", "ARR", "云计算"]
+        gross_margin = metrics.get("gross_margin", 0)
         if any(kw in business_desc for kw in saas_keywords) and gross_margin > 70:
-            return 'tech_saas'
+            return "tech_saas"
         else:
-            return 'tech_traditional'
+            return "tech_traditional"
 
     # === Consumer sub-classification ===
-    if industry_type in ['consumer', 'brand_moat']:
-        gross_margin = metrics.get('gross_margin', 0)
+    if industry_type in ["consumer", "brand_moat"]:
+        gross_margin = metrics.get("gross_margin", 0)
         if gross_margin > 70:
-            return 'consumer_premium'
+            return "consumer_premium"
         elif gross_margin > 30:
-            return 'consumer_mass'
+            return "consumer_mass"
 
     return industry_type  # No further classification

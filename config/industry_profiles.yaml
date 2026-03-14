@@ -59,7 +59,9 @@ industries:
     confidence: 0.80
     pb_multiple_cap: 0.5
     methods: ["pb"]
-    disable_methods: ["graham_number", "ev_ebitda"]
+    # P2-8 FIX: Add DCF to disabled methods - standard DCF growth assumptions
+    # do not apply to real estate in contraction cycle
+    disable_methods: ["graham_number", "ev_ebitda", "dcf"]
     warning_text: "⚠️ 房地产开发行业不适合使用标准P/B倍数估值"
 
   # === New 8 Industry Types ===
