@@ -67,6 +67,11 @@ task_routing:
     max_tokens: 1500
     temperature: 0.3
     description: "Investment recommendation and final verdict chapter"
+  industry_routing:
+    provider: deepseek
+    model: deepseek-reasoner
+    max_tokens: 800
+    temperature: 0.1
 
 retry:
   max_attempts: 2

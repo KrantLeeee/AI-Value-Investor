@@ -615,3 +615,62 @@ REPORT_CH7_USER = """**综合信号汇总:**
 
 请给出综合投资建议（≥300字，必须包含"推荐"和"目标价"，最后一行必须是综合信号）。
 注意：综合建议必须与情绪方向({sentiment_direction})一致，或明确解释为何与之相反。"""
+
+
+# ── Industry Routing (V3.0) ──────────────────────────────────────────────────
+
+INDUSTRY_ROUTING_SYSTEM_PROMPT = """你是 A 股估值方法专家。根据公司描述和财务特征，选择最适合的估值框架。
+
+## 可用估值方法
+
+| 方法 | 适用场景 |
+|-----|---------|
+| pe | 稳定盈利企业 |
+| ev_ebitda | 资本密集型、有折旧摊销的企业 |
+| dcf | 现金流稳定、可预测的企业 |
+| ps | 亏损但有收入的成长企业 |
+| pb | 资产驱动型企业 |
+| pb_roe | 金融股（银行、保险） |
+| ddm | 高分红稳定企业 |
+| peg | 高速成长股 |
+| normalized_pe | 周期股（使用周期调整盈利） |
+| pe_moat | 品牌消费股（护城河溢价） |
+| ev_sales | 亏损成长股 |
+
+## 输出格式（严格 JSON）
+
+```json
+{
+  "regime": "行业体系名称（如 tech_saas, consumer_brand, cyclical_materials）",
+  "primary_methods": ["方法1", "方法2"],
+  "method_importance": {"方法1": 8, "方法2": 5},
+  "disabled_methods": ["不适用的方法"],
+  "scoring_mode": "standard 或 cycle_adjusted",
+  "ev_ebitda_multiple_range": [低倍数, 高倍数],
+  "rationale": "简要选择理由（1-2句）"
+}
+```
+
+## 注意事项
+- method_importance 使用 1-10 分制表示重要程度，系统会自动归一化为权重
+- primary_methods 最多选 3 个，按重要性排序
+- 如果公司亏损，禁用 pe 和 peg
+- 如果公司无明显周期特征，不要使用 normalized_pe
+"""
+
+INDUSTRY_ROUTING_USER_PROMPT_TEMPLATE = """## 公司信息
+- 名称：{name}
+- 行业标签：{industry}
+- 主营业务：{business_description}
+
+## 关键财务指标
+- 毛利率：{gross_margin:.1f}%
+- 净利率：{net_margin:.1f}%
+- ROE：{roe:.1f}%
+- 研发费用率：{rd_expense_ratio:.1f}%
+- 资产负债率：{de_ratio:.1f}x
+- 营收增长：{revenue_growth:.1f}%
+- 净利润增长：{net_income_growth:.1f}%
+- FCF 正值年数（近5年）：{fcf_positive_years}
+
+请选择最适合的估值框架，输出 JSON。"""

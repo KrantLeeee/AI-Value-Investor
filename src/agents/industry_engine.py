@@ -11,9 +11,18 @@ Usage:
     config = get_valuation_config(ticker, company_info, metrics)
 """
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass
 
 from src.agents.valuation_config import ValuationConfig
+from src.llm.prompts import (
+    INDUSTRY_ROUTING_SYSTEM_PROMPT,
+    INDUSTRY_ROUTING_USER_PROMPT_TEMPLATE,
+)
+from src.llm.router import LLMError, call_llm
+from src.utils.config import get_output_dir
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -233,3 +242,133 @@ def _build_valuation_config_from_regime(
         rationale=rationale,
         triggered_rules=triggered_rules,
     )
+
+
+# ── Layer 2: LLM Dynamic Routing ─────────────────────────────────────────────
+
+
+def extract_json_from_llm_output(raw_output: str) -> dict:
+    """
+    Extract JSON from LLM output, handling DeepSeek's <think> blocks.
+
+    Strategies:
+    1. Remove <think>...</think> blocks
+    2. Try to extract from ```json...``` code block
+    3. Fallback to extracting bare JSON object
+    4. Raise ValueError if all fail
+    """
+    # Step 1: Remove <think> blocks
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
+
+    # Step 2: Try markdown code block
+    code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, re.DOTALL)
+    if code_block_match:
+        try:
+            return json.loads(code_block_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Step 3: Try bare JSON object
+    json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not extract JSON from LLM output: {raw_output[:200]}")
+
+
+def _get_cache_key(stock_code: str, report_period: str) -> str:
+    """Generate cache key from stock code and report period."""
+    raw = f"{stock_code}:{report_period}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _get_cached_config(cache_key: str) -> ValuationConfig | None:
+    """Try to load cached ValuationConfig."""
+    cache_dir = get_output_dir("industry_cache")
+    cache_file = cache_dir / f"{cache_key}.json"
+    if cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            return ValuationConfig(**data)
+        except Exception as e:
+            logger.warning("[IndustryEngine] Cache read failed: %s", e)
+    return None
+
+
+def _save_to_cache(cache_key: str, config: ValuationConfig) -> None:
+    """Save ValuationConfig to cache."""
+    cache_dir = get_output_dir("industry_cache")
+    cache_file = cache_dir / f"{cache_key}.json"
+    try:
+        cache_file.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("[IndustryEngine] Cache write failed: %s", e)
+
+
+def _call_llm_for_routing(company_info: dict, metrics: dict) -> ValuationConfig | None:
+    """
+    Layer 2: LLM dynamic routing.
+
+    Calls DeepSeek-Reasoner to determine the best valuation framework.
+    Returns ValuationConfig on success, None on failure (falls through to Layer 3).
+    """
+    # Build user prompt
+    prompt_vars = {
+        "name": company_info.get("name", "Unknown"),
+        "industry": company_info.get("industry", "Unknown"),
+        "business_description": company_info.get("business_description", ""),
+        "gross_margin": metrics.get("gross_margin") or 0,
+        "net_margin": metrics.get("net_margin") or 0,
+        "roe": metrics.get("roe") or 0,
+        "rd_expense_ratio": metrics.get("rd_expense_ratio") or 0,
+        "de_ratio": metrics.get("de_ratio") or 0,
+        "revenue_growth": metrics.get("revenue_growth") or 0,
+        "net_income_growth": metrics.get("net_income_growth") or 0,
+        "fcf_positive_years": metrics.get("fcf_positive_years") or 0,
+    }
+
+    try:
+        user_prompt = INDUSTRY_ROUTING_USER_PROMPT_TEMPLATE.format(**prompt_vars)
+        raw_output = call_llm(
+            task="industry_routing",
+            system_prompt=INDUSTRY_ROUTING_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+        )
+
+        # Extract and parse JSON
+        parsed = extract_json_from_llm_output(raw_output)
+
+        # Build ValuationConfig
+        config = ValuationConfig(
+            regime=parsed.get("regime", "llm_generic"),
+            primary_methods=parsed.get("primary_methods", ["ev_ebitda", "pe"]),
+            method_importance=parsed.get("method_importance", {}),
+            disabled_methods=parsed.get("disabled_methods", []),
+            scoring_mode=parsed.get("scoring_mode", "standard"),
+            ev_ebitda_multiple_range=tuple(
+                parsed.get("ev_ebitda_multiple_range", [8.0, 12.0])
+            ),
+            confidence=0.75,
+            source="llm",
+            rationale=parsed.get("rationale", ""),
+        )
+
+        logger.info(
+            "[IndustryEngine] LLM routing: regime=%s, methods=%s",
+            config.regime,
+            config.primary_methods,
+        )
+        return config
+
+    except LLMError as e:
+        logger.warning("[IndustryEngine] LLM call failed: %s", e)
+        return None
+    except ValueError as e:
+        logger.warning("[IndustryEngine] JSON extraction failed: %s", e)
+        return None
+    except Exception as e:
+        logger.warning("[IndustryEngine] LLM routing error: %s", e)
+        return None

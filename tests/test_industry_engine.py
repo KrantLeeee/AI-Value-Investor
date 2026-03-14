@@ -261,3 +261,50 @@ class TestHardRuleDetection:
         }
         result = detect_special_regime(metrics, {})
         assert result is None
+
+
+class TestJSONExtraction:
+    """Tests for LLM JSON extraction with DeepSeek <think> handling."""
+
+    def test_extract_json_from_code_block(self):
+        """Extract JSON from markdown code block."""
+        from src.agents.industry_engine import extract_json_from_llm_output
+
+        raw = '''Some text
+```json
+{"regime": "tech", "primary_methods": ["pe", "ps"]}
+```
+More text'''
+        result = extract_json_from_llm_output(raw)
+        assert result["regime"] == "tech"
+        assert result["primary_methods"] == ["pe", "ps"]
+
+    def test_extract_json_with_think_block(self):
+        """DeepSeek <think> blocks should be stripped."""
+        from src.agents.industry_engine import extract_json_from_llm_output
+
+        raw = '''<think>
+Let me analyze this company...
+The gross margin is high at 75%.
+</think>
+
+```json
+{"regime": "brand_moat", "primary_methods": ["pe_moat"]}
+```'''
+        result = extract_json_from_llm_output(raw)
+        assert result["regime"] == "brand_moat"
+
+    def test_extract_bare_json(self):
+        """Extract JSON without code block markers."""
+        from src.agents.industry_engine import extract_json_from_llm_output
+
+        raw = '{"regime": "utility", "primary_methods": ["ddm", "dcf"]}'
+        result = extract_json_from_llm_output(raw)
+        assert result["regime"] == "utility"
+
+    def test_invalid_json_raises_error(self):
+        """Invalid JSON should raise ValueError."""
+        from src.agents.industry_engine import extract_json_from_llm_output
+
+        with pytest.raises(ValueError):
+            extract_json_from_llm_output("not valid json at all")
