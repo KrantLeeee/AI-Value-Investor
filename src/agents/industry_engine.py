@@ -372,3 +372,101 @@ def _call_llm_for_routing(company_info: dict, metrics: dict) -> ValuationConfig 
     except Exception as e:
         logger.warning("[IndustryEngine] LLM routing error: %s", e)
         return None
+
+
+# ── Fallback Configuration ───────────────────────────────────────────────────
+
+
+def get_fallback_config() -> ValuationConfig:
+    """
+    Layer 3: Safe fallback — always returns valid config.
+
+    Used when:
+    - No hard rule matches
+    - LLM call fails or returns invalid data
+    - Cache miss and LLM disabled
+    """
+    return ValuationConfig(
+        regime="generic",
+        primary_methods=["ev_ebitda", "pe", "pb"],
+        weights={"ev_ebitda": 0.4, "pe": 0.35, "pb": 0.25},
+        confidence=0.40,
+        source="fallback",
+        rationale="No special regime detected, using balanced generic valuation",
+    )
+
+
+# ── Unified Entry Point ──────────────────────────────────────────────────────
+
+
+def get_valuation_config(
+    ticker: str,
+    company_info: dict,
+    metrics: dict,
+    *,
+    skip_llm: bool = False,
+) -> ValuationConfig:
+    """
+    Unified entry point for the three-layer industry engine.
+
+    Args:
+        ticker: Stock ticker (e.g., "601398.SH")
+        company_info: Dict with name, industry, business_description
+        metrics: Dict with financial metrics
+        skip_llm: If True, skip LLM layer and fall through to fallback
+
+    Returns:
+        ValuationConfig with regime, methods, weights, confidence, source
+    """
+    # Layer 1: Hard Rules
+    hard_result = detect_special_regime(metrics, company_info)
+    if hard_result:
+        config = _build_valuation_config_from_regime(
+            regime=hard_result.regime,
+            confidence=hard_result.confidence,
+            triggered_rules=hard_result.triggered_rules,
+            rationale=hard_result.rationale,
+        )
+        logger.info(
+            "[IndustryEngine] %s: regime=%s, source=hard_rule, confidence=%.2f",
+            ticker,
+            config.regime,
+            config.confidence,
+        )
+        return config
+
+    # Layer 2: LLM Dynamic Routing (with cache)
+    if not skip_llm:
+        report_period = metrics.get("report_period", "unknown")
+        cache_key = _get_cache_key(ticker, report_period)
+
+        # Check cache first
+        cached = _get_cached_config(cache_key)
+        if cached:
+            logger.info(
+                "[IndustryEngine] %s: regime=%s, source=cache",
+                ticker,
+                cached.regime,
+            )
+            return cached
+
+        # Call LLM
+        llm_config = _call_llm_for_routing(company_info, metrics)
+        if llm_config:
+            _save_to_cache(cache_key, llm_config)
+            logger.info(
+                "[IndustryEngine] %s: regime=%s, source=llm, confidence=%.2f",
+                ticker,
+                llm_config.regime,
+                llm_config.confidence,
+            )
+            return llm_config
+
+    # Layer 3: Fallback
+    fallback = get_fallback_config()
+    logger.info(
+        "[IndustryEngine] %s: regime=%s, source=fallback",
+        ticker,
+        fallback.regime,
+    )
+    return fallback

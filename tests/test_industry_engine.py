@@ -308,3 +308,54 @@ The gross margin is high at 75%.
 
         with pytest.raises(ValueError):
             extract_json_from_llm_output("not valid json at all")
+
+
+class TestGetValuationConfig:
+    """Tests for the unified get_valuation_config entry point."""
+
+    def test_fallback_never_fails(self):
+        """Fallback should always return a valid config."""
+        from src.agents.industry_engine import get_fallback_config
+
+        config = get_fallback_config()
+        assert config.regime == "generic"
+        assert config.source == "fallback"
+        assert len(config.primary_methods) >= 2
+        assert sum(config.weights.values()) == 1.0
+
+    def test_get_valuation_config_returns_config(self):
+        """get_valuation_config should always return ValuationConfig (without LLM call)."""
+        from src.agents.industry_engine import get_valuation_config
+        from src.agents.valuation_config import ValuationConfig
+
+        # Normal company metrics (no special regime)
+        metrics = {
+            "de_ratio": 1.5,
+            "gross_margin": 35.0,
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": False,
+        }
+        company_info = {"name": "Test Corp", "industry": "Manufacturing"}
+
+        # Use skip_llm=True to avoid real LLM calls in tests (falls back to generic)
+        config = get_valuation_config("000001.SZ", company_info, metrics, skip_llm=True)
+        assert isinstance(config, ValuationConfig)
+        assert config.regime is not None
+        assert len(config.primary_methods) > 0
+        assert config.source in ("hard_rule", "fallback")  # No LLM in this test
+
+    def test_hard_rule_takes_priority(self):
+        """Hard rule match should return immediately (no LLM call)."""
+        from src.agents.industry_engine import get_valuation_config
+
+        # Bank metrics
+        metrics = {
+            "de_ratio": 12.0,
+            "has_loan_loss_provision": True,
+            "has_insurance_reserve": False,
+        }
+        company_info = {"name": "工商银行", "industry": "银行"}
+
+        config = get_valuation_config("601398.SH", company_info, metrics)
+        assert config.regime == "bank"
+        assert config.source == "hard_rule"
