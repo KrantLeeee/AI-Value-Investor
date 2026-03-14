@@ -67,8 +67,10 @@ _KEYWORDS_CACHE: dict[str, list[str]] | None = None
 # BUG-03: Priority keywords checked first to avoid misclassification
 # (e.g., 宁德时代 should be new_energy_mfg, not pharma)
 PRIORITY_KEYWORDS = {
-    "new_energy_mfg": ["锂电", "动力电池", "储能", "新能源", "光伏", "风电", "电芯"],
+    # Order matters: more specific keywords should be checked first
     "auto_new_energy": ["新能源汽车", "电动汽车", "纯电动", "整车制造"],
+    "new_energy_mfg": ["锂电", "动力电池", "储能", "光伏", "风电", "电芯"],
+    # Note: "新能源" alone is too generic, removed to avoid misclassification
 }
 
 # Task 2.3: Industry classification confidence mechanism
@@ -118,6 +120,11 @@ INDUSTRY_KEYWORDS = {
     "low_margin_mfg": {
         "primary": ["代工", "ODM", "OEM", "电子制造"],
         "secondary": ["组装", "精密制造"],
+        "negative": [],
+    },
+    "real_estate": {
+        "primary": ["房地产", "地产", "房产开发"],
+        "secondary": ["商业地产", "住宅开发"],
         "negative": [],
     },
 }
