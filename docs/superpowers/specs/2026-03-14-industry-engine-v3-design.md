@@ -167,11 +167,17 @@ class BalanceSheet(BaseModel):
     # V3.0 新增：房地产识别所需字段
     inventory: float | None = None           # 存货
     advance_receipts: float | None = None    # 预收款项/合同负债
+    fixed_assets: float | None = None        # 固定资产（含在建工程）
 
     # V3.0 新增：行业专属标志位
     has_loan_loss_provision: bool = False    # 银行：贷款损失准备
     has_insurance_reserve: bool = False      # 保险：保险准备金
 ```
+
+**fixed_assets 字段说明**：
+- 用于区分房地产开发商（轻资产）与重工制造业（重资产）
+- 房地产：土地计入存货，固定资产占比通常 < 5%
+- 重工/造船：大量厂房设备，固定资产占比通常 20-40%
 
 ### 3.3 数据库 Schema 扩展与迁移
 
@@ -180,6 +186,7 @@ class BalanceSheet(BaseModel):
 -- balance_sheets 表新增字段
 ALTER TABLE balance_sheets ADD COLUMN inventory REAL;
 ALTER TABLE balance_sheets ADD COLUMN advance_receipts REAL;
+ALTER TABLE balance_sheets ADD COLUMN fixed_assets REAL;
 ALTER TABLE balance_sheets ADD COLUMN has_loan_loss_provision INTEGER DEFAULT 0;
 ALTER TABLE balance_sheets ADD COLUMN has_insurance_reserve INTEGER DEFAULT 0;
 ```
@@ -202,6 +209,7 @@ def _run_v3_migrations(conn: sqlite3.Connection) -> None:
     migrations = [
         ("inventory", "REAL"),
         ("advance_receipts", "REAL"),
+        ("fixed_assets", "REAL"),
         ("has_loan_loss_provision", "INTEGER DEFAULT 0"),
         ("has_insurance_reserve", "INTEGER DEFAULT 0"),
     ]
@@ -227,11 +235,17 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
     -- ... 现有字段 ...
     inventory            REAL,
     advance_receipts     REAL,
+    fixed_assets         REAL,
     has_loan_loss_provision INTEGER DEFAULT 0,
     has_insurance_reserve   INTEGER DEFAULT 0,
     -- ... 其余字段 ...
 );
 ```
+
+**开发/测试环境简化方案**：
+> ⚡ 如果处于测试阶段且本地 `output/database.db` 中没有大量不可再生数据，
+> 最简单的做法是直接删除 `.db` 文件，让 `SCHEMA_SQL` 在空库上按 V3 版本重新建表。
+> Migration 逻辑保留作为生产环境或协作场景的备用方案。
 
 ### 3.4 AKShare 集成与字段映射
 
@@ -242,6 +256,8 @@ CREATE TABLE IF NOT EXISTS balance_sheets (
 | `*存货` / `存货` | `inventory` | 一般企业 |
 | `*预收款项` / `预收款项` | `advance_receipts` | 旧会计准则 |
 | `*合同负债` / `合同负债` | `advance_receipts` | 新会计准则（优先使用） |
+| `*固定资产` / `固定资产` | `fixed_assets` | 含在建工程 |
+| `*在建工程` / `在建工程` | 累加到 `fixed_assets` | 重资产判断 |
 | `贷款损失准备` / `贷款减值准备` | 触发 `has_loan_loss_provision=True` | 银行专属 |
 | `未到期责任准备金` | 触发 `has_insurance_reserve=True` | 保险专属 |
 
@@ -266,10 +282,16 @@ def get_balance_sheets(self, ticker: str, market: MarketType, ...) -> list[Balan
         # 提取预收款项（优先使用合同负债，新准则）
         advance_receipts = _get_val("*合同负债", "合同负债", "*预收款项", "预收款项")
 
+        # 提取固定资产（含在建工程，用于区分房地产 vs 重工制造）
+        fixed_assets_base = _get_val("*固定资产", "固定资产") or 0
+        construction_in_progress = _get_val("*在建工程", "在建工程") or 0
+        fixed_assets = fixed_assets_base + construction_in_progress
+
         results.append(BalanceSheet(
             # ... 现有字段 ...
             inventory=inventory,
             advance_receipts=advance_receipts,
+            fixed_assets=fixed_assets if fixed_assets > 0 else None,
             has_loan_loss_provision=industry_flags['has_loan_loss_provision'],
             has_insurance_reserve=industry_flags['has_insurance_reserve'],
             source=self.source_name,
@@ -287,7 +309,7 @@ def get_balance_sheets(self, ticker: str, market: MarketType, ...) -> list[Balan
 ```python
 # src/agents/valuation_config.py
 
-from pydantic import BaseModel, field_validator, Field
+from pydantic import BaseModel, field_validator, model_validator, Field
 from typing import Literal
 
 ALLOWED_METHODS = {
@@ -302,6 +324,7 @@ class ValuationConfig(BaseModel):
     regime: str                                    # 估值体系名称
     primary_methods: list[str]                     # 估值方法列表
     weights: dict[str, float] = {}                 # 方法权重（归一化后）
+    method_importance: dict[str, int] = {}         # 【接收 LLM 1-10 打分】
     disabled_methods: list[str] = []               # 禁用的方法
     exempt_scoring_metrics: list[str] = []         # 基本面评分豁免项
     scoring_mode: str = 'standard'                 # standard/cycle_adjusted/financial
@@ -320,22 +343,58 @@ class ValuationConfig(BaseModel):
             raise ValueError(f'非法估值方法: {invalid}')
         return v
 
-    @field_validator('weights', mode='before')
-    @classmethod
-    def auto_normalize_weights(cls, v, info):
-        """自动归一化权重"""
-        if not v:
-            methods = info.data.get('primary_methods', [])
-            if methods:
-                return {m: round(1.0 / len(methods), 4) for m in methods}
-            return {}
+    @model_validator(mode='after')
+    def auto_normalize_weights(self):
+        """
+        Pydantic V2 推荐的跨字段校验与计算方法。
 
-        total = sum(v.values())
-        if total == 0:
-            raise ValueError('所有权重不能都为0')
+        优先级：
+        1. 如果 weights 已有值 → 直接使用（硬规则场景）
+        2. 如果 method_importance 有值 → 归一化为 weights（LLM 场景）
+        3. 都没有 → 按 primary_methods 均分（兜底场景）
+        """
+        if self.weights:
+            # weights 已有值，确保归一化
+            total = sum(self.weights.values())
+            if total > 0 and abs(total - 1.0) > 0.01:
+                self.weights = {k: round(v / total, 4) for k, v in self.weights.items()}
+            return self
 
-        return {k: round(val / total, 4) for k, val in v.items()}
+        # 1. 优先使用 LLM 的 method_importance 打分
+        if self.method_importance:
+            total = sum(self.method_importance.values())
+            if total == 0:
+                raise ValueError('method_importance 不能全为 0')
+
+            normalized = {k: round(v / total, 4) for k, v in self.method_importance.items()}
+
+            # 处理浮点数尾差，确保加总绝对等于 1.0（量化严谨性）
+            keys = list(normalized.keys())
+            if keys:
+                current_sum = sum(list(normalized.values())[:-1])
+                normalized[keys[-1]] = round(1.0 - current_sum, 4)
+
+            self.weights = normalized
+            return self
+
+        # 2. 都没有，按 primary_methods 均分
+        if self.primary_methods:
+            n = len(self.primary_methods)
+            base_weight = round(1.0 / n, 4)
+            self.weights = {m: base_weight for m in self.primary_methods}
+            # 同样处理尾差
+            keys = list(self.weights.keys())
+            if keys:
+                current_sum = sum(list(self.weights.values())[:-1])
+                self.weights[keys[-1]] = round(1.0 - current_sum, 4)
+
+        return self
 ```
+
+**关键修正说明**：
+- 新增 `method_importance: dict[str, int]` 字段，用于接收 LLM 的 1-10 打分
+- 使用 `@model_validator(mode='after')` 替代 `@field_validator`，实现跨字段计算
+- 添加浮点数尾差处理，确保权重严格归一（如 `[0.33, 0.33, 0.34]` 而非 `[0.3333, 0.3333, 0.3333]`）
 
 ### 4.2 硬规则探针配置
 
@@ -389,7 +448,7 @@ SPECIAL_REGIME_CONFIGS = {
 |-----|------|-------|
 | 银行 | DE > 8 AND has_loan_loss_provision | 0.95 |
 | 保险 | DE > 4 AND has_insurance_reserve | 0.92 |
-| 房地产 | inventory/assets > 40% AND advance/assets > 10% AND NOT 金融股 | 0.90 |
+| 房地产 | inventory > 40% AND advance > 10% AND **fixed_assets < 10%** AND NOT 金融股 | 0.90 |
 | 困境企业 | (margin_3yr < -10% OR roe_3yr < -10%) AND loss_years >= 2 AND NOT 金融股 | 0.85 |
 | 消费护城河 | gross_margin > 70% AND roe_5yr > 18% AND fcf_positive >= 4 | 0.88 |
 | 创新药 | rd_ratio > 30% AND net_margin < 5% AND has_pipeline_keywords | 0.82 |
@@ -398,6 +457,26 @@ SPECIAL_REGIME_CONFIGS = {
 ```python
 is_financial = has_loan_loss_provision or has_insurance_reserve
 ```
+
+**房地产 vs 重工制造区分逻辑**：
+```python
+# 房地产开发商是轻资产模式（土地算存货，厂房设备极少）
+# 重工/造船是重资产模式（大量厂房设备，固定资产占比高）
+fixed_assets = metrics.get('fixed_assets', 0) or 0
+total_assets = metrics.get('total_assets', 1) or 1
+fixed_assets_ratio = fixed_assets / total_assets
+
+# 轻资产判定：固定资产占比 < 10%
+is_asset_light = fixed_assets_ratio < 0.10
+
+if inventory_ratio > 0.40 and advance_ratio > 0.10 and is_asset_light and not is_financial:
+    return SpecialRegimeResult(regime='real_estate', confidence=0.90, ...)
+```
+
+**设计原理**：
+- 房地产开发商：土地储备计入「存货」，自用办公楼/设备极少 → `fixed_assets < 5%`
+- 造船/重工：厂房、龙门吊、重型设备 → `fixed_assets 20-40%`
+- 添加 `fixed_assets < 10%` 条件，可有效排除三一重工、中国船舶等制造业误判
 
 **创新药管线关键词列表**：
 ```python
@@ -555,7 +634,7 @@ def run(ticker: str, market: str) -> AgentSignal:
 
 聚合以下指标：
 - 基础指标：roe, gross_margin, net_margin, de_ratio, rd_expense_ratio, revenue_growth, net_income_growth
-- 行业标志位：has_loan_loss_provision, has_insurance_reserve, inventory, advance_receipts, total_assets
+- 行业标志位：has_loan_loss_provision, has_insurance_reserve, inventory, advance_receipts, **fixed_assets**, total_assets
 - 派生指标：roe_3yr_avg, roe_5yr_avg, net_margin_3yr_avg, fcf_positive_years, consecutive_loss_years
 - 报告期：report_period
 
@@ -670,16 +749,32 @@ class TestEdgeCases:
         # cache_key 包含 report_period，确保季报更新后 key 变化
 
     def test_high_inventory_manufacturing_not_real_estate(self):
-        """高存货制造业不应误判为房地产"""
+        """高存货制造业不应误判为房地产（通过固定资产占比区分）"""
         metrics = {
             'total_assets': 100_000_000_000,
-            'inventory': 45_000_000_000,  # 45%
-            'advance_receipts': 12_000_000_000,  # 12%
-            # 但同时有制造业特征
-            'gross_margin': 25,  # 房地产毛利通常较高
+            'inventory': 45_000_000_000,      # 45% — 满足房地产存货条件
+            'advance_receipts': 12_000_000_000, # 12% — 满足房地产预收条件
+            'fixed_assets': 30_000_000_000,    # 30% — 重资产特征，排除房地产
         }
         company_info = {'name': '三一重工', 'industry': '工程机械'}
-        # 这种情况应该交给 LLM 判断，而非硬规则命中房地产
+        result = detect_special_regime(metrics, company_info)
+        # 由于 fixed_assets/total_assets = 30% > 10%，不满足轻资产条件
+        # 因此不会命中房地产规则，应返回 None 交给 LLM 判断
+        assert result is None or result.regime != 'real_estate'
+
+    def test_real_estate_with_asset_light_structure(self):
+        """真正的房地产开发商：高存货 + 高预收 + 轻资产 → 命中"""
+        metrics = {
+            'total_assets': 100_000_000_000,
+            'inventory': 50_000_000_000,      # 50% — 土地储备
+            'advance_receipts': 15_000_000_000, # 15% — 卖房预收款
+            'fixed_assets': 3_000_000_000,     # 3% — 轻资产（仅有少量办公楼）
+        }
+        company_info = {'name': '招商蛇口', 'industry': '房地产'}
+        result = detect_special_regime(metrics, company_info)
+        # 满足所有条件：存货>40%, 预收>10%, 固定资产<10%
+        assert result is not None
+        assert result.regime == 'real_estate'
 ```
 
 ### 6.2 集成测试标的
