@@ -57,6 +57,12 @@ class BalanceSheet(BaseModel):
     cash_and_equivalents: float | None = None
     total_debt: float | None = None
     book_value_per_share: float | None = None
+    # V3.0: Industry detection fields
+    inventory: float | None = None
+    advance_receipts: float | None = None
+    fixed_assets: float | None = None
+    has_loan_loss_provision: bool = False
+    has_insurance_reserve: bool = False
     source: str
 
 
