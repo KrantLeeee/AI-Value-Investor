@@ -1,4 +1,4 @@
-<!-- Last Updated: 2026-03-13 -->
+<!-- Last Updated: 2026-03-14 -->
 # Agent 分析层
 
 ## 执行顺序（registry.py 编排）
@@ -40,7 +40,9 @@ AgentSignal(
 | 模块 | 文件 | 用途 |
 |------|------|------|
 | 置信度计算 | `confidence.py` | `calculate_confidence()` |
-| 行业分类 | `industry_classifier.py` | 行业识别+参数获取 |
+| 行业分类 V2 | `industry_classifier.py` | 行业识别+参数获取 |
+| **行业引擎 V3** | `industry_engine.py` | 三层漏斗：硬规则→LLM→fallback |
+| **估值配置** | `valuation_config.py` | ValuationConfig 模型+权重归一化 |
 | WACC计算 | `wacc.py` | DCF 折现率 |
 | 信号聚合 | `signal_aggregator.py` | 加权聚合最终推荐 |
 | 章节上下文 | `chapter_context.py` | 报告章节间信息传递 |
@@ -63,3 +65,14 @@ banking:
     valuation: 0.25
     ...
 ```
+
+## V3.0 行业引擎（Feature Flag）
+启用环境变量 `USE_INDUSTRY_ENGINE_V3=true` 使用新三层架构：
+```
+Layer 1: 硬规则 (银行/保险/地产/困境/品牌护城河/创新药)
+Layer 2: LLM 动态路由 (DeepSeek-Reasoner + 缓存)
+Layer 3: 安全回退 (generic 体系)
+```
+关键文件：
+- `industry_engine.py` — `get_valuation_config()` 入口
+- `valuation_config.py` — `ValuationConfig` 模型

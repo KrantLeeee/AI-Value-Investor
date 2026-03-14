@@ -1,4 +1,4 @@
-<!-- Last Updated: 2026-03-13 -->
+<!-- Last Updated: 2026-03-14 -->
 # 数据层
 
 ## 核心文件
@@ -21,7 +21,7 @@ A股：akshare → tushare → baostock → sina_realtime → qveris
 ```sql
 daily_prices        -- 日线行情
 income_statements   -- 利润表
-balance_sheets      -- 资产负债表
+balance_sheets      -- 资产负债表 (V3新增: inventory, advance_receipts, fixed_assets, has_loan_loss_provision, has_insurance_reserve)
 cash_flows          -- 现金流量表
 financial_metrics   -- 财务指标（ROE/ROA/ROIC等）
 manual_docs         -- 手动上传文档
@@ -57,6 +57,7 @@ check_all(ticker, market) → QualityReport
 | `fmp_source.py` | Financial Modeling Prep | 美股备用 |
 | `sina_source.py` | 新浪财经 | 实时行情 |
 | `tavily_source.py` | Tavily | 新闻搜索 |
+| `balance_sheet_scanner.py` | — | V3行业检测（资产负债表扫描）|
 
 ## 宏观数据
 `macro_data.py` 获取 PMI/PPI，缓存 4 小时于 `data/cache/macro_snapshot.json`

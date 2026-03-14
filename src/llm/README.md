@@ -1,4 +1,4 @@
-<!-- Last Updated: 2026-03-13 -->
+<!-- Last Updated: 2026-03-14 -->
 # LLM 路由层
 
 ## 核心文件
@@ -73,3 +73,4 @@ result = call_llm("xxx_task", system, user)
 - `report_ch1` ~ `report_ch6` - 报告各章节
 - `industry_analysis` - 行业分析
 - `company_lookup` - 公司信息查询
+- **`industry_routing`** - V3 行业引擎 LLM 路由 (DeepSeek-Reasoner)

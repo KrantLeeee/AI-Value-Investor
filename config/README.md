@@ -1,4 +1,4 @@
-<!-- Last Updated: 2026-03-13 -->
+<!-- Last Updated: 2026-03-14 -->
 # 配置文件
 
 ## 文件列表
@@ -102,3 +102,12 @@ rules:
 | 添加监控股票 | `watchlist.yaml` |
 | 改 LLM 模型/路由 | `llm_config.yaml` ⚠️ |
 | 改筛选规则 | `screening_rules.yaml` ⚠️ |
+
+---
+
+## Feature Flags（环境变量）
+通过 `src/utils/config.py:get_feature_flags()` 获取：
+| 变量 | 默认值 | 用途 |
+|------|--------|------|
+| `USE_INDUSTRY_ENGINE_V3` | false | 启用 V3 行业引擎 |
+| `INDUSTRY_ENGINE_PARALLEL` | false | V3/V2 并行对比模式 |
