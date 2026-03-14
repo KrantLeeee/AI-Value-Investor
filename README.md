@@ -223,6 +223,15 @@ invest invest -t 601808.SH
 | `USE_INDUSTRY_ENGINE_V3` | `false` | 启用 V3 行业引擎（三层漏斗：硬规则 → LLM → fallback）|
 | `INDUSTRY_ENGINE_PARALLEL` | `false` | V3/V2 并行对比模式，输出两套结果供验证 |
 
+### Rate Limiting (Anti-Bot)
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `FETCH_DELAY` | `3.0` | 每次成功抓取后的延迟（秒）|
+| `FETCH_DELAY_BETWEEN_SOURCES` | `2.0` | 数据源 fallback 切换时的延迟（秒）|
+| `FETCH_DELAY_BETWEEN_TYPES` | `2.0` | 不同数据类型之间的延迟（秒）|
+| `FETCH_DELAY_BETWEEN_TICKERS` | `5.0` | 不同股票之间的延迟（秒）|
+
 ### API Keys
 
 | 变量 | 说明 |

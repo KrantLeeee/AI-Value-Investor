@@ -7,6 +7,7 @@ Priority chains per market:
   us:      yfinance → FMP → manual
 """
 
+import os
 import time
 from datetime import date, timedelta
 
@@ -149,9 +150,23 @@ class Fetcher:
         self.default_years = default_years
 
     def _fetch_with_fallback(self, market: MarketType, method: str, ticker: str, **kwargs):
-        """Try each source in priority order; return first successful result."""
+        """Try each source in priority order; return first successful result.
+
+        Rate limiting is controlled by environment variables:
+        - FETCH_DELAY: Delay after each successful fetch (default: 3.0s)
+        - FETCH_DELAY_BETWEEN_SOURCES: Delay before trying next source on failure (default: 2.0s)
+        """
         priority = _SOURCE_PRIORITY.get(market, ["yfinance", "fmp"])
-        for source_name in priority:
+        delay_between = float(os.getenv("FETCH_DELAY_BETWEEN_SOURCES", "2.0"))
+        delay_after_success = float(os.getenv("FETCH_DELAY", "3.0"))
+
+        for idx, source_name in enumerate(priority):
+            # Add delay before each source attempt (except the first one)
+            # This prevents rapid-fire requests when failing over between sources
+            if idx > 0 and delay_between > 0:
+                logger.debug("[Fetcher] Waiting %.1fs before trying next source...", delay_between)
+                time.sleep(delay_between)
+
             source = _get_source(source_name)
             try:
                 fn = getattr(source, method)
@@ -159,6 +174,12 @@ class Fetcher:
                 if result:
                     logger.debug("[Fetcher] %s via %s: got %d records",
                                  method, source_name, len(result))
+
+                    # Add artificial delay after success to respect rate limits and mimic human behavior
+                    if delay_after_success > 0:
+                        logger.debug("[Fetcher] Sleeping for %.1fs to prevent anti-bot IP blocks...", delay_after_success)
+                        time.sleep(delay_after_success)
+
                     return result, source_name
             except Exception as e:
                 logger.warning("[Fetcher] %s failed via %s: %s", method, source_name, e)
@@ -213,11 +234,23 @@ class Fetcher:
             limit: Number of records per period type
             period_type: Primary period type ("annual" or "quarterly")
             include_quarterly: If True, also fetch quarterly data for fresher data
+
+        Rate limiting:
+            Uses FETCH_DELAY_BETWEEN_TYPES env var (default: 2.0s) between data types
+            to prevent high-frequency requests that trigger anti-bot measures.
         """
         counts: dict[str, int] = {}
         all_stmts = []
         all_sheets = []
         all_flows = []
+
+        # Delay between different data types (income → balance → cashflow → metrics)
+        delay_between_types = float(os.getenv("FETCH_DELAY_BETWEEN_TYPES", "2.0"))
+
+        def _sleep_between_types():
+            if delay_between_types > 0:
+                logger.debug("[Fetcher] Waiting %.1fs between data types...", delay_between_types)
+                time.sleep(delay_between_types)
 
         # Fetch annual data
         stmts, _ = self._fetch_with_fallback(
@@ -226,12 +259,14 @@ class Fetcher:
         )
         all_stmts.extend(stmts)
 
+        _sleep_between_types()
         sheets, _ = self._fetch_with_fallback(
             market, "get_balance_sheets", ticker,
             period_type="annual", limit=limit,
         )
         all_sheets.extend(sheets)
 
+        _sleep_between_types()
         flows, _ = self._fetch_with_fallback(
             market, "get_cash_flows", ticker,
             period_type="annual", limit=limit,
@@ -240,18 +275,21 @@ class Fetcher:
 
         # Also fetch quarterly data for fresher data (A-share only)
         if include_quarterly and market == "a_share":
+            _sleep_between_types()
             q_stmts, _ = self._fetch_with_fallback(
                 market, "get_income_statements", ticker,
                 period_type="quarterly", limit=4,  # Last 4 quarters
             )
             all_stmts.extend(q_stmts)
 
+            _sleep_between_types()
             q_sheets, _ = self._fetch_with_fallback(
                 market, "get_balance_sheets", ticker,
                 period_type="quarterly", limit=4,
             )
             all_sheets.extend(q_sheets)
 
+            _sleep_between_types()
             q_flows, _ = self._fetch_with_fallback(
                 market, "get_cash_flows", ticker,
                 period_type="quarterly", limit=4,
@@ -263,6 +301,7 @@ class Fetcher:
         counts["cashflow"] = upsert_cash_flows(all_flows)
 
         # Key metrics (always includes quarterly from EM API)
+        _sleep_between_types()
         metrics, _ = self._fetch_with_fallback(
             market, "get_financial_metrics", ticker, limit=limit,
         )
@@ -299,18 +338,36 @@ class Fetcher:
         years: int | None = None,
     ) -> list[dict]:
         """
-        Fetch all tickers in watchlist config.
+        Fetch all tickers in watchlist config (SERIAL, one by one).
         watchlist format: {"a_share": [...], "hk": [...], "us": [...]}
+
+        Rate limiting:
+            Uses FETCH_DELAY_BETWEEN_TICKERS env var (default: 5.0s) between tickers
+            to prevent high-frequency requests that trigger anti-bot measures.
         """
         from src.utils.config import load_watchlist
 
         if watchlist is None:
             watchlist = load_watchlist()
 
+        # Delay between different tickers (longer pause to look like human browsing)
+        delay_between_tickers = float(os.getenv("FETCH_DELAY_BETWEEN_TICKERS", "5.0"))
+
         results = []
+        ticker_count = 0
         for market, items in watchlist.get("watchlist", {}).items():
             for item in items:
                 ticker = item["ticker"] if isinstance(item, dict) else item
+
+                # Add delay between tickers (except before the first one)
+                if ticker_count > 0 and delay_between_tickers > 0:
+                    logger.info("[Fetcher] Waiting %.1fs before next ticker (human-like pacing)...",
+                               delay_between_tickers)
+                    time.sleep(delay_between_tickers)
+
+                ticker_count += 1
+                logger.info("[Fetcher] Processing ticker %d: %s", ticker_count, ticker)
+
                 try:
                     result = self.fetch_all(ticker, market, years=years or self.default_years)
                     results.append(result)
