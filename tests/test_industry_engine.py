@@ -168,3 +168,96 @@ class TestValuationConfig:
                 primary_methods=["invalid_method"],
                 source="llm",
             )
+
+
+class TestHardRuleDetection:
+    """Tests for detect_special_regime() hard rules."""
+
+    def test_bank_detection(self):
+        """High DE + loan loss provision → bank regime."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "de_ratio": 12.0,
+            "has_loan_loss_provision": True,
+            "has_insurance_reserve": False,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is not None
+        assert result.regime == "bank"
+        assert result.confidence >= 0.90
+
+    def test_insurance_detection(self):
+        """DE > 4 + insurance reserve → insurance regime."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "de_ratio": 6.0,
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": True,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is not None
+        assert result.regime == "insurance"
+        assert result.confidence >= 0.90
+
+    def test_real_estate_detection(self):
+        """High inventory + advance + asset-light → real_estate regime."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "total_assets": 100_000_000_000,
+            "inventory": 50_000_000_000,      # 50%
+            "advance_receipts": 15_000_000_000,  # 15%
+            "fixed_assets": 3_000_000_000,    # 3% (asset-light)
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": False,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is not None
+        assert result.regime == "real_estate"
+
+    def test_heavy_manufacturing_not_real_estate(self):
+        """High inventory + advance but heavy fixed assets → NOT real_estate."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "total_assets": 100_000_000_000,
+            "inventory": 45_000_000_000,      # 45%
+            "advance_receipts": 12_000_000_000,  # 12%
+            "fixed_assets": 30_000_000_000,   # 30% (heavy assets)
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": False,
+        }
+        result = detect_special_regime(metrics, {})
+        # Should NOT match real_estate due to high fixed_assets
+        assert result is None or result.regime != "real_estate"
+
+    def test_brand_moat_detection(self):
+        """High gross margin + high ROE + stable FCF → brand_moat."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "gross_margin": 75.0,
+            "roe_5yr_avg": 22.0,
+            "fcf_positive_years": 5,
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": False,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is not None
+        assert result.regime == "brand_moat"
+
+    def test_no_match_returns_none(self):
+        """Normal company metrics should return None (go to LLM)."""
+        from src.agents.industry_engine import detect_special_regime
+
+        metrics = {
+            "de_ratio": 1.5,
+            "gross_margin": 35.0,
+            "roe_5yr_avg": 12.0,
+            "has_loan_loss_provision": False,
+            "has_insurance_reserve": False,
+        }
+        result = detect_special_regime(metrics, {})
+        assert result is None
