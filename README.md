@@ -246,3 +246,6 @@ invest invest -t 601808.SH
 | `QVERIS_API_KEY` | QVeris iFinD（付费精准数据）|
 | `TELEGRAM_BOT_TOKEN` | Telegram 推送 |
 | `TELEGRAM_CHAT_ID` | Telegram 目标会话 |
+## License
+
+This project is licensed under the [GNU General Public License V3.0](LICENSE).
