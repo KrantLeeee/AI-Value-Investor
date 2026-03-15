@@ -72,6 +72,12 @@ task_routing:
     model: deepseek-reasoner
     max_tokens: 800
     temperature: 0.1
+  industry_classification:
+    provider: deepseek
+    model: deepseek-chat
+    max_tokens: 50
+    temperature: 0.0
+    description: "V3 LLM industry classification fallback when keyword matching fails"
 
 retry:
   max_attempts: 2

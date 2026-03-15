@@ -231,6 +231,7 @@ invest invest -t 601808.SH
 | `FETCH_DELAY_BETWEEN_SOURCES` | `2.0` | 数据源 fallback 切换时的延迟（秒）|
 | `FETCH_DELAY_BETWEEN_TYPES` | `2.0` | 不同数据类型之间的延迟（秒）|
 | `FETCH_DELAY_BETWEEN_TICKERS` | `5.0` | 不同股票之间的延迟（秒）|
+| `SKIP_AKSHARE` | `false` | 跳过 AKShare（避免 eastmoney.com 封 IP），优先级变为 Tushare → BaoStock → QVeris |
 
 ### API Keys
 

@@ -924,11 +924,88 @@ def check_price_volatility(price_data: list[DailyPrice]) -> list[QualityFlag]:
     return flags
 
 
+# ── Rule 14: Probe Data Completeness ───────────────────────────────────────
+
+
+def check_probe_data_completeness(
+    income_data: list[IncomeStatement],
+    balance_data: list[BalanceSheet],
+    cashflow_data: list[CashFlow],
+    metric_data: list[dict],
+) -> list[QualityFlag]:
+    """
+    Check if data is sufficient for intelligent probes (brand_moat, cyclical, etc.).
+
+    Probes require multi-year metrics like:
+    - ROE 5-year average (for brand_moat detection)
+    - FCF history (for brand_moat detection)
+    - Gross margin history (for brand_moat tier classification)
+
+    When data is insufficient, probes silently fall back to keyword matching,
+    which can lead to framework misclassification. This check warns users.
+
+    Severity: warning (system still runs but probe accuracy degraded)
+    """
+    flags: list[QualityFlag] = []
+
+    # Minimum years of data for reliable probe detection
+    MIN_YEARS_FOR_PROBES = 3
+    MIN_FCF_RECORDS = 3
+
+    # Check income statement history
+    valid_income_years = len([
+        i for i in income_data
+        if i.get("net_income") is not None or i.get("revenue") is not None
+    ])
+
+    # Check balance sheet history
+    valid_balance_years = len([
+        b for b in balance_data
+        if b.get("total_assets") is not None
+    ])
+
+    # Check cashflow history (for FCF)
+    valid_cashflow_years = len([
+        c for c in cashflow_data
+        if c.get("operating_cashflow") is not None
+    ])
+
+    # Check metric history (for ROE, gross_margin)
+    valid_metric_years = 0
+    if metric_data:
+        valid_metric_years = len([
+            m for m in metric_data
+            if m.get("roe") is not None or m.get("gross_margin") is not None
+        ])
+
+    # Aggregate insufficient data categories
+    missing_probes = []
+
+    if valid_metric_years < MIN_YEARS_FOR_PROBES:
+        missing_probes.append(f"ROE/毛利率历史不足({valid_metric_years}年<{MIN_YEARS_FOR_PROBES}年)")
+
+    if valid_cashflow_years < MIN_FCF_RECORDS:
+        missing_probes.append(f"FCF历史不足({valid_cashflow_years}条<{MIN_FCF_RECORDS}条)")
+
+    if valid_income_years < MIN_YEARS_FOR_PROBES:
+        missing_probes.append(f"利润表历史不足({valid_income_years}年<{MIN_YEARS_FOR_PROBES}年)")
+
+    if missing_probes:
+        flags.append(QualityFlag(
+            flag="probe_degraded",
+            field="multi_year_metrics",
+            detail=f"⚠️ 智能探针可能失效: {'; '.join(missing_probes)}。系统将使用关键词匹配代替，估值框架可能不准确。",
+            severity="warning"
+        ))
+
+    return flags
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────
 
 def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list[Any]]) -> QualityReport:
     """
-    Main orchestration function - runs all 13 quality checks.
+    Main orchestration function - runs all 14 quality checks.
 
     Guaranteed to return a QualityReport. Individual rule failures are logged
     but don't crash the pipeline.
@@ -936,7 +1013,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
     Args:
         ticker: Stock ticker (e.g., "601808.SH")
         market: Market type ("a_share", "hk", "us")
-        raw_data: Dict with keys ['income', 'balance', 'cashflow', 'prices']
+        raw_data: Dict with keys ['income', 'balance', 'cashflow', 'prices', 'metrics']
 
     Returns:
         QualityReport with flags, scores, and metadata
@@ -945,7 +1022,7 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
 
     flags: list[QualityFlag] = []
 
-    # Execute all 13 rules with error isolation
+    # Execute all 14 rules with error isolation
     # IMPORTANT: Use the correct function signatures!
     rules: list[tuple[str, Callable[[], list[QualityFlag]]]] = [
         ("financial_freshness", lambda: check_financial_freshness(
@@ -972,6 +1049,13 @@ def run_quality_checks(ticker: str, market: MarketType, raw_data: dict[str, list
             cast(list[BalanceSheet], raw_data.get('balance', []))
         )),
         ("price_volatility", lambda: check_price_volatility(cast(list[DailyPrice], raw_data.get('prices', [])))),
+        # P0-2: Probe data completeness check - warns if intelligent probes may fail
+        ("probe_data_completeness", lambda: check_probe_data_completeness(
+            cast(list[IncomeStatement], raw_data.get('income', [])),
+            cast(list[BalanceSheet], raw_data.get('balance', [])),
+            cast(list[CashFlow], raw_data.get('cashflow', [])),
+            raw_data.get('metrics', [])  # Raw dicts
+        )),
     ]
 
     for rule_name, rule_func in rules:

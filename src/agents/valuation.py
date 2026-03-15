@@ -46,6 +46,7 @@ from src.agents.industry_classifier import (
     get_healthcare_mature_valuation_config,
     get_ev_ebitda_multiple,
     classify_industry,
+    classify_industry_v3,
 )
 from src.utils.logger import get_logger
 from src.utils.config import get_feature_flags
@@ -676,9 +677,11 @@ def _validate_valuation_result(
 
     Rules (any violation triggers exclusion):
     1. Negative or zero target price → exclude
-    2. Deviation from method median > 60% → exclude (BUG-02 fix: uses median, not market price)
+    2. Deviation from method median > industry threshold → exclude (BUG-02 fix: uses median)
     3. EXCEPTION: If all methods agree on direction (all above or all below market),
        skip rule 2 (don't exclude consistent signals)
+    4. P1-5 HARD CAP: Deviation > 100% from median → always exclude regardless of consensus
+       (prevents wildly off methods from skewing weighted average)
 
     Args:
         method_name: Name of the valuation method (e.g., "DCF", "Graham")
@@ -695,6 +698,8 @@ def _validate_valuation_result(
             - warnings: list[str] (reasons for exclusion)
             - exclude_from_weighted: bool (True if should be excluded)
     """
+    # P1-5: Hard deviation cap - beyond this, always exclude regardless of consensus
+    HARD_DEVIATION_CAP = 1.0  # 100% deviation = always exclude
     warnings = []
     valid = True
 
@@ -727,7 +732,16 @@ def _validate_valuation_result(
 
             # Task 3.5 + P0-3 fix: Use industry-specific AND method-specific threshold
             threshold = get_outlier_threshold(industry_type, method_name=method_name)
-            if deviation_from_median > threshold and not directional_consensus:
+
+            # P1-5: Hard cap - always exclude if deviation > 100%, regardless of consensus
+            if deviation_from_median > HARD_DEVIATION_CAP:
+                warnings.append(
+                    f"{method_name}: deviation from median "
+                    f"{deviation_from_median*100:.1f}% exceeds hard cap {HARD_DEVIATION_CAP*100:.0f}% "
+                    f"(target=¥{target_price:.2f} vs median=¥{median_price:.2f}) - always excluded"
+                )
+                valid = False
+            elif deviation_from_median > threshold and not directional_consensus:
                 warnings.append(
                     f"{method_name}: deviation from median "
                     f"{deviation_from_median*100:.1f}% exceeds {threshold*100:.0f}% threshold "
@@ -1241,6 +1255,20 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if metric_rows:
         rd_ratio = _safe(metric_rows[0].get("rd_expense_ratio"))
 
+    # P0-3 FIX: Calculate industry_class early for probe filtering
+    # This is needed before brand_moat detection to exclude tech industries
+    v3_metrics_early = None
+    if metric_rows:
+        latest_metric = metric_rows[0]
+        v3_metrics_early = {
+            "net_margin": _safe(latest_metric.get("operating_margin")),
+            "gross_margin": _safe(latest_metric.get("gross_margin")),
+            "roe": _safe(latest_metric.get("roe")),
+            "dividend_payout": _safe(latest_metric.get("dividend_payout")),
+            "revenue": _safe(income_rows[0].get("revenue")) if income_rows else None,
+        }
+    industry_class = classify_industry_v3(industry, metrics=v3_metrics_early) if industry else "default"
+
     # Get ROE early for loss-making tech detection (BUG-03A fix)
     # This prevents misclassifying profitable low-margin manufacturers
     roe_for_detection = None
@@ -1508,7 +1536,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             best_roe = roe_5yr_avg
 
         # Brand moat detection: high gross margin + reasonable ROE
-        if gross_margin is not None and best_roe is not None:
+        # P0-3 FIX: Exclude tech/software industries - they have high gross margins
+        # but should use tech valuation frameworks, not consumer brand moat P/E anchors
+        tech_industries = ["tech_saas", "tech_traditional", "pharma_innovative", "pharma_cxo", "defense_equipment"]
+        is_tech_industry = industry_class in tech_industries
+
+        if gross_margin is not None and best_roe is not None and not is_tech_industry:
             if gross_margin >= 50 and best_roe >= 12:  # Moderate tier baseline
                 is_brand_moat = True
                 # Determine tier based on gross margin and ROE
@@ -1697,7 +1730,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 )
 
     # Phase 3: Use industry-specific EV/EBITDA multiple from industry_profiles.yaml
-    industry_class = classify_industry(industry) if industry else "default"
+    # NOTE: industry_class is already calculated early (P0-3 fix for brand_moat filtering)
     _ev_multiple = get_ev_ebitda_multiple(industry_class, cycle_phase="normal")
 
     # P1-4 FIX: Load disable_methods from industry_profiles.yaml

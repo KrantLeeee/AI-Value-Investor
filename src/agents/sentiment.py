@@ -14,6 +14,7 @@ P1-2: Rule-based sentiment scoring for stability.
 """
 
 import json
+import re
 from datetime import date
 
 from src.data.database import get_manual_docs, insert_agent_signal
@@ -36,6 +37,38 @@ NEGATIVE_KEYWORDS = [
     "减持", "质押", "违规", "退市", "诉讼", "裁员", "停产", "业绩预减",
     "业绩首亏", "续亏", "警示", "ST", "暂停", "冻结",
 ]
+
+
+def _extract_json_from_llm_output(raw_output: str) -> dict:
+    """
+    P1-6: Extract JSON from LLM output, handling DeepSeek's quirks.
+
+    Strategies:
+    1. Remove <think>...</think> blocks (DeepSeek reasoner mode)
+    2. Try to extract from ```json...``` code block
+    3. Fallback to extracting bare JSON object
+    4. Raise ValueError if all fail
+    """
+    # Step 1: Remove <think> blocks
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
+
+    # Step 2: Try markdown code block
+    code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, re.DOTALL)
+    if code_block_match:
+        try:
+            return json.loads(code_block_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Step 3: Try bare JSON object
+    json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not extract JSON from LLM output: {raw_output[:200]}")
 
 
 def classify_headline_sentiment(title: str) -> str:
@@ -155,8 +188,17 @@ def _get_news_from_db(ticker: str) -> list[dict]:
 
 def _get_news_from_akshare(ticker: str, market: str) -> list[dict]:
     """Try to fetch fresh news headlines from AKShare (A-share only)."""
+    import os
+
     if market != "a_share":
         return []
+
+    # Skip AKShare when SKIP_AKSHARE is enabled (batch mode to avoid IP bans)
+    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    if skip_akshare:
+        logger.debug("[Sentiment] SKIP_AKSHARE=true, skipping AKShare news for %s", ticker)
+        return []
+
     try:
         import akshare as ak
         code = ticker.split(".")[0]
@@ -197,8 +239,17 @@ def _get_news_from_tavily(query: str) -> list[dict]:
 
 def _get_profit_warnings(ticker: str, market: str) -> list[ProfitWarning]:
     """Fetch structured profit warning data from AKShare."""
+    import os
+
     if market != "a_share":
         return []
+
+    # Skip AKShare when SKIP_AKSHARE is enabled (batch mode to avoid IP bans)
+    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    if skip_akshare:
+        logger.debug("[Sentiment] SKIP_AKSHARE=true, skipping profit_warnings for %s", ticker)
+        return []
+
     try:
         from src.data.akshare_source import AKShareSource
         source = AKShareSource()
@@ -484,7 +535,8 @@ def run(
             llm_text = call_llm("news_sentiment", SENTIMENT_SYSTEM_PROMPT, user_msg)
 
             try:
-                parsed = json.loads(llm_text)
+                # P1-6: Use robust JSON extraction to handle DeepSeek's quirks
+                parsed = _extract_json_from_llm_output(llm_text)
                 signal     = parsed.get("signal", "neutral").lower()
                 confidence = float(parsed.get("confidence", 0.5))
                 reasoning  = parsed.get("reasoning", llm_text)

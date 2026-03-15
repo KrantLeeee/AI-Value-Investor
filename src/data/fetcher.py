@@ -91,11 +91,29 @@ RETRY_DELAYS = [5, 15, 30]  # seconds
 # QVeris iFinD is added as tertiary A-share fallback for missing fields.
 # Tushare added as secondary priority for A-share (enterprise-grade data quality).
 # Sina realtime added for price-only fallback (fast, free, no financials).
-_SOURCE_PRIORITY: dict[MarketType, list[str]] = {
+#
+# Environment variable SKIP_AKSHARE=true skips AKShare to avoid IP bans from eastmoney.com
+_SOURCE_PRIORITY_DEFAULT: dict[MarketType, list[str]] = {
     "a_share": ["akshare", "tushare", "baostock", "sina_realtime", "qveris"],
     "hk":      ["akshare", "yfinance", "sina_realtime", "fmp"],
     "us":      ["yfinance", "fmp"],
 }
+
+# Priority chain without AKShare (for batch jobs to avoid IP bans)
+_SOURCE_PRIORITY_NO_AKSHARE: dict[MarketType, list[str]] = {
+    "a_share": ["tushare", "baostock", "sina_realtime", "qveris"],
+    "hk":      ["yfinance", "sina_realtime", "fmp"],
+    "us":      ["yfinance", "fmp"],
+}
+
+
+def _get_source_priority() -> dict[MarketType, list[str]]:
+    """Get source priority based on SKIP_AKSHARE environment variable."""
+    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    if skip_akshare:
+        logger.info("[Fetcher] SKIP_AKSHARE=true, using Tushare-first priority chain")
+        return _SOURCE_PRIORITY_NO_AKSHARE
+    return _SOURCE_PRIORITY_DEFAULT
 
 
 def _get_source(name: str) -> BaseDataSource:
@@ -111,24 +129,52 @@ def _get_source(name: str) -> BaseDataSource:
     return sources[name]()
 
 
-def _with_retry(fn, *args, **kwargs):
-    """Call fn with retries and exponential backoff.
+def _with_retry(fn, *args, timeout: int | None = None, **kwargs):
+    """Call fn with retries, exponential backoff, and optional timeout.
+
+    P1-7: Added timeout protection for BJ market and slow data sources.
+
+    Args:
+        fn: Function to call
+        *args: Positional arguments for fn
+        timeout: Optional timeout in seconds per attempt (default: from env or 60s)
+        **kwargs: Keyword arguments for fn
 
     Certain exceptions are NOT retried because they will always fail:
     - NotImplementedError: Method not supported by source
     - ImportError: Required package not installed
     - AttributeError: Method doesn't exist on source
+    - TimeoutError: Operation timed out (P1-7)
     """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+    # P1-7: Per-attempt timeout (default 60s, can be configured via env)
+    per_attempt_timeout = timeout or int(os.getenv("FETCH_TIMEOUT_PER_ATTEMPT", "60"))
+
     # Exceptions that should NOT be retried (permanent failures)
     NO_RETRY_EXCEPTIONS = (NotImplementedError, ImportError, AttributeError)
 
     for attempt in range(MAX_RETRIES):
         try:
-            result = fn(*args, **kwargs)
-            return result
+            # P1-7: Use ThreadPoolExecutor for timeout protection
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(fn, *args, **kwargs)
+                try:
+                    result = future.result(timeout=per_attempt_timeout)
+                    return result
+                except FuturesTimeoutError:
+                    logger.warning(
+                        "Fetch timeout after %ds on attempt %d/%d",
+                        per_attempt_timeout, attempt + 1, MAX_RETRIES
+                    )
+                    raise TimeoutError(f"Fetch timed out after {per_attempt_timeout}s")
         except NO_RETRY_EXCEPTIONS as e:
             # Don't retry these - they will always fail
             logger.debug("Permanent failure (no retry): %s", e)
+            raise
+        except TimeoutError as e:
+            # P1-7: Don't retry timeouts - likely persistent network issue
+            logger.warning("Timeout failure (no retry): %s", e)
             raise
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
@@ -155,8 +201,10 @@ class Fetcher:
         Rate limiting is controlled by environment variables:
         - FETCH_DELAY: Delay after each successful fetch (default: 3.0s)
         - FETCH_DELAY_BETWEEN_SOURCES: Delay before trying next source on failure (default: 2.0s)
+        - SKIP_AKSHARE: Skip AKShare to avoid IP bans (default: false)
         """
-        priority = _SOURCE_PRIORITY.get(market, ["yfinance", "fmp"])
+        source_priority = _get_source_priority()
+        priority = source_priority.get(market, ["yfinance", "fmp"])
         delay_between = float(os.getenv("FETCH_DELAY_BETWEEN_SOURCES", "2.0"))
         delay_after_success = float(os.getenv("FETCH_DELAY", "3.0"))
 
@@ -858,7 +906,14 @@ class Fetcher:
         Returns:
             - AKShare's company name if validation passes (candidate matches)
             - None if validation fails (candidate doesn't match AKShare)
+            - candidate_name if SKIP_AKSHARE=true (skip validation)
         """
+        # Skip AKShare validation when SKIP_AKSHARE is enabled
+        skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+        if skip_akshare:
+            logger.debug("[Fetcher] SKIP_AKSHARE=true, skipping AKShare validation for %s", ticker)
+            return candidate_name  # Trust the candidate name
+
         try:
             import akshare as ak
 

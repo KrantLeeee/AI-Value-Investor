@@ -26,6 +26,10 @@ export FETCH_DELAY_BETWEEN_SOURCES=2.0
 export FETCH_DELAY_BETWEEN_TYPES=2.0
 export FETCH_DELAY_BETWEEN_TICKERS=5.0
 
+# ── 跳过 AKShare（避免 eastmoney.com 封 IP）────────────────────────────────
+# 数据源优先级变为：Tushare → BaoStock → Sina → QVeris
+export SKIP_AKSHARE=true
+
 # ── 股票列表 ────────────────────────────────────────────────────────────
 TICKERS=(
   "600519.SH"   # 贵州茅台

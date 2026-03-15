@@ -133,6 +133,11 @@ INDUSTRY_KEYWORDS = {
         "secondary": ["酱香型", "浓香型", "清香型", "名酒"],
         "negative": [],
     },
+    "consumer_mass": {
+        "primary": ["调味品", "食品饮料", "乳制品", "休闲食品"],
+        "secondary": ["酱油", "调料", "饮料", "零食", "速冻食品", "肉制品"],
+        "negative": [],
+    },
     "utility": {
         "primary": ["公用事业", "电力", "燃气", "水务", "环保"],
         "secondary": ["发电", "供电", "供水", "供热", "环境治理", "污水处理", "垃圾处理", "环境工程"],
@@ -465,9 +470,167 @@ def classify_industry(sector: str | None, sub_industry: str | None = None) -> st
                 )
                 return industry
 
-    # No match found
-    logger.warning(f"[Industry] No match for sector '{sector}', using default")
+    # No match found - keyword matching exhausted
+    logger.warning(f"[Industry] No keyword match for sector '{sector}', using default")
     return "default"
+
+
+def classify_industry_v3(
+    sector: str | None,
+    sub_industry: str | None = None,
+    metrics: dict | None = None,
+    business_desc: str | None = None,
+) -> str:
+    """
+    V3 Industry Classification with LLM fallback.
+
+    Three-layer funnel:
+    1. Keyword matching (fast, high confidence)
+    2. LLM routing (when keywords fail, uses financial metrics)
+    3. Default fallback
+
+    Args:
+        sector: Sector from watchlist or data source (e.g., "制造业")
+        sub_industry: Optional sub-industry detail
+        metrics: Financial metrics dict (net_margin, gross_margin, dividend_payout, etc.)
+        business_desc: Business description for LLM context
+
+    Returns:
+        Industry key (e.g., "low_margin_mfg", "brand_moat", "cyclical_materials")
+    """
+    import os
+
+    # Step 1: Try keyword matching first (fast path)
+    keyword_result = classify_industry(sector, sub_industry)
+    if keyword_result != "default":
+        return keyword_result
+
+    # Step 2: LLM routing (only when keywords fail and USE_INDUSTRY_ENGINE_V3=true)
+    use_v3 = os.getenv("USE_INDUSTRY_ENGINE_V3", "").lower() in ("true", "1", "yes")
+    if not use_v3:
+        logger.debug("[Industry] V3 LLM routing disabled, returning default")
+        return "default"
+
+    if not metrics:
+        logger.debug("[Industry] No metrics for LLM routing, returning default")
+        return "default"
+
+    # Call LLM for classification
+    llm_result = _llm_classify_industry(sector, metrics, business_desc)
+    if llm_result and llm_result != "default":
+        logger.info(f"[Industry] LLM classified '{sector}' as '{llm_result}'")
+        return llm_result
+
+    # Step 3: Default fallback
+    return "default"
+
+
+def _llm_classify_industry(
+    sector: str | None,
+    metrics: dict,
+    business_desc: str | None = None,
+) -> str | None:
+    """
+    LLM-based industry classification for ambiguous sectors.
+
+    Called when keyword matching returns "default" (e.g., "制造业" is too broad).
+
+    Uses financial metrics to determine the appropriate framework:
+    - net_margin < 5% → low_margin_mfg
+    - gross_margin > 40% + ROE > 15% → brand_moat
+    - dividend_payout > 50% → utility (or DDM-friendly)
+    - etc.
+
+    Returns:
+        Industry key or None if classification fails
+    """
+    try:
+        from src.llm.router import call_llm
+
+        # Build metrics summary
+        net_margin = metrics.get("net_margin")
+        gross_margin = metrics.get("gross_margin")
+        roe = metrics.get("roe")
+        dividend_payout = metrics.get("dividend_payout")
+        revenue = metrics.get("revenue")
+
+        # Format metrics for prompt
+        metrics_text = []
+        if net_margin is not None:
+            metrics_text.append(f"净利率: {net_margin:.1%}" if net_margin < 1 else f"净利率: {net_margin:.1f}%")
+        if gross_margin is not None:
+            metrics_text.append(f"毛利率: {gross_margin:.1%}" if gross_margin < 1 else f"毛利率: {gross_margin:.1f}%")
+        if roe is not None:
+            metrics_text.append(f"ROE: {roe:.1%}" if roe < 1 else f"ROE: {roe:.1f}%")
+        if dividend_payout is not None:
+            metrics_text.append(f"分红率: {dividend_payout:.1%}" if dividend_payout < 1 else f"分红率: {dividend_payout:.1f}%")
+        if revenue is not None:
+            if revenue >= 1e12:
+                metrics_text.append(f"营收: {revenue/1e12:.1f}万亿")
+            elif revenue >= 1e8:
+                metrics_text.append(f"营收: {revenue/1e8:.0f}亿")
+
+        metrics_str = ", ".join(metrics_text) if metrics_text else "无财务指标"
+
+        # Available industry frameworks
+        frameworks = """
+可选行业框架（只返回 key，不要解释）:
+- low_margin_mfg: 低利润率制造（净利率<5%，消费电子/代工）
+- brand_moat: 消费护城河（毛利率>40%且ROE>15%，高端消费品牌）
+- consumer_mass: 大众消费品（毛利率20-40%，调味品/乳制品）
+- cyclical_materials: 周期材料（有色/钢铁/化工/矿业）
+- utility: 公用事业/高分红央企（分红率>50%）
+- coal: 煤炭（周期+高分红混合）
+- oil_gas: 石油天然气
+- bank: 银行
+- insurance: 保险
+- real_estate: 房地产开发
+- pharma_mature: 成熟医药
+- pharma_innovative: 创新药研发（亏损或研发费率>30%）
+- tech_saas: SaaS软件
+- tech_traditional: 传统软件/系统集成
+- auto_new_energy: 新能源汽车
+- new_energy_mfg: 新能源制造（电池/光伏/风电）
+- defense_equipment: 军工装备
+- generic: 无法分类（仅当以上都不适用时使用）
+"""
+
+        system_prompt = "你是一个专业的股票行业分类器。根据财务指标判断公司应该使用哪个估值框架。只返回一个 key，不要任何解释。"
+
+        user_prompt = f"""根据以下信息判断该公司应该使用哪个估值框架。
+
+行业标签: {sector or '未知'}
+主营业务: {business_desc or '未知'}
+财务指标: {metrics_str}
+
+{frameworks}
+
+只返回一个 key（如 low_margin_mfg），不要任何解释。"""
+
+        response = call_llm(
+            task="industry_classification",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        if response:
+            # Extract the key from response (clean up any extra text)
+            result = response.strip().lower().replace('"', '').replace("'", "")
+            # Validate it's a known key
+            profiles, _ = _load_profiles()
+            if result in profiles or result in INDUSTRY_KEYWORDS:
+                return result
+            # Try to find partial match
+            for key in profiles:
+                if key in result or result in key:
+                    return key
+
+        logger.debug(f"[Industry] LLM returned invalid key: {response}")
+        return None
+
+    except Exception as e:
+        logger.warning(f"[Industry] LLM classification failed: {e}")
+        return None
 
 
 def get_industry_profile(industry: str) -> IndustryProfile:
@@ -475,7 +638,7 @@ def get_industry_profile(industry: str) -> IndustryProfile:
     Get complete industry profile.
 
     Args:
-        industry: Industry key from classify_industry()
+        industry: Industry key from classify_industry(), or Chinese display name
 
     Returns:
         IndustryProfile with weights, rationale, and scoring thresholds
@@ -483,8 +646,15 @@ def get_industry_profile(industry: str) -> IndustryProfile:
     profiles, _ = _load_profiles()
 
     if industry not in profiles:
-        logger.warning(f"[Industry] Profile for '{industry}' not found, using generic")
-        industry = "generic"
+        # Try to map Chinese display_name to English key
+        # e.g., "房地产" → "real_estate", "调味品" → "consumer_mass"
+        mapped_key = classify_industry(industry)
+        if mapped_key and mapped_key in profiles and mapped_key != "default":
+            logger.debug(f"[Industry] Mapped '{industry}' to '{mapped_key}'")
+            industry = mapped_key
+        else:
+            logger.warning(f"[Industry] Profile for '{industry}' not found, using generic")
+            industry = "generic"
 
     profile = profiles[industry]
 

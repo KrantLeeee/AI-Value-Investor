@@ -22,6 +22,9 @@ LOG_FILE="$LOG_DIR/report_${TODAY}.log"
 cd "$PROJECT_ROOT"
 mkdir -p "$TARGET_DIR" "$LOG_DIR"
 
+# ── 跳过 AKShare（报告生成时获取公司信息也用 Tushare 优先）────────────────
+export SKIP_AKSHARE=true
+
 # ── 股票列表（与 batch_fetch.sh 保持一致）────────────────────────────────
 TICKERS=(
   "600519.SH"   # 贵州茅台

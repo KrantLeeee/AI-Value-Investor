@@ -101,12 +101,15 @@ def run_all_agents(
         quarterly_balance = database.get_balance_sheets(ticker, limit=4, period_type="quarterly")
         annual_cashflow = database.get_cash_flows(ticker, limit=10, period_type="annual")
         quarterly_cashflow = database.get_cash_flows(ticker, limit=4, period_type="quarterly")
+        # P0-2: Add metrics for probe completeness check
+        metrics_data = database.get_financial_metrics(ticker, limit=5)
 
         raw_data = {
             'income':   _to_models(annual_income + quarterly_income, IncomeStatement),
             'balance':  _to_models(annual_balance + quarterly_balance, BalanceSheet),
             'cashflow': _to_models(annual_cashflow + quarterly_cashflow, CashFlow),
             'prices':   _to_models(database.get_latest_prices(ticker, limit=10), DailyPrice),
+            'metrics':  metrics_data,  # Raw dicts, not models (for probe check)
         }
 
         quality_report = run_quality_checks(ticker, market, raw_data)
