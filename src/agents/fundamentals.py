@@ -255,7 +255,8 @@ def run(ticker: str, market: str) -> AgentSignal:
         net_margin = None
 
     if roe is not None:
-        roe_pct = roe if roe > 1 else roe * 100  # normalise to %
+        # BUG-FIX: Use abs() for check - negative ROE values would fail "roe > 1" test
+        roe_pct = roe if abs(roe) > 1 else roe * 100  # normalise to %
         if roe_pct >= 20:
             score += 20; detail_lines.append(f"✓ ROE={roe_pct:.1f}% (≥20%, +20)")
         elif roe_pct >= 15:
@@ -269,7 +270,8 @@ def run(ticker: str, market: str) -> AgentSignal:
         detail_lines.append("- ROE 数据缺失")
 
     if net_margin is not None:
-        nm_pct = net_margin if net_margin > 1 else net_margin * 100
+        # BUG-FIX: Use abs() for check - negative margins would fail "net_margin > 1" test
+        nm_pct = net_margin if abs(net_margin) > 1 else net_margin * 100
         if nm_pct >= 15:
             score += 10; detail_lines.append(f"✓ 净利率={nm_pct:.1f}% (≥15%, +10)")
         elif nm_pct >= 8:

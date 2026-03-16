@@ -309,9 +309,15 @@ CONTRARIAN_BEAR_CASE_SYSTEM = """你是投资委员会中的辩证分析师（De
             "precedent": "历史先例"
         }
     ],
-    "bear_case_target_price": 12.50,
+    "bear_case_target_price": 38.4,
     "reasoning": "综合论述"
 }
+
+⚠️ 目标价计算规则（严格遵守）：
+- bear_case_target_price 必须是**数字类型**（如 38.4），不是字符串
+- 计算公式：当前股价 × (1 - 下行幅度)，下行幅度通常为 20%-40%
+- 示例：若当前股价=48元，则悲观目标价=48×0.7=33.6 或 48×0.8=38.4
+- 你必须根据用户输入的实际股价计算，上面的38.4只是示例
 """
 
 CONTRARIAN_BEAR_CASE_USER = """[共识方向: {consensus_direction}, 强度: {consensus_strength:.0%}]
@@ -355,9 +361,15 @@ CONTRARIAN_BULL_CASE_SYSTEM = """你是投资委员会中的辩证分析师（De
     ],
     "priced_in_analysis": "当前股价已反映了多少坏消息",
     "survival_advantage": "比同行更能扛周期的原因",
-    "bull_case_target_price": 28.00,
+    "bull_case_target_price": 62.4,
     "reasoning": "综合论述"
 }
+
+⚠️ 目标价计算规则（严格遵守）：
+- bull_case_target_price 必须是**数字类型**（如 62.4），不是字符串
+- 计算公式：当前股价 × (1 + 上行幅度)，上行幅度通常为 20%-50%
+- 示例：若当前股价=48元，则乐观目标价=48×1.3=62.4 或 48×1.5=72
+- 你必须根据用户输入的实际股价计算，上面的62.4只是示例
 """
 
 CONTRARIAN_BULL_CASE_USER = """[共识方向: {consensus_direction}, 强度: {consensus_strength:.0%}]

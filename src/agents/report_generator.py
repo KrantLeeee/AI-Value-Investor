@@ -375,9 +375,13 @@ def _build_valuation_analysis(valuation_signal: AgentSignal | None, ticker: str 
 
     # Get industry-specific parameters
     industry_type = get_industry_type(ticker) if ticker else "unknown"
-    ev_multiple, ev_industry_name = INDUSTRY_EV_EBITDA_MULTIPLES.get(
+    # BUG-FIX: Use actual EV/EBITDA multiple from valuation calculation
+    # This ensures label matches the calculation (both from industry_profiles.yaml)
+    ev_multiple_from_valuation = valuation_signal.metrics.get("ev_ebitda_multiple")
+    ev_multiple_default, ev_industry_name = INDUSTRY_EV_EBITDA_MULTIPLES.get(
         industry_type, DEFAULT_EV_EBITDA_MULTIPLE
     )
+    ev_multiple = ev_multiple_from_valuation or ev_multiple_default
     optimistic_scenario, pessimistic_scenario = INDUSTRY_SENSITIVITY_SCENARIOS.get(
         industry_type, DEFAULT_SENSITIVITY_SCENARIOS
     )
@@ -620,7 +624,11 @@ def _render_contrarian_chapter(
 
         bear_price = contrarian_signal.metrics.get("bear_case_target_price")
         if bear_price:
-            lines.append(f"**辩证分析悲观目标价**: ¥{bear_price:.2f}/股")
+            # BUG-FIX: Handle both numeric and string values from LLM
+            if isinstance(bear_price, (int, float)):
+                lines.append(f"**辩证分析悲观目标价**: ¥{bear_price:.2f}/股")
+            else:
+                lines.append(f"**辩证分析悲观目标价**: {bear_price}")
             lines.append("")
 
     elif mode == "bull_case":
@@ -640,7 +648,11 @@ def _render_contrarian_chapter(
 
         bull_price = contrarian_signal.metrics.get("bull_case_target_price")
         if bull_price:
-            lines.append(f"**辩证分析乐观目标价**: ¥{bull_price:.2f}/股")
+            # BUG-FIX: Handle both numeric and string values from LLM
+            if isinstance(bull_price, (int, float)):
+                lines.append(f"**辩证分析乐观目标价**: ¥{bull_price:.2f}/股")
+            else:
+                lines.append(f"**辩证分析乐观目标价**: {bull_price}")
             lines.append("")
 
     else:  # critical_questions

@@ -30,6 +30,7 @@ ALLOWED_METHODS = {
     "asset_replacement",
     "net_net",
     "graham_number",
+    "nav",  # BUG-FIX P1-5: NAV for real estate stocks
 }
 
 

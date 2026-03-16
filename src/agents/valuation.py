@@ -99,6 +99,57 @@ def apply_real_estate_cap(pb_value: float, industry_type: str) -> dict:
     return {"pb_capped": pb_value, "warning": None}
 
 
+def calculate_real_estate_nav(
+    total_assets: float,
+    total_liabilities: float,
+    inventory: float,
+    shares: int,
+    revaluation_factor: float = 1.15,
+) -> dict:
+    """
+    BUG-FIX P1-5: Calculate NAV proxy for real estate stocks.
+
+    NAV = (Property assets × revaluation factor) + Other assets - Liabilities
+
+    Since we don't have detailed property breakdown, use inventory as proxy
+    for development properties (land banks), applying a conservative
+    revaluation factor.
+
+    Args:
+        total_assets: Total assets in yuan
+        total_liabilities: Total liabilities in yuan
+        inventory: Inventory (proxy for land/development projects) in yuan
+        shares: Total shares outstanding
+        revaluation_factor: Land appreciation assumption (default 1.15 = 15%)
+
+    Returns:
+        dict with nav_per_share, book_value, and other components
+    """
+    if not all([total_assets, shares]) or shares <= 0:
+        return {"nav_per_share": None, "error": "Missing required data"}
+
+    # Book value = Total assets - Total liabilities
+    book_value = total_assets - (total_liabilities or 0)
+
+    # Inventory appreciation (proxy for land bank revaluation)
+    inventory_value = inventory or 0
+    inventory_appreciation = inventory_value * (revaluation_factor - 1)
+
+    # NAV proxy = Book value + Inventory appreciation
+    nav_proxy = book_value + inventory_appreciation
+
+    # Per share
+    nav_per_share = nav_proxy / shares
+
+    return {
+        "nav_per_share": round(nav_per_share, 2),
+        "book_value": book_value,
+        "inventory_appreciation": inventory_appreciation,
+        "nav_proxy": nav_proxy,
+        "revaluation_factor": revaluation_factor,
+    }
+
+
 def calculate_ev_ebitda_value(
     ebitda: float, multiple: float, shares: int, revenue: float
 ) -> tuple[float | None, str | None]:
@@ -332,6 +383,12 @@ _UTILITY_TICKERS = {
     "601991.SH",  # 大唐发电
     "600886.SH",  # 国投电力
 }
+
+# BUG-FIX P1-4: High-dividend stocks use DDM (e.g., 中国神华 with 5%+ yield)
+# These aren't utilities but have stable, high dividends that warrant DDM valuation
+HIGH_DIVIDEND_YIELD_THRESHOLD = 0.04  # 4% dividend yield triggers DDM
+HIGH_DIVIDEND_COST_OF_EQUITY = 0.08  # 8% cost of equity (moderate risk)
+HIGH_DIVIDEND_DDM_GROWTH = 0.02  # 2% long-term dividend growth (conservative)
 
 # Phase 2: Cyclical stock valuation parameters
 # Use cycle-bottom multiples, not current period
@@ -592,12 +649,26 @@ def get_outlier_threshold(industry_type: str, method_name: str | None = None) ->
     if method_name == "P/E_Moat":
         return 1.5  # 150% deviation allowed for moat P/E
 
+    # BUG-FIX: NAV for real estate should bypass outlier detection
+    # NAV uses asset revaluation factors (1.15x inventory appreciation)
+    # Comparing NAV to P/B median doesn't make sense - different valuation basis
+    if method_name == "NAV":
+        return 10.0  # Effectively no threshold - NAV is asset-based, not comparable to earnings-based
+
+    # BUG-FIX: DDM for high-dividend stocks should have relaxed threshold
+    # High-dividend stocks' DDM valuations are inherently higher than cycle-bottom P/B
+    # because DDM captures the present value of future dividend streams
+    # This is economically correct - not an outlier to be excluded
+    if method_name == "DDM":
+        return 1.5  # 150% deviation allowed for DDM (dividend-based vs earnings-based)
+
     thresholds = {
         "auto_new_energy": 1.5,  # EV makers like BYD have wide valuation ranges
         "new_energy_mfg": 1.5,  # Battery/solar manufacturers
         "growth_tech": 2.0,  # High-growth tech (most volatile)
         "brand_moat": 1.0,  # Moat companies get relaxed threshold (100%)
         "consumer_premium": 1.0,  # Premium consumer brands
+        "real_estate": 1.5,  # BUG-FIX: Real estate has NAV + P/B with different bases
         "default": 0.6,  # Standard 60% threshold for others
     }
     return thresholds.get(industry_type, thresholds["default"])
@@ -988,9 +1059,28 @@ def _get_dividend_from_akshare(ticker: str) -> float | None:
     return None
 
 
-def _is_utility_stock(ticker: str) -> bool:
-    """Check if ticker is a utility stock that should use DDM valuation."""
-    return ticker in _UTILITY_TICKERS
+def _is_utility_stock(ticker: str, industry: str | None = None) -> bool:
+    """
+    Check if ticker is a utility stock that should use DDM valuation.
+
+    BUG-FIX P2-8: Enhanced with dynamic industry keyword detection.
+    Uses hardcoded list as guaranteed fallback, plus dynamic detection for unlisted stocks.
+    """
+    # 1. Hardcoded known utilities (guaranteed correct)
+    if ticker in _UTILITY_TICKERS:
+        return True
+
+    # 2. Dynamic detection via industry classification
+    if industry:
+        utility_keywords = [
+            "电力", "水务", "燃气", "公用事业", "Utilities",
+            "水电", "火电", "核电", "供水", "供气",
+        ]
+        if any(kw in industry for kw in utility_keywords):
+            logger.info("[Valuation] Dynamic utility detection: %s (%s)", ticker, industry)
+            return True
+
+    return False
 
 
 def _build_engine_metrics(ticker: str, market: str) -> dict:
@@ -1366,6 +1456,17 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 dividend_yield_raw / 100 if dividend_yield_raw > 1 else dividend_yield_raw
             )
 
+    # BUG-FIX P1-4: Fallback to AKShare for dividend_yield if not in database
+    # This enables high-dividend stock detection for A-shares (e.g., 中国神华)
+    if dividend_yield is None and current_price and current_price > 0:
+        dps_akshare = _get_dividend_from_akshare(ticker)
+        if dps_akshare and dps_akshare > 0:
+            dividend_yield = dps_akshare / current_price
+            logger.info(
+                "[Valuation] %s: Calculated dividend_yield from AKShare: %.2f%% (DPS=¥%.2f, Price=¥%.2f)",
+                ticker, dividend_yield * 100, dps_akshare, current_price
+            )
+
     # Only check financial if not already classified
     if not is_loss_making_tech and not is_growth_stock:
         is_financial_stock = detect_financial_stock(
@@ -1456,7 +1557,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         and not is_cyclical_stock
         and not is_healthcare_stock
     ):
-        is_utility_stock = _is_utility_stock(ticker)
+        is_utility_stock = _is_utility_stock(ticker, industry)
 
     if is_utility_stock:
         results["is_utility_stock"] = True
@@ -1464,6 +1565,26 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         detail_lines.append(
             "⚡ 公用事业股：使用DDM股息折现模型为主要估值方法（稳定股息，"
             "监管收益可预测），禁用高增长DCF假设"
+        )
+
+    # ── BUG-FIX P1-4: Detect high-dividend stocks (e.g., 中国神华) ──────────────
+    # High-dividend stocks (4%+ yield) warrant DDM valuation even if not utility/financial
+    is_high_dividend_stock = False
+
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_financial_stock
+        and not is_utility_stock
+        and dividend_yield is not None
+        and dividend_yield >= HIGH_DIVIDEND_YIELD_THRESHOLD
+    ):
+        is_high_dividend_stock = True
+        results["is_high_dividend_stock"] = True
+        results["valuation_mode"] = "high_dividend"
+        detail_lines.append(
+            f"💰 高分红股：股息率{dividend_yield*100:.1f}% >= {HIGH_DIVIDEND_YIELD_THRESHOLD*100:.0f}%门槛，"
+            "使用DDM股息折现模型估值（稳定高分红，现金流充裕）"
         )
 
     # ── Task 3.1: Detect brand moat stocks ─────────────────────────────────────
@@ -1751,7 +1872,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # Task #18: Check if utility stock - skip generic EV/EBITDA detail lines
     # Utility stocks will add their own 12x detail lines later
-    _skip_generic_ev_detail = _is_utility_stock(ticker)
+    _skip_generic_ev_detail = _is_utility_stock(ticker, industry)
 
     if ebitda and ebitda > 0:
         # Get revenue for validation (extracted earlier at line 684)
@@ -1810,6 +1931,24 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
                 if cap_result.get("warning"):
                     detail_lines.append(cap_result["warning"])
 
+                # BUG-FIX P1-5: Calculate NAV for real estate stocks
+                if balance_rows:
+                    bs = balance_rows[0]
+                    nav_result = calculate_real_estate_nav(
+                        total_assets=_safe(bs.get("total_assets")) or 0,
+                        total_liabilities=_safe(bs.get("total_liabilities")) or 0,
+                        inventory=_safe(bs.get("inventory")) or 0,
+                        shares=shares,
+                        revaluation_factor=1.15,  # 15% land appreciation
+                    )
+                    if nav_result.get("nav_per_share"):
+                        results["nav_per_share"] = nav_result["nav_per_share"]
+                        results["nav_components"] = nav_result
+                        detail_lines.append(
+                            f"🏠 NAV估值（物业重估+15%）: ¥{nav_result['nav_per_share']:.2f}/股 "
+                            f"(账面净值={nav_result['book_value']/1e8:.1f}亿)"
+                        )
+
             results["pb_target"] = round(pb_target_per_share, 2)
             detail_lines.append(f"P/B目标价 ({_pb}x BVPS={bvps:.2f}): ¥{pb_target_per_share:.2f}")
     else:
@@ -1844,7 +1983,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     # ── 3c. EV/Sales valuation (BUG-03A: for loss-making tech stocks) ─────────
     ev_sales_per_share = None
 
-    if revenue and revenue > 0 and shares and shares > 0:
+    # BUG-FIX: Skip EV/Sales for auto manufacturers - 6x tech multiple is inappropriate
+    # Auto industry typically has EV/Sales of 0.5-1.5x, not 6x
+    _industry_type_for_ev_sales = get_industry_type("", industry or "")
+    is_auto_manufacturer = _industry_type_for_ev_sales == "auto_new_energy"
+
+    if revenue and revenue > 0 and shares and shares > 0 and not is_auto_manufacturer:
         # Calculate Enterprise Value: Market Cap + Debt - Cash
         total_debt = _safe(balance_rows[0].get("total_debt")) if balance_rows else None
         cash = _safe(balance_rows[0].get("cash_and_equivalents")) if balance_rows else None
@@ -1861,6 +2005,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             detail_lines.append(
                 f"EV/Sales估值 ({EV_SALES_TECH}x 营收): ¥{ev_sales_per_share:.2f}/股"
             )
+    elif is_auto_manufacturer:
+        # Note why EV/Sales was skipped
+        detail_lines.append(
+            "EV/Sales估值: 跳过（整车制造商不适用6x科技股倍数，行业P/S约0.5-1.5x）"
+        )
 
     # ── 3d. PEG valuation (BUG-03B: for growth stocks) ───────────────────────
     # PEG = PE / EPS Growth Rate
@@ -1993,6 +2142,38 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         else:
             detail_lines.append("⚠ DDM估值无法计算（缺少股息数据，已尝试AKShare获取）")
 
+    # ── BUG-FIX P1-4: DDM valuation for high-dividend stocks ─────────────────
+    # High-dividend stocks (like 中国神华) deserve DDM valuation
+    ddm_high_dividend_per_share = None
+
+    if is_high_dividend_stock:
+        # Try multiple sources for dividend per share:
+        # 1. Database metrics
+        dps = _safe(metric_rows[0].get("dividend_per_share")) if metric_rows else None
+
+        # 2. Fallback: estimate from dividend yield
+        if dps is None and dividend_yield and current_price:
+            dps = dividend_yield * current_price
+
+        # 3. Fetch from AKShare directly
+        if dps is None:
+            dps = _get_dividend_from_akshare(ticker)
+
+        if dps and dps > 0:
+            # DDM formula: P = D1 / (Ke - g)
+            # D1 = DPS × (1 + g)
+            d1 = dps * (1 + HIGH_DIVIDEND_DDM_GROWTH)
+            if HIGH_DIVIDEND_COST_OF_EQUITY > HIGH_DIVIDEND_DDM_GROWTH:
+                ddm_high_dividend_per_share = d1 / (HIGH_DIVIDEND_COST_OF_EQUITY - HIGH_DIVIDEND_DDM_GROWTH)
+                results["ddm_per_share"] = round(ddm_high_dividend_per_share, 2)
+                results["dps"] = round(dps, 2)
+                detail_lines.append(
+                    f"DDM股息折现 (DPS=¥{dps:.2f}, g={HIGH_DIVIDEND_DDM_GROWTH*100:.1f}%, "
+                    f"Ke={HIGH_DIVIDEND_COST_OF_EQUITY*100:.0f}%): ¥{ddm_high_dividend_per_share:.2f}/股"
+                )
+        else:
+            detail_lines.append("⚠ DDM估值无法计算（缺少股息数据）")
+
     # ── 3g. Cycle-adjusted EV/EBITDA (Phase 2: for cyclical stocks) ──────────
     # Use cycle-bottom multiples instead of current period from industry_profiles.yaml
     ev_ebitda_cycle_per_share = None
@@ -2082,7 +2263,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     elif is_growth_stock:
         # BUG-03B: Growth stock valuation methods
-        # Uses PEG instead of Graham Number, disables Graham Number
+        # Disables Graham Number (designed for defensive low-PE stocks)
+        # NOTE: PEG is calculated for reference but NOT added to weighted average
+        # (see peg_note: "PEG估值仅供交叉验证参考，未纳入加权目标价计算")
 
         # DCF base case (per share) - primary method with growth assumptions
         if dcf_base and shares and shares > 0:
@@ -2090,11 +2273,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             results["dcf_per_share"] = dcf_per_share
             valuation_methods.append(("DCF", dcf_per_share))
 
-        # PEG valuation - core method for growth stocks
-        if peg_per_share:
-            valuation_methods.append(("PEG", peg_per_share))
+        # EV/EBITDA valuation - core method for growth stocks (replaces PEG in weighted calc)
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
 
-        # EV/Sales valuation - industry comparison
+        # NOTE: PEG is reference-only, not added to valuation_methods
+        # (PEG is sensitive to EPS growth assumptions, not reliable as core pricing method)
+
+        # EV/Sales valuation - industry comparison (if not auto manufacturer)
         if ev_sales_per_share:
             valuation_methods.append(("EV/Sales", ev_sales_per_share))
 
@@ -2143,6 +2329,14 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     elif is_cyclical_stock:
         # Phase 2: Cyclical stock valuation methods
         # Uses normalized DCF and cycle-bottom multiples
+
+        # BUG-FIX: Cyclical + high-dividend stocks (like 中国神华) should include DDM
+        # DDM captures the stable dividend income value, which cyclical-only methods miss
+        if is_high_dividend_stock and ddm_high_dividend_per_share:
+            valuation_methods.append(("DDM", ddm_high_dividend_per_share))
+            detail_lines.append(
+                f"周期+高分红: DDM纳入加权 (DPS=¥{dividend_yield * current_price:.2f})"
+            )
 
         # DCF base case (per share) - use as normalized DCF
         if dcf_base and shares and shares > 0:
@@ -2275,6 +2469,34 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
         # NOTE: Graham Number is DISABLED for utilities
         # (Graham Number is designed for undervalued stocks, not regulated utilities)
+
+    elif is_high_dividend_stock:
+        # BUG-FIX P1-4: High-dividend stock valuation methods (e.g., 中国神华)
+        # Uses DDM as primary (high stable dividends), DCF, EV/EBITDA, P/B
+
+        # DDM valuation - primary method for high-dividend stocks
+        if ddm_high_dividend_per_share:
+            valuation_methods.append(("DDM", ddm_high_dividend_per_share))
+
+        # DCF with conservative growth
+        if dcf_bear and shares and shares > 0:
+            dcf_per_share = dcf_bear / shares  # Use conservative DCF
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF_Conservative", dcf_per_share))
+            detail_lines.append(f"高分红股DCF（保守）: ¥{dcf_per_share:.2f}/股")
+
+        # EV/EBITDA (standard)
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+
+        # P/B as floor value
+        if bvps:
+            high_div_pb_multiple = 1.5  # Conservative P/B for high-dividend stocks
+            pb_target_per_share = bvps * high_div_pb_multiple
+            results["pb_target"] = round(pb_target_per_share, 2)
+            valuation_methods.append(("P/B", pb_target_per_share))
+
+        # NOTE: Graham Number is DISABLED for high-dividend stocks
 
     elif is_brand_moat:
         # Task 3.1: Brand moat stock valuation methods
@@ -2436,6 +2658,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             else:
                 detail_lines.append(f"⚠ P/B: 已禁用 (行业配置: {industry_class})")
 
+        # BUG-FIX P1-5: Add NAV to valuation methods for real estate stocks
+        if is_real_estate_industry(industry) and results.get("nav_per_share"):
+            valuation_methods.append(("NAV", results["nav_per_share"]))
+
     # Validate each method and calculate weighted target
     validated_results = []
     all_target_prices = [price for _, price in valuation_methods if price and price > 0]
@@ -2476,9 +2702,19 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         logger.info("[Valuation] %s: Using financial stock weights: %s", ticker, default_weights)
     elif is_cyclical_stock:
         # Phase 2: Use cyclical stock weights (normalized DCF + cycle-bottom multiples)
-        valuation_config = get_cyclical_stock_valuation_config()
-        default_weights = valuation_config["weights"]
-        logger.info("[Valuation] %s: Using cyclical stock weights: %s", ticker, default_weights)
+        # BUG-FIX: Cyclical + high-dividend stocks get combined weights with DDM
+        if is_high_dividend_stock:
+            default_weights = {
+                "DDM": 0.30,  # High-dividend component
+                "DCF_Normalized": 0.25,  # Cyclical component
+                "EV/EBITDA_Cycle": 0.25,  # Cyclical component
+                "P/B_Cycle": 0.20,  # Floor value
+            }
+            logger.info("[Valuation] %s: Using cyclical+high-dividend weights: %s", ticker, default_weights)
+        else:
+            valuation_config = get_cyclical_stock_valuation_config()
+            default_weights = valuation_config["weights"]
+            logger.info("[Valuation] %s: Using cyclical stock weights: %s", ticker, default_weights)
     elif is_healthcare_stock:
         # Phase 2: Use healthcare stock weights based on development stage
         if is_healthcare_rd:
@@ -2502,6 +2738,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             "P/B": 0.10,  # Floor value
         }
         logger.info("[Valuation] %s: Using utility stock weights: %s", ticker, default_weights)
+    elif is_high_dividend_stock:
+        # BUG-FIX P1-4: Use high-dividend stock weights (DDM-focused like utilities)
+        default_weights = {
+            "DDM": 0.45,  # Primary - high stable dividends
+            "DCF_Conservative": 0.25,  # Secondary - conservative growth
+            "EV/EBITDA": 0.20,  # Tertiary - earnings power
+            "P/B": 0.10,  # Floor value
+        }
+        logger.info("[Valuation] %s: Using high-dividend stock weights: %s", ticker, default_weights)
     elif is_brand_moat:
         # Task 3.1: Use brand moat stock weights (P/E anchor focused, no Graham)
         default_weights = {
@@ -2511,6 +2756,15 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             "P/B": 0.05,  # Floor value only
         }
         logger.info("[Valuation] %s: Using brand moat stock weights: %s", ticker, default_weights)
+    elif is_real_estate_industry(industry):
+        # BUG-FIX: Real estate stocks use NAV + P/B, not DCF/Graham/EV-EBITDA
+        # NAV (Net Asset Value) is the primary valuation method for real estate
+        # P/B serves as a cross-check and floor value
+        default_weights = {
+            "NAV": 0.60,  # Primary - net asset value based on land/property
+            "P/B": 0.40,  # Secondary - book value as floor
+        }
+        logger.info("[Valuation] %s: Using real estate weights: %s", ticker, default_weights)
     elif is_distressed:
         # Task 3.4: Use distressed company weights based on type
         if distressed_type == "asset_intensive":
@@ -2540,12 +2794,30 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     else:
         # Standard valuation weights for traditional value stocks
         # Prefer DCF > Graham > EV/EBITDA > P/B (following value investing principles)
-        default_weights = {
-            "DCF": 0.40,
-            "Graham": 0.25,
-            "EV/EBITDA": 0.20,
-            "P/B": 0.15,
-        }
+        #
+        # BUG-FIX: Graham Number is designed for defensive, low-PE value stocks
+        # For high-PE stocks (PE > 30), Graham systematically undervalues because:
+        # - Graham formula = √(22.5 × EPS × BVPS) implies max PE of 15x
+        # - High PE means market pays growth premium, which Graham ignores
+        # Solution: Exclude Graham for high-PE stocks, redistribute to DCF/EV-EBITDA
+        if pe_ratio and pe_ratio > 30:
+            default_weights = {
+                "DCF": 0.50,  # Primary - captures growth assumptions
+                "EV/EBITDA": 0.30,  # Secondary - earnings power
+                "P/B": 0.20,  # Tertiary - floor value
+                # Graham excluded for high-PE stocks
+            }
+            logger.info(
+                "[Valuation] %s: PE=%.1f > 30, excluding Graham Number (designed for PE<15 stocks)",
+                ticker, pe_ratio
+            )
+        else:
+            default_weights = {
+                "DCF": 0.40,
+                "Graham": 0.25,
+                "EV/EBITDA": 0.20,
+                "P/B": 0.15,
+            }
 
     weighted_result = _calculate_weighted_target(
         results=validated_results, current_price=current_price or 0, weights=default_weights

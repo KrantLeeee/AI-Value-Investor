@@ -1150,18 +1150,21 @@ def get_growth_tech_valuation_config() -> ValuationMethodConfig:
     """
     BUG-03B: Get valuation method configuration for profitable growth tech stocks.
 
-    Returns PEG-focused weights, disables Graham Number.
+    Uses DCF + EV/EBITDA as core methods, disables Graham Number.
+    NOTE: PEG is calculated for reference but NOT included in weighted average
+    (PEG is too sensitive to EPS growth assumptions to be a reliable core method).
     """
     return {
-        "enabled_methods": ["PEG", "DCF", "EV/Sales", "P/B"],
+        "enabled_methods": ["DCF", "EV/EBITDA", "EV/Sales", "P/B"],
         "weights": {
-            "DCF": 0.35,  # DCF with growth assumptions
-            "PEG": 0.30,  # Price/Earnings-to-Growth
-            "EV/Sales": 0.20,  # Industry comparison
-            "P/B": 0.15,  # ROE-adjusted P/B
+            "DCF": 0.40,  # Primary - captures growth assumptions
+            "EV/EBITDA": 0.30,  # Secondary - earnings power valuation
+            "EV/Sales": 0.15,  # Tertiary - industry comparison
+            "P/B": 0.15,  # Floor - ROE-adjusted book value
         },
         "rationale": (
-            "盈利期成长股估值方法: DCF和PEG为主力（反映成长溢价），"
+            "盈利期成长股估值方法: DCF为主力（反映成长溢价），EV/EBITDA为辅助，"
+            "PEG仅供参考不纳入加权（对增速假设过于敏感），"
             "禁用Graham Number（专为防御型低估股设计）"
         ),
     }

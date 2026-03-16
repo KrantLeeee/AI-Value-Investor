@@ -95,6 +95,21 @@ PIPELINE_KEYWORDS = [
     "双抗",
 ]
 
+# Negative keywords to exclude non-pharma companies that happen to match pipeline keywords
+# e.g., "大禹生物" is a feed additives company, not innovative pharma
+PIPELINE_NEGATIVE_KEYWORDS = [
+    "饲料",      # Feed
+    "兽药",      # Veterinary drugs
+    "养殖",      # Farming/breeding
+    "添加剂",    # Additives
+    "农业",      # Agriculture
+    "畜牧",      # Animal husbandry
+    "宠物",      # Pets (pet food companies)
+    "种植",      # Planting/cultivation
+    "肥料",      # Fertilizer
+    "农药",      # Pesticides
+]
+
 
 @dataclass
 class SpecialRegimeResult:
@@ -206,8 +221,16 @@ def detect_special_regime(
         )
 
     # Rule 6: Pharma Innovative (rd_ratio > 30% AND net_margin < 5% AND pipeline keywords)
+    # BUG-FIX: Added negative keyword filtering to exclude non-pharma companies
+    # (e.g., 大禹生物 is feed additives, not innovative pharma)
     business_desc = company_info.get("business_description", "")
-    has_pipeline = any(kw in business_desc for kw in PIPELINE_KEYWORDS)
+    company_name = company_info.get("name", "")
+    combined_text = business_desc + " " + company_name
+
+    has_positive_keyword = any(kw in combined_text for kw in PIPELINE_KEYWORDS)
+    has_negative_keyword = any(kw in combined_text for kw in PIPELINE_NEGATIVE_KEYWORDS)
+    has_pipeline = has_positive_keyword and not has_negative_keyword
+
     if rd_ratio > 30 and net_margin < 5 and has_pipeline and not is_financial:
         return SpecialRegimeResult(
             regime="pharma_innovative",

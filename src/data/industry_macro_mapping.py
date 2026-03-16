@@ -191,7 +191,7 @@ TICKER_TO_INDUSTRY: dict[str, str] = {
     "601628.SH": "financial_insurance",      # 中国人寿
     # AI科技-亏损期
     "002230.SZ": "ai_tech_loss",             # 科大讯飞
-    "688111.SH": "ai_tech_loss",             # 金山办公（部分亏损期）
+    "688111.SH": "ai_tech_profitable",        # 金山办公（净利率32%，盈利期）
     # AI科技-盈利期
     "688169.SH": "ai_tech_profitable",       # 石头科技
     "688036.SH": "ai_tech_profitable",       # 传音控股

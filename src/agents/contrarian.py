@@ -268,19 +268,42 @@ def _build_prompt(
     arguments_text_safe = arguments_text if arguments_text else "（无可用论据）"
     quality_context_safe = quality_context if quality_context else "（无数据质量报告）"
 
+    # BUG-FIX: Extract current_price and target_price from valuation signal for target price calculation
+    current_price = None
+    weighted_target = None
+    for sig in valid_signals:
+        if sig.agent_name == "Valuation" and sig.metrics:
+            current_price = sig.metrics.get("current_price")
+            weighted_target = sig.metrics.get("weighted_target_price")
+            break
+
+    # Format price info for LLM
+    price_info = ""
+    if current_price:
+        price_info = f"当前股价：¥{current_price:.2f}"
+        if weighted_target:
+            price_info += f"，估值目标价：¥{weighted_target:.2f}"
+
     # Construct macro/industry context block
     macro_context_lines = [
         f"当前时间：{analysis_date}",
         f"标的代码：{ticker}",
         f"标的行业：{industry}",
-        "",
+    ]
+
+    # Add price info if available (critical for target price calculation)
+    if price_info:
+        macro_context_lines.append(f"**{price_info}**  ← 计算目标价必须基于此股价")
+        macro_context_lines.append("")
+
+    macro_context_lines.extend([
         "全球宏观环境提示（2024-2026）：",
         "- 地缘政治：区域冲突持续，逆全球化与贸易保护主义，供应链重构",
         "- 经济周期：全球增长放缓，需求端面临不确定性",
         "- 货币环境：高利率周期的长尾效应与资本流动变化",
         "",
         "**任务要求**：请根据上述行业标签，自动结合该行业当前面临的微观与中观痛点进行分析，切忌说空话。",
-    ]
+    ])
 
     macro_industry_context = "\n".join(macro_context_lines)
 

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     email_sender_name: str = Field(default="AI Value Investor", alias="EMAIL_SENDER_NAME")
     email_sender_email: str = Field(default="", alias="EMAIL_SENDER_EMAIL")
 
+    # ── Feature Flags ────────────────────────────────────────
+    # BUG-FIX P2-7: V3 industry engine feature flag
+    use_v3_industry_engine: bool = Field(default=True, alias="USE_V3_INDUSTRY_ENGINE")
+
     model_config = {"populate_by_name": True}
 
 

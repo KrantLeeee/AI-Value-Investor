@@ -256,6 +256,12 @@ NEW_INDUSTRY_MAPPINGS = {
     'ODM': 'low_margin_mfg',
     'OEM': 'low_margin_mfg',
     '代工': 'low_margin_mfg',
+
+    # BUG-FIX: Real Estate - NAV should not be compared to P/B median
+    '房地产': 'real_estate',
+    '地产': 'real_estate',
+    '物业': 'real_estate',
+    '住宅': 'real_estate',
 }
 
 

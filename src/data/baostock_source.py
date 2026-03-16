@@ -495,21 +495,30 @@ class BaoStockSource(BaseDataSource):
                     unmatched_dupont += 1
                     logger.debug("[BaoStock] No matching profit data for dupont period: %s", period_str)
                 roe_val = _safe_float(row.get("dupontROE") or row.get("dupontRoe"))
-                # BaoStock ROE is in fraction form (0-1), convert to % for consistency
-                if roe_val is not None and abs(roe_val) < 2:  # likely fraction
-                    roe_val = roe_val * 100
+                # BUG-FIX: Improved decimal/percentage detection for ROE
+                # BaoStock returns mixed formats - some fields are decimals (0.15 = 15%), others percentages
+                # Strategy: If abs(value) <= 1, it's likely decimal form; if > 1, likely already percentage
+                # Exception: Very small values like 0.001 could be 0.1% in percentage form
+                if roe_val is not None:
+                    if abs(roe_val) <= 1.0:
+                        # Likely decimal (0.15 = 15%), convert to percentage
+                        roe_val = roe_val * 100
+                    # else: already in percentage form (15.0 = 15%)
 
                 np_margin = _safe_float(profit.get("npMargin"))
-                if np_margin is not None and abs(np_margin) < 2:
-                    np_margin = np_margin * 100
+                if np_margin is not None:
+                    if abs(np_margin) <= 1.0:
+                        np_margin = np_margin * 100
 
                 gp_margin = _safe_float(profit.get("gpMargin"))
-                if gp_margin is not None and abs(gp_margin) < 2:
-                    gp_margin = gp_margin * 100
+                if gp_margin is not None:
+                    if abs(gp_margin) <= 1.0:
+                        gp_margin = gp_margin * 100
 
                 roe_avg = _safe_float(profit.get("roeAvg"))
-                if roe_avg is not None and abs(roe_avg) < 2:
-                    roe_avg = roe_avg * 100
+                if roe_avg is not None:
+                    if abs(roe_avg) <= 1.0:
+                        roe_avg = roe_avg * 100
 
                 results.append(FinancialMetrics(
                     ticker=ticker,
