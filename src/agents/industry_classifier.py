@@ -572,40 +572,65 @@ def _llm_classify_industry(
 
         metrics_str = ", ".join(metrics_text) if metrics_text else "无财务指标"
 
-        # Available industry frameworks
+        # Available industry frameworks with financial feature rules
         frameworks = """
-可选行业框架（只返回 key，不要解释）:
-- low_margin_mfg: 低利润率制造（净利率<5%，消费电子/代工）
-- brand_moat: 消费护城河（毛利率>40%且ROE>15%，高端消费品牌）
-- consumer_mass: 大众消费品（毛利率20-40%，调味品/乳制品）
-- cyclical_materials: 周期材料（有色/钢铁/化工/矿业）
-- utility: 公用事业/高分红央企（分红率>50%）
-- coal: 煤炭（周期+高分红混合）
-- oil_gas: 石油天然气
+## 判断规则（严格按优先级执行）
+
+**核心原则：财务特征优先于行业标签**
+即使行业标签模糊、错误或不匹配，也必须根据以下财务特征独立判断。
+
+### 第一优先级：困境股检测
+- distress: ROE < -10% 或 净利率 < -5% → 直接选择，不继续判断
+
+### 第二优先级：基于财务特征的框架匹配
+
+| 框架 key | 财务特征判据（满足即选） | 行业标签仅供参考 |
+|----------|------------------------|-----------------|
+| cyclical_materials | 涉及铜/铅/锌/铝/钢铁/化工等大宗商品 + 资本密集 | 即使标签写"非金属矿"或"采选"，只要涉及金属矿商就选此框架 |
+| low_margin_mfg | 净利率 ≤8% + 营收 >200亿 + ROE >5% | 低利润但盈利的大型制造商（消费电子/精密制造/代工） |
+| tech_growth | 净利率 >20% + 毛利率 >50% + 软件/科技相关 | 高盈利软件公司，不是传统价值股 |
+| brand_moat | 毛利率 >50% + ROE >15% + 消费品相关 | 高端消费品牌（白酒/奢侈品） |
+| utility | 分红率 >40% + ROE 稳定 8-15% | 公用事业/高分红央企 |
+| pharma_cxo | CXO/CRO/CDMO 相关 + 净利率 >10% | 医药外包服务 |
+
+### 第三优先级：行业标签匹配（仅当财务特征不明确时）
 - bank: 银行
 - insurance: 保险
 - real_estate: 房地产开发
-- pharma_mature: 成熟医药
+- coal: 煤炭
+- oil_gas: 石油天然气
+- pharma_mature: 成熟医药（盈利稳定）
 - pharma_innovative: 创新药研发（亏损或研发费率>30%）
 - tech_saas: SaaS软件
 - tech_traditional: 传统软件/系统集成
 - auto_new_energy: 新能源汽车
 - new_energy_mfg: 新能源制造（电池/光伏/风电）
 - defense_equipment: 军工装备
-- generic: 无法分类（仅当以上都不适用时使用）
+- consumer_mass: 大众消费品（毛利率20-40%）
+
+### 最后兜底
+- generic: 仅当以上所有规则都不适用时才选择
 """
 
-        system_prompt = "你是一个专业的股票行业分类器。根据财务指标判断公司应该使用哪个估值框架。只返回一个 key，不要任何解释。"
+        system_prompt = """你是一个专业的股票行业分类器。
+
+核心规则：
+1. 财务特征优先于行业标签 — 即使标签写"非金属矿采选"，只要公司涉及铜/铅/锌等金属，就应该选 cyclical_materials
+2. 高净利率(>20%)的软件公司应选 tech_growth，不是 generic
+3. 低净利率(≤8%)但高ROE(>5%)的大型制造商应选 low_margin_mfg
+
+只返回一个 key，不要任何解释。"""
 
         user_prompt = f"""根据以下信息判断该公司应该使用哪个估值框架。
 
+【公司信息】
 行业标签: {sector or '未知'}
 主营业务: {business_desc or '未知'}
 财务指标: {metrics_str}
 
 {frameworks}
 
-只返回一个 key（如 low_margin_mfg），不要任何解释。"""
+请严格按照优先级规则判断，只返回一个 key（如 cyclical_materials），不要任何解释。"""
 
         response = call_llm(
             task="industry_classification",
@@ -1166,6 +1191,201 @@ def get_growth_tech_valuation_config() -> ValuationMethodConfig:
             "盈利期成长股估值方法: DCF为主力（反映成长溢价），EV/EBITDA为辅助，"
             "PEG仅供参考不纳入加权（对增速假设过于敏感），"
             "禁用Graham Number（专为防御型低估股设计）"
+        ),
+    }
+
+
+def detect_growth_software(
+    net_margin: float | None,
+    gross_margin: float | None,
+    revenue_growth: float | None = None,
+    industry: str | None = None,
+) -> bool:
+    """
+    P3: Detect growth software companies that need PS/EV-EBITDA valuation with Graham降权.
+
+    These are profitable software/tech companies that should NOT be valued like
+    traditional value stocks (Graham Number should be 5% weight, not 40%+).
+
+    Criteria (need all):
+    - net_margin > 15% (高盈利能力)
+    - gross_margin > 50% (软件特征：高毛利)
+    - Not in financial/cyclical/real estate sectors
+
+    Examples: 金山办公 (688111) - 净利率32%, 毛利率高, 但被Graham主导误判
+
+    Args:
+        net_margin: Net profit margin as decimal (e.g., 0.32 for 32%)
+        gross_margin: Gross profit margin as decimal (e.g., 0.70 for 70%)
+        revenue_growth: Revenue growth rate as decimal (optional, for extra confidence)
+        industry: Industry classification (used to exclude financial/cyclical)
+
+    Returns:
+        True if stock should use growth software valuation methods
+    """
+    # Must have sufficient profitability data
+    if net_margin is None or gross_margin is None:
+        return False
+
+    # Normalize values if they're percentages instead of decimals
+    if net_margin > 1:
+        net_margin = net_margin / 100
+    if gross_margin > 1:
+        gross_margin = gross_margin / 100
+
+    # Core criteria: high profitability + high gross margin (software characteristic)
+    if net_margin <= 0.15:  # Must be > 15% net margin
+        return False
+    if gross_margin <= 0.50:  # Must be > 50% gross margin
+        return False
+
+    # Exclude financial and cyclical sectors (they have different valuation logic)
+    if industry:
+        exclude_keywords = [
+            "银行", "bank", "保险", "insurance", "金融", "finance",
+            "钢铁", "steel", "煤炭", "coal", "石油", "oil", "矿业", "mining",
+            "房地产", "real estate", "地产",
+        ]
+        if any(kw in industry.lower() for kw in exclude_keywords):
+            return False
+
+    # Check for software/tech indicators in industry (boost confidence)
+    software_keywords = [
+        "软件", "software", "互联网", "internet", "科技", "tech",
+        "信息", "IT", "云", "cloud", "saas", "办公", "office",
+    ]
+    is_software_related = industry and any(kw in industry.lower() for kw in software_keywords)
+
+    # If has software keywords, we're confident
+    if is_software_related:
+        logger.info(
+            f"[Industry] Detected growth software: "
+            f"net_margin={net_margin:.1%}, gross_margin={gross_margin:.1%}, "
+            f"industry={industry}"
+        )
+        return True
+
+    # Even without software keywords, very high profitability (>20% net margin + >60% gross margin)
+    # indicates asset-light business model typical of software
+    if net_margin > 0.20 and gross_margin > 0.60:
+        logger.info(
+            f"[Industry] Detected growth software (high profitability override): "
+            f"net_margin={net_margin:.1%}, gross_margin={gross_margin:.1%}"
+        )
+        return True
+
+    return False
+
+
+def get_growth_software_valuation_config() -> ValuationMethodConfig:
+    """
+    P3: Get valuation method configuration for growth software stocks.
+
+    Key difference from generic: Graham Number weight reduced from 25% to 5%,
+    PS and EV/EBITDA are primary methods.
+    """
+    return {
+        "enabled_methods": ["PS", "EV/EBITDA", "DCF", "Graham"],
+        "weights": {
+            "PS": 0.35,  # Primary - revenue-based for software
+            "EV/EBITDA": 0.35,  # Primary - earnings power
+            "DCF": 0.25,  # Secondary - growth assumptions
+            "Graham": 0.05,  # Minimal - not designed for growth stocks
+        },
+        "rationale": (
+            "成长型软件股估值方法: PS和EV/EBITDA为主力（反映软件行业特征），"
+            "Graham Number降权至5%（专为防御型低估股设计，不适合高盈利成长股）"
+        ),
+    }
+
+
+def detect_low_margin_mfg(
+    net_margin: float | None,
+    revenue: float | None,
+    roe: float | None = None,
+    industry: str | None = None,
+) -> bool:
+    """
+    P6: Detect low margin manufacturing stocks (like Luxshare, Lens Technology).
+
+    These are large-scale, profitable but low-margin manufacturers where:
+    - Graham Number overweights (assumes undervaluation that doesn't exist)
+    - P/B misleading (asset-heavy business, book value less meaningful)
+    - EV/EBITDA and EV/Sales better reflect operational efficiency
+
+    Criteria:
+    - Net margin ≤ 8% (low margin characteristic)
+    - Revenue > 20B CNY (large scale)
+    - ROE > 5% (profitable, not distressed)
+    - Not financial/real estate (different business model)
+
+    Args:
+        net_margin: Net profit margin as decimal (e.g., 0.05 for 5%)
+        revenue: Total revenue in CNY (e.g., 200_000_000_000 for 200B)
+        roe: Return on equity as decimal (e.g., 0.15 for 15%)
+        industry: Industry classification string
+
+    Returns:
+        True if stock matches low margin manufacturing profile
+    """
+    # Require net margin data
+    if net_margin is None:
+        return False
+
+    # Net margin must be low but positive (≤ 8%)
+    if net_margin > 0.08 or net_margin <= 0:
+        return False
+
+    # Must have significant scale (> 20B CNY)
+    if revenue is None or revenue <= 20_000_000_000:
+        return False
+
+    # Must be profitable (ROE > 5%, not distressed)
+    if roe is not None and roe <= 0.05:
+        return False
+
+    # Exclude financial and real estate (different business models)
+    if industry:
+        excluded_keywords = [
+            "银行", "bank", "保险", "insurance", "金融", "financial",
+            "证券", "securities", "房地产", "real estate", "地产",
+        ]
+        if any(kw in industry.lower() for kw in excluded_keywords):
+            return False
+
+    roe_str = f"{roe:.1%}" if roe else "N/A"
+    logger.info(
+        f"[Industry] Detected low margin manufacturing: "
+        f"net_margin={net_margin:.1%}, revenue={revenue/1e9:.1f}B, "
+        f"ROE={roe_str}, industry={industry}"
+    )
+    return True
+
+
+def get_low_margin_mfg_valuation_config() -> ValuationMethodConfig:
+    """
+    P6: Get valuation method configuration for low margin manufacturing stocks.
+
+    Key principle: These stocks are fairly valued, not undervalued.
+    - Graham Number: Designed for undervalued defensive stocks, inappropriate here
+    - P/B: Asset-heavy manufacturing, book value less meaningful
+    - EV/EBITDA: Primary - reflects operational efficiency across capital structures
+    - EV/Sales: Secondary - useful for margin comparison across peers
+    - DCF: Tertiary - captures growth assumptions
+    """
+    return {
+        "enabled_methods": ["EV/EBITDA", "EV/Sales", "DCF", "P/E", "Graham"],
+        "weights": {
+            "EV/EBITDA": 0.35,  # Primary - operational efficiency
+            "EV/Sales": 0.25,  # Secondary - revenue scale focus
+            "DCF": 0.20,  # Growth expectations
+            "P/E": 0.15,  # Earnings-based sanity check
+            "Graham": 0.05,  # Minimal - not designed for this profile
+        },
+        "rationale": (
+            "低利润率大型制造股估值: EV/EBITDA和EV/Sales为主力（反映运营效率和规模），"
+            "Graham Number降权至5%（专为防御型低估股设计，不适合稳健制造商），"
+            "P/B不使用（重资产行业账面价值意义有限）"
         ),
     }
 

@@ -36,6 +36,10 @@ from src.agents.industry_classifier import (
     get_loss_making_tech_valuation_config,
     detect_growth_stock,
     get_growth_tech_valuation_config,
+    detect_growth_software,
+    get_growth_software_valuation_config,
+    detect_low_margin_mfg,
+    get_low_margin_mfg_valuation_config,
     detect_financial_stock,
     get_financial_stock_valuation_config,
     detect_cyclical_stock,
@@ -1369,20 +1373,62 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             # Convert to decimal (0.216)
             roe_for_detection = roe_raw / 100 if roe_raw > 1 else roe_raw
 
-    # Detect loss-making tech (with ROE check to avoid false positives)
-    is_loss_making_tech = detect_loss_making_tech_stock(
-        net_income=latest_ni,
-        net_margin=net_margin,
-        revenue_growth=revenue_growth,
-        rd_ratio=rd_ratio,
-        industry=industry,
-        roe=roe_for_detection,  # NEW: prevents misclassifying profitable companies
-    )
+    # ── P2: 困境探针前置 ─────────────────────────────────────────────────────────
+    # ROE < -10% 或 净利率 < -5% 直接触发困境模式，在所有其他检测之前
+    # 这避免了困境股被误分类为其他类型
+    is_distressed_early = False
+    if net_margin is not None and net_margin < -0.05:  # < -5%
+        is_distressed_early = True
+        logger.info(
+            "[Valuation] %s: Distress probe triggered - net_margin=%.1f%%",
+            ticker, net_margin * 100
+        )
+    elif roe_for_detection is not None and roe_for_detection < -0.10:  # < -10%
+        is_distressed_early = True
+        logger.info(
+            "[Valuation] %s: Distress probe triggered - ROE=%.1f%%",
+            ticker, roe_for_detection * 100
+        )
 
-    if is_loss_making_tech:
-        results["is_loss_making_tech"] = True
-        results["valuation_mode"] = "loss_making_tech"
-        detail_lines.append("⚠ 亏损期科技股：使用PS/EV-Sales估值方法，禁用Graham Number")
+    if is_distressed_early:
+        results["is_distressed"] = True
+        results["valuation_mode"] = "distressed"
+        results["distressed_type"] = "generic_distressed"
+        distressed_type_early = "generic_distressed"  # 保存供后续方法构建使用
+        distressed_config = DISTRESSED_CATEGORIES["generic_distressed"]
+        detail_lines.append(
+            f"⚠️ 困境探针触发（ROE<-10% 或 净利率<-5%）：使用{distressed_config['valuation_method']}估值方法"
+        )
+        # 跳过后续的类型检测，直接进入困境估值逻辑
+        # 设置标志以便后续代码跳过其他检测
+        is_loss_making_tech = False
+        is_growth_stock = False
+        is_growth_software = False
+        is_financial_stock = False
+        is_cyclical_stock = False
+        is_healthcare_stock = False
+        is_utility_stock = False
+        is_brand_moat = False
+        is_distressed = True
+    else:
+        distressed_type_early = None
+
+    # Detect loss-making tech (with ROE check to avoid false positives)
+    # Skip if distress probe already triggered
+    if not is_distressed_early:
+        is_loss_making_tech = detect_loss_making_tech_stock(
+            net_income=latest_ni,
+            net_margin=net_margin,
+            revenue_growth=revenue_growth,
+            rd_ratio=rd_ratio,
+            industry=industry,
+            roe=roe_for_detection,  # NEW: prevents misclassifying profitable companies
+        )
+
+        if is_loss_making_tech:
+            results["is_loss_making_tech"] = True
+            results["valuation_mode"] = "loss_making_tech"
+            detail_lines.append("⚠ 亏损期科技股：使用PS/EV-Sales估值方法，禁用Graham Number")
 
     # ── BUG-03B: Detect profitable growth stocks ─────────────────────────────
     # These need PEG valuation instead of Graham Number
@@ -1418,8 +1464,8 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             eps_growth = (eps_current - eps_prev) / abs(eps_prev)
             results["eps_growth"] = round(eps_growth * 100, 2)
 
-    # Detect growth stock (only if NOT already classified as loss-making tech)
-    if not is_loss_making_tech:
+    # Detect growth stock (only if NOT already classified as loss-making tech or distressed)
+    if not is_loss_making_tech and not is_distressed_early:
         is_growth_stock = detect_growth_stock(
             pe_ratio=pe_ratio,
             revenue_cagr_3y=revenue_cagr_3y,
@@ -1435,6 +1481,67 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         detail_lines.append(
             f"📈 盈利成长股：使用PEG/DCF估值方法，禁用Graham Number "
             f"(PE={pe_ratio:.1f}x, CAGR={revenue_cagr_3y*100:.1f}%)"
+        )
+
+    # ── P3: Detect growth software stocks ─────────────────────────────────────────
+    # High-profitability software companies should NOT be valued with heavy Graham weight
+    # Example: 金山办公 (688111) - 净利率32%, but was incorrectly dominated by Graham Number
+    is_growth_software = False
+
+    # Get gross margin early for growth software detection
+    gross_margin_for_software = None
+    if metric_rows:
+        gross_margin_raw = _safe(metric_rows[0].get("gross_margin"))
+        if gross_margin_raw is not None:
+            # Normalize: if > 1, it's percentage (e.g., 70 for 70%), convert to decimal
+            gross_margin_for_software = gross_margin_raw / 100 if gross_margin_raw > 1 else gross_margin_raw
+
+    # Detect growth software (only if NOT already classified)
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_distressed_early
+    ):
+        is_growth_software = detect_growth_software(
+            net_margin=net_margin,
+            gross_margin=gross_margin_for_software,
+            revenue_growth=revenue_growth,
+            industry=industry,
+        )
+
+    if is_growth_software:
+        results["is_growth_software"] = True
+        results["valuation_mode"] = "growth_software"
+        net_margin_pct = net_margin * 100 if net_margin else None
+        gross_margin_pct = gross_margin_for_software * 100 if gross_margin_for_software else None
+        detail_lines.append(
+            f"💻 成长型软件股：使用PS/EV-EBITDA估值方法，Graham降权至5% "
+            f"(净利率={net_margin_pct:.1f}%, 毛利率={gross_margin_pct:.1f}%)"
+        )
+
+    # ── P6: Detect low margin manufacturing ────────────────────────────────────
+    is_low_margin_mfg = False
+    if (
+        not is_loss_making_tech
+        and not is_growth_stock
+        and not is_growth_software
+        and not is_distressed_early
+    ):
+        is_low_margin_mfg = detect_low_margin_mfg(
+            net_margin=net_margin,
+            revenue=revenue,
+            roe=roe_for_detection,
+            industry=industry,
+        )
+
+    if is_low_margin_mfg:
+        results["is_low_margin_mfg"] = True
+        results["valuation_mode"] = "low_margin_mfg"
+        net_margin_pct = net_margin * 100 if net_margin else None
+        revenue_b = revenue / 1e9 if revenue else None
+        detail_lines.append(
+            f"🏭 低利润率大型制造股：使用EV/EBITDA和EV/Sales估值方法，Graham降权至5% "
+            f"(净利率={net_margin_pct:.1f}%, 营收={revenue_b:.0f}B)"
         )
 
     # ── Phase 2: Detect financial stocks (banks/insurance) ─────────────────────
@@ -1468,7 +1575,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
             )
 
     # Only check financial if not already classified
-    if not is_loss_making_tech and not is_growth_stock:
+    if not is_loss_making_tech and not is_growth_stock and not is_growth_software and not is_distressed_early:
         is_financial_stock = detect_financial_stock(
             industry=industry,
             roe=roe,
@@ -1491,7 +1598,7 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     is_cyclical_stock = False
 
     # Only check cyclical if not already classified
-    if not is_loss_making_tech and not is_growth_stock and not is_financial_stock:
+    if not is_loss_making_tech and not is_growth_stock and not is_growth_software and not is_financial_stock and not is_distressed_early:
         is_cyclical_stock = detect_cyclical_stock(
             industry=industry,
         )
@@ -1514,8 +1621,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if (
         not is_loss_making_tech
         and not is_growth_stock
+        and not is_growth_software
         and not is_financial_stock
         and not is_cyclical_stock
+        and not is_distressed_early
     ):
         is_healthcare_stock = detect_healthcare_stock(industry=industry)
 
@@ -1553,9 +1662,11 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if (
         not is_loss_making_tech
         and not is_growth_stock
+        and not is_growth_software
         and not is_financial_stock
         and not is_cyclical_stock
         and not is_healthcare_stock
+        and not is_distressed_early
     ):
         is_utility_stock = _is_utility_stock(ticker, industry)
 
@@ -1574,8 +1685,10 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if (
         not is_loss_making_tech
         and not is_growth_stock
+        and not is_growth_software
         and not is_financial_stock
         and not is_utility_stock
+        and not is_distressed_early
         and dividend_yield is not None
         and dividend_yield >= HIGH_DIVIDEND_YIELD_THRESHOLD
     ):
@@ -1639,10 +1752,12 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
     if (
         not is_loss_making_tech
         and not is_growth_stock
+        and not is_growth_software
         and not is_financial_stock
         and not is_cyclical_stock
         and not is_healthcare_stock
         and not is_utility_stock
+        and not is_distressed_early
     ):
         # Get current ROE from metrics (decimal form, need to convert to percentage)
         current_roe_pct = roe * 100 if roe is not None else None
@@ -1689,8 +1804,9 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
 
     # ── Task 3.4: Detect distressed companies ──────────────────────────────────
     # Distressed companies need special valuation: asset replacement, net-net, etc.
-    is_distressed = False
-    distressed_type = None
+    # BUG-FIX: 保留困境探针的设置，避免被覆盖
+    is_distressed = is_distressed_early  # 如果困境探针已触发，保留 True
+    distressed_type = distressed_type_early  # 困境探针可能已设置
 
     # Build distressed detection metrics
     distressed_metrics = {
@@ -1703,10 +1819,13 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         else None,
     }
 
-    # Check if distressed (not if already classified as special type)
+    # Check if distressed (not if already classified as special type or by early probe)
+    # BUG-FIX: 跳过已被困境探针识别的情况
     if (
-        not is_loss_making_tech
+        not is_distressed_early  # 困境探针已触发则跳过
+        and not is_loss_making_tech
         and not is_growth_stock
+        and not is_growth_software
         and not is_financial_stock
         and not is_cyclical_stock
         and not is_healthcare_stock
@@ -2303,6 +2422,77 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         # NOTE: Graham Number is DISABLED for growth stocks
         # (Graham Number is designed for defensive undervalued stocks, not growth)
 
+    elif is_growth_software:
+        # P3: Growth software stock valuation methods
+        # Uses PS/EV-EBITDA as primary, Graham降权至5%
+        # Example: 金山办公 (688111) - 净利率32%, 毛利率85%
+
+        # PS valuation - primary for software companies
+        if ps_per_share:
+            valuation_methods.append(("PS", ps_per_share))
+            detail_lines.append(f"成长型软件PS估值: ¥{ps_per_share:.2f}/股")
+
+        # EV/EBITDA valuation - primary for earnings power
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+
+        # DCF base case (per share) - secondary with growth assumptions
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
+
+        # Graham Number - heavily discounted (5% weight) but still included
+        # for reference as floor value
+        if graham_number_per_share:
+            valuation_methods.append(("Graham", graham_number_per_share))
+            detail_lines.append(
+                f"Graham Number (降权至5%): ¥{graham_number_per_share:.2f}/股 "
+                "(专为防御型低估股设计，不适合高盈利成长股)"
+            )
+
+        # NOTE: P/B is NOT included for growth software
+        # (Book value underestimates intangible asset value in software companies)
+
+    elif is_low_margin_mfg:
+        # P6: Low margin manufacturing stock valuation methods
+        # Uses EV/EBITDA and EV/Sales as primary, Graham降权至5%
+        # Example: 立讯精密 (002475) - 净利率5%, 营收2000亿+
+
+        # EV/EBITDA valuation - primary for operational efficiency
+        if ev_ebitda_per_share:
+            valuation_methods.append(("EV/EBITDA", ev_ebitda_per_share))
+            detail_lines.append(f"低利润率制造EV/EBITDA估值: ¥{ev_ebitda_per_share:.2f}/股")
+
+        # EV/Sales valuation - primary for revenue scale focus
+        if ev_sales_per_share:
+            valuation_methods.append(("EV/Sales", ev_sales_per_share))
+            detail_lines.append(f"低利润率制造EV/Sales估值: ¥{ev_sales_per_share:.2f}/股")
+
+        # DCF base case (per share) - secondary with growth assumptions
+        if dcf_base and shares and shares > 0:
+            dcf_per_share = dcf_base / shares
+            results["dcf_per_share"] = dcf_per_share
+            valuation_methods.append(("DCF", dcf_per_share))
+
+        # P/E valuation - sanity check (low margin mfg typically 15-20x)
+        if eps_for_pe and eps_for_pe > 0:
+            fair_pe_low_margin_mfg = 18.0  # Mid-range for efficient manufacturers
+            pe_target_low_margin = fair_pe_low_margin_mfg * eps_for_pe
+            results["pe_low_margin_mfg_per_share"] = round(pe_target_low_margin, 2)
+            valuation_methods.append(("P/E", pe_target_low_margin))
+
+        # Graham Number - heavily discounted (5% weight) but still included
+        if graham_number_per_share:
+            valuation_methods.append(("Graham", graham_number_per_share))
+            detail_lines.append(
+                f"Graham Number (降权至5%): ¥{graham_number_per_share:.2f}/股 "
+                "(专为防御型低估股设计，不适合稳健制造商)"
+            )
+
+        # NOTE: P/B is NOT included for low margin manufacturing
+        # (Asset-heavy business, book value less meaningful for pricing)
+
     elif is_financial_stock:
         # Phase 2: Financial stock valuation methods
         # Uses P/B-ROE and DDM, disables EV/EBITDA and standard DCF
@@ -2695,6 +2885,16 @@ def run(ticker: str, market: str, use_llm: bool = True) -> AgentSignal:
         valuation_config = get_growth_tech_valuation_config()
         default_weights = valuation_config["weights"]
         logger.info("[Valuation] %s: Using growth stock weights: %s", ticker, default_weights)
+    elif is_growth_software:
+        # P3: Use growth software weights (PS/EV-EBITDA focused, Graham降权)
+        valuation_config = get_growth_software_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using growth software weights: %s", ticker, default_weights)
+    elif is_low_margin_mfg:
+        # P6: Use low margin manufacturing weights (EV/EBITDA and EV/Sales focused, Graham降权)
+        valuation_config = get_low_margin_mfg_valuation_config()
+        default_weights = valuation_config["weights"]
+        logger.info("[Valuation] %s: Using low margin mfg weights: %s", ticker, default_weights)
     elif is_financial_stock:
         # Phase 2: Use financial stock weights (P/B-ROE + DDM focused)
         valuation_config = get_financial_stock_valuation_config()
