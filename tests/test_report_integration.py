@@ -74,7 +74,8 @@ def test_full_report_generation(mock_llm):
         signals=signals,
         quality_report=quality_report,
         analysis_date="2026-03-07",
-        use_llm=True
+        use_llm=True,
+        company_context={"company_name": "测试公司"},
     )
 
     # Verify all chapters present
@@ -97,7 +98,8 @@ def test_full_report_generation(mock_llm):
 
     # Verify file saved
     assert report_path.exists()
-    assert report_path.name == "TEST_2026-03-07.md"
+    assert report_path.parent.name == "output"
+    assert report_path.name == "TEST_测试公司_2026-03-07.md"
 
 
 def test_quick_report_unchanged():

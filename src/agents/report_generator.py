@@ -1,12 +1,13 @@
 """Report Generator Agent — LLM-powered Chinese research report writer.
 
 Synthesises all agent signals into a structured 800-1200 word research report.
-Saves to output/reports/{ticker}_{YYYY-MM-DD}.md
+Saves to output/{ticker}_{company_name}_{YYYY-MM-DD}.md
 
 In --quick mode (no LLM), generates a data-only report from numerical results.
 """
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -43,6 +44,37 @@ INDUSTRY_EV_EBITDA_MULTIPLES: dict[str, tuple[float, str]] = {
     "it_services": (18.0, "信息技术服务"),
 }
 DEFAULT_EV_EBITDA_MULTIPLE = (10.0, "综合")
+
+
+def _safe_filename_part(value: str | None) -> str:
+    """Keep report filenames readable while removing path-unsafe characters."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"[\\/:*?\"<>|]+", "_", value)
+    value = re.sub(r"\s+", "_", value)
+    value = re.sub(r"_+", "_", value)
+    return value.strip("._- ")
+
+
+def _build_report_path(ticker: str, analysis_date: str, company_context: dict | None) -> Path:
+    output_dir = get_project_root() / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_ticker = _safe_filename_part(ticker.replace(".", "_"))
+    company_name = ""
+    if company_context:
+        company_name = (
+            company_context.get("company_name")
+            or company_context.get("name")
+            or company_context.get("short_name")
+            or ""
+        )
+    safe_company = _safe_filename_part(str(company_name))
+    filename_parts = [safe_ticker]
+    if safe_company:
+        filename_parts.append(safe_company)
+    filename_parts.append(_safe_filename_part(analysis_date))
+    return output_dir / ("_".join(filename_parts) + ".md")
 
 # Industry-specific sensitivity scenarios (optimistic, pessimistic)
 # Format: (optimistic_scenario, pessimistic_scenario)
@@ -1292,11 +1324,7 @@ def run(
     if analysis_date is None:
         analysis_date = str(date.today())
 
-    # Prepare output directory
-    output_dir = get_project_root() / "output" / "reports"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    safe_ticker = ticker.replace(".", "_")
-    report_path = output_dir / f"{safe_ticker}_{analysis_date}.md"
+    report_path = _build_report_path(ticker, analysis_date, company_context)
 
     # Quick mode: use existing code-only report
     if not use_llm:

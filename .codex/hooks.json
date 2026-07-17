@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/update_map_hint.py \"{file_path}\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff format {file_path} 2>/dev/null && ruff check --fix {file_path} 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

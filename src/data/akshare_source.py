@@ -58,11 +58,14 @@ def _check_eastmoney_connectivity() -> bool:
     Returns True if eastmoney is reachable with valid HTTPS, False otherwise.
     Result is cached for the session to avoid repeated slow checks.
 
-    Can be bypassed by setting AKSHARE_SKIP=true environment variable.
+    Can be bypassed by setting SKIP_AKSHARE=true or AKSHARE_SKIP=true.
     """
     # Allow user to force-skip AKShare
-    if os.getenv("AKSHARE_SKIP", "").lower() == "true":
-        logger.info("[AKShare] Skipped by AKSHARE_SKIP=true")
+    if (
+        os.getenv("AKSHARE_SKIP", "").lower() in {"true", "1", "yes"}
+        or os.getenv("SKIP_AKSHARE", "true").lower() in {"true", "1", "yes"}
+    ):
+        logger.info("[AKShare] Skipped by SKIP_AKSHARE=true")
         return False
 
     # Allow user to force-enable AKShare (skip connectivity check)

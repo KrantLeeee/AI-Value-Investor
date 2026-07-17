@@ -984,6 +984,12 @@ def _get_dividend_from_akshare(ticker: str) -> float | None:
     Returns:
         Estimated annual dividend per share in yuan, or None if unavailable.
     """
+    import os
+
+    if os.getenv("SKIP_AKSHARE", "true").lower() in {"true", "1", "yes"}:
+        logger.debug("[Valuation] SKIP_AKSHARE=true, skipping dividend fetch for %s", ticker)
+        return None
+
     try:
         import akshare as ak
         from datetime import datetime

@@ -172,6 +172,122 @@ def scan(notify):
         console.print(f"[green]✓ Email notification sent[/green]" if signals else "")
 
 
+# ─── valuation-scan ──────────────────────────────────────────────────────────
+
+@cli.command("valuation-scan")
+@click.option(
+    "--universe",
+    type=click.Choice(["watchlist", "a_share", "hk", "all"], case_sensitive=False),
+    default="watchlist",
+    help="Universe to scan. Default: watchlist",
+)
+@click.option(
+    "--market",
+    "markets",
+    multiple=True,
+    type=click.Choice(["a_share", "hk", "us"], case_sensitive=False),
+    default=("a_share", "hk"),
+    help="Markets to scan. Repeatable. Default: a_share + hk",
+)
+@click.option("--limit", type=int, default=None, help="Limit number of tickers for a trial run")
+@click.option("--board", default=None, help="A-share board from Tushare stock_basic, e.g. 主板")
+@click.option("--sector", default=None, help="A-share industry from Tushare stock_basic, e.g. 银行")
+@click.option("--refresh-data", is_flag=True, help="Fetch fresh data before valuation")
+@click.option("--use-llm", is_flag=True, help="Use LLM valuation interpretation for each ticker")
+@click.option(
+    "--include-risk",
+    is_flag=True,
+    help="Include ST/delisting-risk names in full-market universes",
+)
+@click.option(
+    "--confirm-full-scan",
+    is_flag=True,
+    help="Required for full-market scans without --limit",
+)
+def valuation_scan(
+    universe,
+    markets,
+    limit,
+    board,
+    sector,
+    refresh_data,
+    use_llm,
+    include_risk,
+    confirm_full_scan,
+):
+    """Run a report-free batch valuation scan and export CSV/JSON.
+
+    This is the quarterly pre-research funnel: it does not generate a full
+    Markdown report, but it does run the valuation engine, quality checks, and
+    opportunity classification.
+    """
+    from src.screening.batch_valuation import run_valuation_scan
+
+    if universe != "watchlist" and limit is None and not confirm_full_scan:
+        raise click.UsageError(
+            "Full-market scans can touch thousands of tickers. "
+            "Use --limit for a trial run or add --confirm-full-scan."
+        )
+
+    market_set = set(markets)
+    console.print("[bold cyan]Running quarterly valuation scan...[/bold cyan]")
+    console.print(
+        f"[dim]universe={universe} markets={','.join(sorted(market_set))} "
+        f"limit={limit or 'all'} refresh={refresh_data} llm={use_llm}[/dim]"
+    )
+
+    results, saved = run_valuation_scan(
+        universe_source=universe,
+        markets=market_set,
+        limit=limit,
+        board=board,
+        sector=sector,
+        refresh_data=refresh_data,
+        use_llm=use_llm,
+        exclude_risk=not include_risk,
+    )
+
+    table = Table(
+        "Ticker",
+        "Name",
+        "Market",
+        "Price",
+        "Intrinsic",
+        "MOS",
+        "Quality",
+        "Action",
+        "Reason",
+        title="估值候选表",
+    )
+    action_colors = {
+        "strong_candidate": "green",
+        "deep_research": "cyan",
+        "watch": "yellow",
+        "reject": "dim",
+        "error": "red",
+    }
+    for r in results[:30]:
+        mos = f"{r.margin_of_safety_pct:.1f}%" if r.margin_of_safety_pct is not None else "-"
+        price = f"{r.current_price:.2f}" if r.current_price is not None else "-"
+        intrinsic = f"{r.intrinsic_value:.2f}" if r.intrinsic_value is not None else "-"
+        color = action_colors.get(r.action, "white")
+        table.add_row(
+            r.ticker,
+            r.name or "-",
+            r.market,
+            price,
+            intrinsic,
+            mos,
+            f"{r.quality_score:.0%}",
+            f"[{color}]{r.action}[/{color}]",
+            r.reason[:36],
+        )
+
+    console.print(table)
+    console.print(f"\n[green]✓ JSON:[/green] {saved['json_path']}")
+    console.print(f"[green]✓ CSV:[/green]  {saved['csv_path']}")
+
+
 # ─── report ───────────────────────────────────────────────────────────────────
 
 def _preflight_company_check(ticker: str, market: str) -> dict | None:

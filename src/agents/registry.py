@@ -272,7 +272,8 @@ def run_all_agents(
     except Exception as e:
         logger.error("[Registry] Report generation failed: %s", e)
         from src.utils.config import get_project_root
-        report_path = get_project_root() / "output" / "reports" / f"{ticker}_{analysis_date}_error.md"
+        safe_ticker = ticker.replace(".", "_")
+        report_path = get_project_root() / "output" / f"{safe_ticker}_{analysis_date}_error.md"
 
     logger.info("[Registry] Analysis complete for %s → %s", ticker, report_path)
     return signals, report_path

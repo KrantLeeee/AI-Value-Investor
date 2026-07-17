@@ -194,7 +194,7 @@ def _get_news_from_akshare(ticker: str, market: str) -> list[dict]:
         return []
 
     # Skip AKShare when SKIP_AKSHARE is enabled (batch mode to avoid IP bans)
-    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    skip_akshare = os.getenv("SKIP_AKSHARE", "true").lower() in ("true", "1", "yes")
     if skip_akshare:
         logger.debug("[Sentiment] SKIP_AKSHARE=true, skipping AKShare news for %s", ticker)
         return []
@@ -245,7 +245,7 @@ def _get_profit_warnings(ticker: str, market: str) -> list[ProfitWarning]:
         return []
 
     # Skip AKShare when SKIP_AKSHARE is enabled (batch mode to avoid IP bans)
-    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    skip_akshare = os.getenv("SKIP_AKSHARE", "true").lower() in ("true", "1", "yes")
     if skip_akshare:
         logger.debug("[Sentiment] SKIP_AKSHARE=true, skipping profit_warnings for %s", ticker)
         return []

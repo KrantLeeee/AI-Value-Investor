@@ -948,6 +948,11 @@ def check_probe_data_completeness(
     """
     flags: list[QualityFlag] = []
 
+    def _get(row, field: str):
+        if isinstance(row, dict):
+            return row.get(field)
+        return getattr(row, field, None)
+
     # Minimum years of data for reliable probe detection
     MIN_YEARS_FOR_PROBES = 3
     MIN_FCF_RECORDS = 3
@@ -955,19 +960,19 @@ def check_probe_data_completeness(
     # Check income statement history
     valid_income_years = len([
         i for i in income_data
-        if i.get("net_income") is not None or i.get("revenue") is not None
+        if _get(i, "net_income") is not None or _get(i, "revenue") is not None
     ])
 
     # Check balance sheet history
     valid_balance_years = len([
         b for b in balance_data
-        if b.get("total_assets") is not None
+        if _get(b, "total_assets") is not None
     ])
 
     # Check cashflow history (for FCF)
     valid_cashflow_years = len([
         c for c in cashflow_data
-        if c.get("operating_cashflow") is not None
+        if _get(c, "operating_cash_flow") is not None
     ])
 
     # Check metric history (for ROE, gross_margin)
@@ -989,6 +994,9 @@ def check_probe_data_completeness(
 
     if valid_income_years < MIN_YEARS_FOR_PROBES:
         missing_probes.append(f"利润表历史不足({valid_income_years}年<{MIN_YEARS_FOR_PROBES}年)")
+
+    if valid_balance_years < MIN_YEARS_FOR_PROBES:
+        missing_probes.append(f"资产负债表历史不足({valid_balance_years}年<{MIN_YEARS_FOR_PROBES}年)")
 
     if missing_probes:
         flags.append(QualityFlag(

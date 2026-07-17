@@ -170,12 +170,31 @@ CREATE TABLE IF NOT EXISTS portfolio_positions (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS stock_universe (
+    ticker       TEXT PRIMARY KEY,
+    symbol       TEXT,
+    name         TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    exchange     TEXT,
+    board        TEXT,
+    sector       TEXT,
+    area         TEXT,
+    list_status  TEXT,
+    list_date    TEXT,
+    delist_date  TEXT,
+    is_hs        TEXT,
+    source       TEXT NOT NULL,
+    updated_at   TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON daily_prices(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_income_ticker ON income_statements(ticker, period_end_date);
 CREATE INDEX IF NOT EXISTS idx_balance_ticker ON balance_sheets(ticker, period_end_date);
 CREATE INDEX IF NOT EXISTS idx_cashflow_ticker ON cash_flows(ticker, period_end_date);
 CREATE INDEX IF NOT EXISTS idx_metrics_ticker ON financial_metrics(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_signals_ticker ON agent_signals(ticker, created_at);
+CREATE INDEX IF NOT EXISTS idx_stock_universe_market ON stock_universe(market, board);
+CREATE INDEX IF NOT EXISTS idx_stock_universe_sector ON stock_universe(sector);
 """
 
 
@@ -500,3 +519,115 @@ def get_latest_agent_signals(ticker: str, days: int = 7) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(sql, (ticker, f"-{days} days")).fetchall()
     return [dict(r) for r in rows]
+
+
+def upsert_stock_universe(rows: list[dict]) -> int:
+    """Upsert stock master records used by batch scans."""
+    if not rows:
+        return 0
+    init_db()
+    sql = """
+        INSERT INTO stock_universe
+            (ticker, symbol, name, market, exchange, board, sector, area,
+             list_status, list_date, delist_date, is_hs, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            symbol=excluded.symbol,
+            name=excluded.name,
+            market=excluded.market,
+            exchange=excluded.exchange,
+            board=excluded.board,
+            sector=excluded.sector,
+            area=excluded.area,
+            list_status=excluded.list_status,
+            list_date=excluded.list_date,
+            delist_date=excluded.delist_date,
+            is_hs=excluded.is_hs,
+            source=excluded.source,
+            updated_at=datetime('now')
+    """
+    values = [
+        (
+            row.get("ticker"),
+            row.get("symbol"),
+            row.get("name") or "",
+            row.get("market") or "a_share",
+            row.get("exchange"),
+            row.get("board"),
+            row.get("sector"),
+            row.get("area"),
+            row.get("list_status"),
+            row.get("list_date"),
+            row.get("delist_date"),
+            row.get("is_hs"),
+            row.get("source") or "unknown",
+        )
+        for row in rows
+        if row.get("ticker") and row.get("name")
+    ]
+    with get_connection() as conn:
+        conn.executemany(sql, values)
+    return len(values)
+
+
+def get_stock_universe(
+    *,
+    market: str | None = None,
+    board: str | None = None,
+    sector: str | None = None,
+    limit: int | None = None,
+    active_only: bool = True,
+) -> list[dict]:
+    """Read stock master records from SQLite."""
+    init_db()
+    clauses = []
+    params: list = []
+    if market:
+        clauses.append("market=?")
+        params.append(market)
+    if board:
+        clauses.append("board=?")
+        params.append(board)
+    if sector:
+        clauses.append("sector=?")
+        params.append(sector)
+    if active_only:
+        clauses.append("(list_status IS NULL OR list_status='L')")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT * FROM stock_universe
+        {where}
+        ORDER BY market, board, sector, ticker
+    """
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_stock_universe_stats() -> dict:
+    """Return high-level stats for the local stock master table."""
+    init_db()
+    with get_connection() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM stock_universe").fetchone()[0]
+        updated = conn.execute("SELECT MAX(updated_at) FROM stock_universe").fetchone()[0]
+        by_market = conn.execute(
+            "SELECT market, COUNT(*) AS count FROM stock_universe GROUP BY market"
+        ).fetchall()
+        by_board = conn.execute(
+            """
+            SELECT board, COUNT(*) AS count
+            FROM stock_universe
+            WHERE market='a_share'
+            GROUP BY board
+            ORDER BY count DESC
+            """
+        ).fetchall()
+    return {
+        "total": total,
+        "updated_at": updated,
+        "by_market": [dict(r) for r in by_market],
+        "by_board": [dict(r) for r in by_board],
+    }

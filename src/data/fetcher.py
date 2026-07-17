@@ -92,7 +92,9 @@ RETRY_DELAYS = [5, 15, 30]  # seconds
 # Tushare added as secondary priority for A-share (enterprise-grade data quality).
 # Sina realtime added for price-only fallback (fast, free, no financials).
 #
-# Environment variable SKIP_AKSHARE=true skips AKShare to avoid IP bans from eastmoney.com
+# Environment variable SKIP_AKSHARE=false re-enables AKShare.
+# Default is true because eastmoney/AKShare is often slow or blocked, while
+# Tushare is the preferred A-share source for this project.
 _SOURCE_PRIORITY_DEFAULT: dict[MarketType, list[str]] = {
     "a_share": ["akshare", "tushare", "baostock", "sina_realtime", "qveris"],
     "hk":      ["akshare", "yfinance", "sina_realtime", "fmp"],
@@ -109,7 +111,7 @@ _SOURCE_PRIORITY_NO_AKSHARE: dict[MarketType, list[str]] = {
 
 def _get_source_priority() -> dict[MarketType, list[str]]:
     """Get source priority based on SKIP_AKSHARE environment variable."""
-    skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+    skip_akshare = os.getenv("SKIP_AKSHARE", "true").lower() in ("true", "1", "yes")
     if skip_akshare:
         logger.info("[Fetcher] SKIP_AKSHARE=true, using Tushare-first priority chain")
         return _SOURCE_PRIORITY_NO_AKSHARE
@@ -201,7 +203,7 @@ class Fetcher:
         Rate limiting is controlled by environment variables:
         - FETCH_DELAY: Delay after each successful fetch (default: 3.0s)
         - FETCH_DELAY_BETWEEN_SOURCES: Delay before trying next source on failure (default: 2.0s)
-        - SKIP_AKSHARE: Skip AKShare to avoid IP bans (default: false)
+        - SKIP_AKSHARE: Skip AKShare to avoid IP bans (default: true)
         """
         source_priority = _get_source_priority()
         priority = source_priority.get(market, ["yfinance", "fmp"])
@@ -469,41 +471,45 @@ class Fetcher:
                 "source": "local_fallback",
             }
 
-        # ── Priority 3: AKShare API (free, network-dependent) ──────────────────
-        try:
-            import akshare as ak
-            code = ticker.split(".")[0]
-            df = ak.stock_individual_info_em(symbol=code)
-            if df is not None and not df.empty:
-                info_dict = dict(zip(df["item"], df["value"]))
-                company_name = info_dict.get("股票简称") or info_dict.get("公司名称")
-                industry = info_dict.get("行业") or info_dict.get("所属行业")
-                main_business = None
+        # ── Priority 3: AKShare API (disabled by default) ──────────────────────
+        skip_akshare = os.getenv("SKIP_AKSHARE", "true").lower() in ("true", "1", "yes")
+        if not skip_akshare:
+            try:
+                import akshare as ak
+                code = ticker.split(".")[0]
+                df = ak.stock_individual_info_em(symbol=code)
+                if df is not None and not df.empty:
+                    info_dict = dict(zip(df["item"], df["value"]))
+                    company_name = info_dict.get("股票简称") or info_dict.get("公司名称")
+                    industry = info_dict.get("行业") or info_dict.get("所属行业")
+                    main_business = None
 
-                # stock_individual_info_em doesn't have main_business field,
-                # use stock_zyjs_ths (同花顺主营介绍) to get it
-                try:
-                    zyjs_df = ak.stock_zyjs_ths(symbol=code)
-                    if zyjs_df is not None and not zyjs_df.empty:
-                        main_business = zyjs_df["主营业务"].iloc[0] if "主营业务" in zyjs_df.columns else None
-                        if not main_business and "经营范围" in zyjs_df.columns:
-                            # Fallback to 经营范围 if 主营业务 is empty
-                            main_business = str(zyjs_df["经营范围"].iloc[0])[:100]
-                except Exception as e:
-                    logger.debug("[Fetcher] AKShare stock_zyjs_ths failed for %s: %s", ticker, e)
+                    # stock_individual_info_em doesn't have main_business field,
+                    # use stock_zyjs_ths (同花顺主营介绍) to get it
+                    try:
+                        zyjs_df = ak.stock_zyjs_ths(symbol=code)
+                        if zyjs_df is not None and not zyjs_df.empty:
+                            if "主营业务" in zyjs_df.columns:
+                                main_business = zyjs_df["主营业务"].iloc[0]
+                            if not main_business and "经营范围" in zyjs_df.columns:
+                                main_business = str(zyjs_df["经营范围"].iloc[0])[:100]
+                    except Exception as e:
+                        logger.debug("[Fetcher] AKShare stock_zyjs_ths failed for %s: %s", ticker, e)
 
-                if company_name:
-                    logger.info("[Fetcher] %s company basics from AKShare: %s", ticker, company_name)
-                    return {
-                        "company_name": company_name,
-                        "main_business": main_business,
-                        "industry": industry,
-                        "concepts": industry,
-                        "is_financial": industry and any(k in industry for k in ["银行", "保险", "证券", "金融"]),
-                        "source": "akshare",
-                    }
-        except Exception as e:
-            logger.debug("[Fetcher] AKShare stock_individual_info_em failed for %s: %s", ticker, e)
+                    if company_name:
+                        logger.info("[Fetcher] %s company basics from AKShare: %s", ticker, company_name)
+                        return {
+                            "company_name": company_name,
+                            "main_business": main_business,
+                            "industry": industry,
+                            "concepts": industry,
+                            "is_financial": industry and any(
+                                k in industry for k in ["银行", "保险", "证券", "金融"]
+                            ),
+                            "source": "akshare",
+                        }
+            except Exception as e:
+                logger.debug("[Fetcher] AKShare stock_individual_info_em failed for %s: %s", ticker, e)
 
         # ── Priority 4: LLM Lookup (reliable, uses GPT-4o-mini or DeepSeek) ────
         openai_key = os.getenv("OPENAI_API_KEY")
@@ -909,7 +915,7 @@ class Fetcher:
             - candidate_name if SKIP_AKSHARE=true (skip validation)
         """
         # Skip AKShare validation when SKIP_AKSHARE is enabled
-        skip_akshare = os.getenv("SKIP_AKSHARE", "").lower() in ("true", "1", "yes")
+        skip_akshare = os.getenv("SKIP_AKSHARE", "true").lower() in ("true", "1", "yes")
         if skip_akshare:
             logger.debug("[Fetcher] SKIP_AKSHARE=true, skipping AKShare validation for %s", ticker)
             return candidate_name  # Trust the candidate name
